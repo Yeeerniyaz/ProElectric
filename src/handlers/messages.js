@@ -57,15 +57,19 @@ const KB = {
 export const setupMessageHandlers = () => {
     
     // ============================================================
-    // 1. АДМИН-ПАНЕЛЬ (Команды работают в ЛС админа ИЛИ в закрытой группе)
+    // 1. АДМИН-ПАНЕЛЬ
+    // Команды работают, если пишет Админ (ты) или сообщение из Админ-группы
     // ============================================================
     bot.onText(/\/(stats|new|discuss|work|done|cancel|list)/, async (msg, match) => {
         const cmd = match[1];
         
-        // ПРОВЕРКА ПРАВ: Либо ты лично, либо сообщение в закрытой группе
-        const isPrivateAdmin = msg.from && msg.from.id.toString() === "2041384570";
-        const isGroupAdmin = msg.chat.id.toString() === config.bot.groupId;
+        // ID твоего личного аккаунта (хардкод для надежности)
+        const MY_ADMIN_ID = "2041384570"; 
+        
+        const isPrivateAdmin = msg.from && msg.from.id.toString() === MY_ADMIN_ID;
+        const isGroupAdmin = config.bot.groupId && msg.chat.id.toString() === config.bot.groupId.toString();
 
+        // Если пишет не админ и не из группы — игнорируем
         if (!isPrivateAdmin && !isGroupAdmin) return;
 
         try {
@@ -93,7 +97,7 @@ export const setupMessageHandlers = () => {
                 return bot.sendMessage(msg.chat.id, statsMsg, { parse_mode: 'HTML' });
             }
 
-            // --- СПИСКИ ЗАКАЗОВ (/list, /new, /work ...) ---
+            // --- СПИСКИ ЗАКАЗОВ (/list, /new...) ---
             const statusFilter = cmd === 'list' ? '%' : cmd;
             const res = await db.query(`
                 SELECT o.id, u.first_name, u.phone, l.area, l.total_work_cost, o.status, o.created_at 
@@ -105,7 +109,7 @@ export const setupMessageHandlers = () => {
             `, [statusFilter]);
 
             if (res.rows.length === 0) {
-                return bot.sendMessage(msg.chat.id, `📭 В категории [${cmd.toUpperCase()}] пока пусто.`);
+                return bot.sendMessage(msg.chat.id, `📭 В категории [${cmd.toUpperCase()}] пусто.`);
             }
 
             let response = `📋 <b>СПИСОК ЗАКАЗОВ [${cmd.toUpperCase()}]:</b>\n\n`;
@@ -126,12 +130,15 @@ export const setupMessageHandlers = () => {
     });
 
     // ============================================================
-    // 2. КЛИЕНТСКАЯ ЛОГИКА (Для обычных юзеров)
+    // 2. КЛИЕНТСКАЯ ЛОГИКА
     // ============================================================
     
     // Команда /start
     bot.onText(/\/start/, async (msg) => {
         const chatId = msg.chat.id;
+        // Игнорируем старт в админ-группе
+        if (config.bot.groupId && chatId.toString() === config.bot.groupId.toString()) return;
+
         const res = await db.query('SELECT phone FROM users WHERE telegram_id = $1', [msg.from.id]);
         
         if (res.rows.length > 0 && res.rows[0].phone) {
@@ -147,19 +154,19 @@ export const setupMessageHandlers = () => {
         const chatId = msg.chat.id;
         if (msg.contact.user_id !== msg.from.id) return;
         
-        // Сохраняем и получаем статус (new/active)
+        // Сохраняем и получаем статус
         const user = await db.upsertUser(msg.from.id, msg.from.first_name, msg.from.username, msg.contact.phone_number);
         
         sessions.set(chatId, { step: 'IDLE', data: {} });
         
-        // УВЕДОМЛЯЕМ АДМИНА ТОЛЬКО ЕСЛИ ЭТО НОВИЧОК
+        // УВЕДОМЛЯЕМ АДМИНА ТОЛЬКО ЕСЛИ НОВИЧОК
         if (user.status === 'new') {
             await notifyAdmin(
-                `🆕 <b>НОВЫЙ КЛИЕНТ ЗАРЕГИСТРИРОВАЛСЯ!</b>\n` +
+                `🆕 <b>НОВЫЙ КЛИЕНТ</b>\n` +
                 `👤 Имя: ${msg.from.first_name}\n` +
                 `📱 Тел: <code>${msg.contact.phone_number}</code>`
             );
-            // Сразу помечаем как "активного", чтобы не спамить
+            // Меняем статус на active
             await db.query("UPDATE users SET status = 'active' WHERE id = $1", [user.id]);
         }
 
@@ -171,8 +178,9 @@ export const setupMessageHandlers = () => {
         if (!msg.text || msg.text.startsWith('/') || msg.contact) return;
         const chatId = msg.chat.id;
         
-        // Если пишет в админ-группу, бот не должен пытаться считать смету
-        if (chatId.toString() === config.bot.groupId) return;
+        // ВАЖНО: Если сообщение пришло из админ-группы — игнорируем его!
+        // Бот не должен пытаться считать смету, когда вы общаетесь в группе.
+        if (config.bot.groupId && chatId.toString() === config.bot.groupId.toString()) return;
 
         let session = sessions.get(chatId) || { step: 'IDLE', data: {} };
 
