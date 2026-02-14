@@ -1,11 +1,8 @@
 import { bot } from '../core.js';
 import { db } from '../db.js';
+import { config } from '../config.js';
 import { sessions, notifyAdmin } from './messages.js';
 
-/**
- * 🛠 Форматтер валюты (Казахстанский тенге)
- * Использование международного стандарта Intl для точности расчетов.
- */
 const formatKZT = (num) => {
     return new Intl.NumberFormat('ru-KZ', { 
         style: 'currency', 
@@ -20,34 +17,65 @@ export const setupCallbackHandlers = () => {
         const chatId = query.message.chat.id;
         const data = query.data;
         const messageId = query.message.message_id;
-        const session = sessions.get(chatId);
 
-        // Fail-safe: защита от нажатий на старые кнопки после перезапуска
+        // --- ЛОГИКА CRM: ОБРАБОТКА СТАТУСОВ В КАНАЛЕ ---
+        if (String(chatId) === String(config.bot.groupId)) {
+            let statusText = '';
+            let icon = '';
+
+            switch (data) {
+                case 'status_discuss': statusText = 'В ОБСУЖДЕНИИ'; icon = '🗣'; break;
+                case 'status_work':    statusText = 'В РАБОТЕ';     icon = '🏗'; break;
+                case 'status_done':    statusText = 'РЕШЕНО';       icon = '✅'; break;
+                case 'status_cancel':  statusText = 'ОТКАЗ';        icon = '❌'; break;
+            }
+
+            if (statusText) {
+                let originalText = query.message.text || "";
+                // Очищаем текст от предыдущих меток статуса, если они были
+                originalText = originalText.replace(/^.*СТАТУС:.*\n\n/g, '');
+
+                const updatedText = `${icon} <b>СТАТУС: ${statusText}</b>\n\n${originalText}`;
+
+                try {
+                    await bot.editMessageText(updatedText, {
+                        chat_id: chatId,
+                        message_id: messageId,
+                        parse_mode: 'HTML',
+                        reply_markup: query.message.reply_markup // Оставляем кнопки управления
+                    });
+                    return bot.answerCallbackQuery(query.id, { text: `Статус: ${statusText}` });
+                } catch (e) {
+                    console.error('CRM Update Error:', e.message);
+                    return bot.answerCallbackQuery(query.id);
+                }
+            }
+        }
+
+        // --- ОБЫЧНАЯ ЛОГИКА БОТА ---
+        const session = sessions.get(chatId);
         if (!session) {
             return bot.answerCallbackQuery(query.id, { text: '⚠️ Сессия устарела. Введите /start' });
         }
 
         try {
-            // --- ЭТАП 2: ВЫБОР СТЕН (Три уровня сложности) ---
+            // Расчет сметы по типу стен
             if (data.startsWith('wall_')) {
                 session.data.wallType = data.replace('wall_', '');
-                session.step = 'IDLE'; // Сбрасываем в ожидание для корректной работы меню
+                session.step = 'IDLE'; 
                 
                 const area = session.data.area;
+                const estCable = Math.ceil(area * 5);
+                const estPoints = Math.ceil(area * 0.9);
+                const estShield = Math.ceil(area / 15) + 4;
+                const matCostM2 = 4000;
 
-                // 🧮 ЭМПИРИЧЕСКИЙ РАСЧЕТ (Профессиональные коэффициенты)
-                const estCable = Math.ceil(area * 5);        // В среднем 5 метров на 1 м²
-                const estPoints = Math.ceil(area * 0.9);     // В среднем 0.9 точки на 1 м²
-                const estShield = Math.ceil(area / 15) + 4;  // Автоматы (1 на 15м² + 4 силовых)
-                const matCostM2 = 4000;                      // Средняя цена черновых материалов на м² в Алматы
-
-                // Тянем цены из БД или используем рыночные дефолты
                 const settings = await db.getSettings();
                 
                 const wallPrices = {
-                    'light': parseInt(settings.wall_light) || 4500,   // Газоблок/ГКЛ
-                    'medium': parseInt(settings.wall_medium) || 5500,  // Кирпич
-                    'heavy': parseInt(settings.wall_heavy) || 7500    // Монолит/Бетон
+                    'light': parseInt(settings.wall_light) || 4500,
+                    'medium': parseInt(settings.wall_medium) || 5500,
+                    'heavy': parseInt(settings.wall_heavy) || 7500
                 };
 
                 const pricePerPoint = wallPrices[session.data.wallType] || 5500;
@@ -57,7 +85,6 @@ export const setupCallbackHandlers = () => {
 
                 const wallLabel = { 'light': 'Легкие', 'medium': 'Средние', 'heavy': 'Тяжелые' }[session.data.wallType];
 
-                // 📄 ФОРМИРОВАНИЕ ПОДРОБНОЙ СМЕТЫ
                 const resultText = 
                     `✅ <b>ПОЛНЫЙ РАСЧЕТ ДЛЯ ${area} м²</b>\n\n` +
                     `🧱 Стены: <b>${wallLabel}</b>\n` +
@@ -68,8 +95,7 @@ export const setupCallbackHandlers = () => {
                     `🛠 <b>Работа: ~${formatKZT(totalWork)}</b>\n` +
                     `🔌 <b>Материалы: ~${formatKZT(totalMat)}</b>\n` +
                     `➖➖➖➖➖➖➖➖\n` +
-                    `💰 <b>ИТОГО: ~${formatKZT(totalSum)}</b>\n\n` +
-                    `<i>⚠️ Смета предварительная (+-15%). Точный расчет возможен только после замера на объекте.</i>`;
+                    `💰 <b>ИТОГО: ~${formatKZT(totalSum)}</b>`;
 
                 await bot.sendMessage(chatId, resultText, { 
                     parse_mode: 'HTML',
@@ -81,7 +107,6 @@ export const setupCallbackHandlers = () => {
                     }
                 });
 
-                // --- СОХРАНЕНИЕ И УВЕДОМЛЕНИЕ ---
                 const userRes = await db.query('SELECT id FROM users WHERE telegram_id = $1', [query.from.id]);
                 if (userRes.rows.length > 0) {
                     await db.query(
@@ -95,36 +120,31 @@ export const setupCallbackHandlers = () => {
                     `💰 <b>НОВЫЙ РАСЧЕТ</b>\n` +
                     `👤 @${query.from.username || 'скрыт'}\n` +
                     `📐 Объект: ${area} м² (${wallLabel})\n` +
-                    `💵 Работа: ${formatKZT(totalWork)}\n` +
-                    `🔌 Материалы: ${formatKZT(totalMat)}`
+                    `💵 Работа: ${formatKZT(totalWork)}`
                 );
 
-                // Очищаем временные данные, оставляем сессию в IDLE
                 session.data = {};
                 sessions.set(chatId, session);
-                
                 return bot.answerCallbackQuery(query.id);
             }
 
-            // --- ОБРАБОТКА КОНТАКТОВ (WA / TG / ЗВОНОК) ---
+            // Запросы контактов
             if (data.startsWith('contact_')) {
                 const type = data.split('_')[1];
                 const user = await db.query('SELECT phone FROM users WHERE telegram_id = $1', [query.from.id]);
                 const phone = user.rows[0]?.phone || 'Номер не найден';
 
-                let responseMsg = '🚀 Заявка принята! Мастер свяжется с вами в ближайшее время.';
-                if (type === 'wa') responseMsg = '✅ Переходите в чат WhatsApp: https://wa.me/77066066323';
-                if (type === 'tg') responseMsg = '✅ Пишите мастеру в Telegram: @yeeeerniyaz';
+                let responseMsg = '🚀 Заявка принята! Мастер свяжется с вами.';
+                if (type === 'wa') responseMsg = '✅ WhatsApp: https://wa.me/77066066323';
+                if (type === 'tg') responseMsg = '✅ Telegram: @yeeeerniyaz';
 
                 await bot.sendMessage(chatId, responseMsg);
                 
-                // Моментальное уведомление в канал с активной ссылкой
                 await notifyAdmin(
                     `🔥 <b>НУЖЕН КОНТАКТ!</b>\n` +
                     `Способ: ${type.toUpperCase()}\n` +
                     `👤 Клиент: @${query.from.username || 'скрыт'}\n` +
-                    `📱 Тел: <code>${phone}</code>\n` +
-                    `<i>Пожалуйста, свяжитесь с клиентом.</i>`
+                    `📱 Тел: <code>${phone}</code>`
                 );
                 
                 return bot.answerCallbackQuery(query.id);
@@ -132,7 +152,7 @@ export const setupCallbackHandlers = () => {
 
         } catch (error) {
             console.error('💥 [CALLBACK ERROR]', error);
-            bot.answerCallbackQuery(query.id, { text: '❌ Ошибка в обработке' });
+            bot.answerCallbackQuery(query.id, { text: '❌ Ошибка' });
         }
     });
 };

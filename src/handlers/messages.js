@@ -6,13 +6,26 @@ import { config } from '../config.js';
 export const sessions = new Map();
 
 /**
- * 📢 Senior-уведомитель для канала ProElectro LEAD
- * Позволяет тебе видеть каждое движение клиента в реальном времени.
+ * 📢 Универсальный уведомитель для канала ProElectro LEAD с кнопками CRM
  */
 export const notifyAdmin = async (text) => {
     if (config.bot.groupId) {
         try {
-            await bot.sendMessage(config.bot.groupId, text, { parse_mode: 'HTML' });
+            await bot.sendMessage(config.bot.groupId, text, { 
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '🗣 Обсуждение', callback_data: 'status_discuss' },
+                            { text: '🏗 В работе', callback_data: 'status_work' }
+                        ],
+                        [
+                            { text: '✅ Решено', callback_data: 'status_done' },
+                            { text: '❌ Отказ', callback_data: 'status_cancel' }
+                        ]
+                    ]
+                }
+            });
         } catch (e) {
             console.error('⚠️ [NOTIFY ERROR]:', e.message);
         }
@@ -39,14 +52,12 @@ const KB = {
 };
 
 export const setupMessageHandlers = () => {
-    // Команда /start - Фундамент взаимодействия
     bot.onText(/\/start/, async (msg) => {
         const chatId = msg.chat.id;
         try {
             const res = await db.query('SELECT phone FROM users WHERE telegram_id = $1', [msg.from.id]);
             
             if (res.rows.length > 0 && res.rows[0].phone) {
-                // Сбрасываем сессию в нейтральное состояние (IDLE), не закрывая доступ
                 sessions.set(chatId, { step: 'IDLE', data: {} });
                 await bot.sendMessage(chatId, `Салам, ${msg.from.first_name}! Объект ждет? Давай посчитаем.`, KB.MAIN_MENU);
             } else {
@@ -57,7 +68,6 @@ export const setupMessageHandlers = () => {
         }
     });
 
-    // Сохранение контакта и первая аналитика
     bot.on('contact', async (msg) => {
         const chatId = msg.chat.id;
         if (msg.contact.user_id !== msg.from.id) return;
@@ -79,14 +89,12 @@ export const setupMessageHandlers = () => {
         }
     });
 
-    // Основная логика обработки сообщений
     bot.on('message', async (msg) => {
         if (!msg.text || msg.text.startsWith('/') || msg.contact) return;
         
         const chatId = msg.chat.id;
         let session = sessions.get(chatId) || { step: 'IDLE', data: {} };
 
-        // 1. Начало расчета (Аналитика интереса)
         if (msg.text === '⚡️ Рассчитать смету') {
             session.step = 'WAITING_FOR_AREA';
             sessions.set(chatId, session);
@@ -98,7 +106,6 @@ export const setupMessageHandlers = () => {
             return;
         }
 
-        // 2. Обратная связь
         if (msg.text === '💬 Обратная связь') {
             await bot.sendMessage(chatId, 'Как вам удобнее связаться с мастером?', {
                 reply_markup: { 
@@ -112,7 +119,6 @@ export const setupMessageHandlers = () => {
             return;
         }
 
-        // 3. История расчетов
         if (msg.text === '📂 Мои расчеты') {
             try {
                 const res = await db.query(
@@ -135,7 +141,6 @@ export const setupMessageHandlers = () => {
             return;
         }
 
-        // 4. Шаг калькулятора: Ввод площади и выбор ТРЕХ типов стен
         if (session.step === 'WAITING_FOR_AREA') {
             const area = parseFloat(msg.text.replace(',', '.'));
             
