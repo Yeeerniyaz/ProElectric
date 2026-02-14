@@ -9,7 +9,7 @@ export const bot = new TelegramBot(config.bot.token, {
     polling: {
         // ВАЖНО: Не запускаем получение сообщений автоматически!
         // Мы сделаем bot.startPolling() позже, когда база подключится.
-        autoStart: false, 
+        autoStart: true, 
         
         // Оптимизация нагрузки (Senior tuning)
         interval: 300, // Проверять новые сообщения каждые 300мс
