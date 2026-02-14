@@ -26,13 +26,8 @@ services:
     depends_on:
       proelectro-db:
         condition: service_healthy
-    # --- УДАЛЯЕМ ЭТО ---
-    # env_file:
-    #   - .env
-    # -------------------
     
-    # --- ВСТАВЛЯЕМ ЭТО ---
-    # Мы явно прокидываем переменные из Portainer внутрь контейнера
+    # Передаем переменные из Portainer внутрь
     environment:
       BOT_TOKEN: ${BOT_TOKEN}
       GROUP_ID: ${GROUP_ID}
@@ -40,14 +35,21 @@ services:
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
-      DB_HOST: ${DB_HOST}
+      DB_HOST: proelectro-db  # Тут обычно имя сервиса базы данных
       DB_PORT: ${DB_PORT}
       WEB_PORT: ${WEB_PORT}
       SESSION_SECRET: ${SESSION_SECRET}
       ADMIN_LOGIN: ${ADMIN_LOGIN}
       ADMIN_PASS_HASH: ${ADMIN_PASS_HASH}
-    # ---------------------
     
+    # 🔥 ВАЖНО: СВЯЗЬ ФАЙЛОВ 🔥
+    # Теперь бот видит твои файлы в реальном времени.
+    # Изменил код -> Перезапустил контейнер -> Всё заработало.
+    volumes:
+      - ./src:/app/src
+      - ./index.js:/app/index.js
+      - ./package.json:/app/package.json
+      
     ports:
       - "${WEB_PORT:-3000}:3000"
     networks:
