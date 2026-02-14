@@ -68,14 +68,15 @@ export const handleLoginFlow = async (msg, isNewRegistration = false) => {
             );
         }
 
-        // 2. ПОИСК ПОЛЬЗОВАТЕЛЯ В БАЗЕ
+        // 2. ПОИСК ПОЛЬЗОВАТЕЛЯ В БАЗЕ (Делаем свежий запрос, чтобы избежать undefined)
         const userRes = await db.query('SELECT id, role, phone FROM users WHERE telegram_id = $1', [userId]);
+        const user = userRes.rows[0]; // Берем первую строку
         
-        // --- СЦЕНАРИЙ А: ЮЗЕР НЕ НАЙДЕН (РЕГИСТРАЦИЯ) ---
-        if (userRes.rows.length === 0) {
+        // --- СЦЕНАРИЙ А: ЮЗЕР ВООБЩЕ НЕ НАЙДЕН ---
+        if (!user) {
             return bot.sendMessage(chatId, 
                 `👋 <b>Добро пожаловать в команду!</b>\n\n` +
-                `Для завершения регистрации подтвердите свой номер телефона.`, 
+                `Для регистрации подтвердите свой номер телефона кнопкой ниже.`, 
                 { 
                     parse_mode: 'HTML',
                     reply_markup: {
@@ -87,12 +88,10 @@ export const handleLoginFlow = async (msg, isNewRegistration = false) => {
             );
         }
 
-        // --- СЦЕНАРИЙ Б: ЮЗЕР ЕСТЬ (ВХОД) ---
-        const user = userRes.rows[0];
-
-        // Проверка наличия телефона (для старых юзеров)
+        // --- СЦЕНАРИЙ Б: ЮЗЕР ЕСТЬ, НО НЕТ ТЕЛЕФОНА (важно для фикса undefined) ---
         if (!user.phone) {
-             return bot.sendMessage(chatId, '⚠️ Нам нужен ваш номер телефона для доступа.', {
+             console.log(`⚠️ [AUTH] Phone missing for user ${userId}`);
+             return bot.sendMessage(chatId, '⚠️ Нам нужен ваш номер телефона для генерации доступа. Нажмите кнопку ниже:', {
                 reply_markup: {
                     keyboard: [[{ text: '📱 Отправить контакт', request_contact: true }]],
                     resize_keyboard: true,
@@ -105,10 +104,12 @@ export const handleLoginFlow = async (msg, isNewRegistration = false) => {
         const tempPassword = generateRandomPassword();
         const hashedPassword = hashPassword(tempPassword);
 
+        // Обновляем пароль по внутреннему ID (это надежнее)
         await db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hashedPassword, user.id]);
 
-        // 4. ОТПРАВКА КАРТОЧКИ ДОСТУПА
-        const login = user.phone.replace(/[^0-9]/g, ''); 
+        // 4. ФОРМИРОВАНИЕ ЛОГИНА (Безопасный метод)
+        // Если телефон есть — берем цифры, если нет (что странно) — берем username или ID
+        const login = user.phone ? user.phone.replace(/[^0-9]/g, '') : (msg.from.username || `id${userId}`);
         const dashboardUrl = "https://crm.proelectro.kz"; 
 
         let text = `🔐 <b>КАРТОЧКА ДОСТУПА</b>\n`;
@@ -119,21 +120,22 @@ export const handleLoginFlow = async (msg, isNewRegistration = false) => {
         text += `🌍 <b>CRM:</b> ${dashboardUrl}\n\n`;
         
         if (isNewRegistration) {
-            text += `👋 <b>Аккаунт создан!</b> Теперь вы можете брать заказы.`;
+            text += `👋 <b>Аккаунт создан!</b> Теперь вы можете управлять заказами.`;
         } else {
             text += `⚠️ <i>Пароль обновлен. Используйте его для входа.</i>`;
         }
 
         await bot.sendMessage(chatId, text, { 
             parse_mode: 'HTML',
-            reply_markup: { remove_keyboard: true } 
+            reply_markup: { remove_keyboard: true } // Убираем кнопки регистрации, они больше не нужны
         });
         
     } catch (e) {
         console.error('💥 [AUTH ERROR]:', e);
-        bot.sendMessage(chatId, '❌ Произошла ошибка сервера.');
+        bot.sendMessage(chatId, '❌ Ошибка авторизации. Попробуйте ввести /login еще раз.');
     }
 };
+
 
 // ============================================================
 // 🎮 НАСТРОЙКА ОБРАБОТЧИКОВ
