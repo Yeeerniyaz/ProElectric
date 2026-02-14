@@ -1,29 +1,28 @@
 import { bot } from '../core.js';
 import { db } from '../db.js';
 import { config } from '../config.js';
+import { ORDER_STATUS, STATUS_CONFIG } from '../constants.js';
 
-// Хранилище сессий для управления шагами пользователя
+// Хранилище сессий для калькулятора
 export const sessions = new Map();
 
 /**
- * 📢 Senior-уведомитель для канала ProElectro LEAD
- * leadId: передаем ID из базы, чтобы кнопки управляли конкретным заказом
+ * Уведомление в админ-чат с кнопками управления заказом
  */
-export const notifyAdmin = async (text, leadId = null) => {
+export const notifyAdmin = async (text, orderId = null) => {
     if (!config.bot.groupId) return;
-
     const options = { parse_mode: 'HTML' };
 
-    if (leadId) {
+    if (orderId) {
         options.reply_markup = {
             inline_keyboard: [
                 [
-                    { text: '🗣 Обсуждение', callback_data: `status_discuss_${leadId}` },
-                    { text: '🏗 В работе', callback_data: `status_work_${leadId}` }
+                    { text: '🗣 Обсуждение', callback_data: `status_${ORDER_STATUS.DISCUSS}_${orderId}` },
+                    { text: '🏗 В работе',    callback_data: `status_${ORDER_STATUS.WORK}_${orderId}` }
                 ],
                 [
-                    { text: '✅ Решено', callback_data: `status_done_${leadId}` },
-                    { text: '❌ Отказ', callback_data: `status_cancel_${leadId}` }
+                    { text: '✅ Решено',      callback_data: `status_${ORDER_STATUS.DONE}_${orderId}` },
+                    { text: '❌ Отказ',       callback_data: `status_${ORDER_STATUS.CANCEL}_${orderId}` }
                 ]
             ]
         };
@@ -57,125 +56,166 @@ const KB = {
 
 export const setupMessageHandlers = () => {
     
-    // --- ГРУППА АДМИН-КОМАНД (stats, new, discuss, work, done, cancel, list) ---
+    // ============================================================
+    // 1. АДМИН-ПАНЕЛЬ (Команды работают в ЛС админа ИЛИ в закрытой группе)
+    // ============================================================
     bot.onText(/\/(stats|new|discuss|work|done|cancel|list)/, async (msg, match) => {
-        if (msg.from.id.toString() !== "2041384570") return;
         const cmd = match[1];
+        
+        // ПРОВЕРКА ПРАВ: Либо ты лично, либо сообщение в закрытой группе
+        const isPrivateAdmin = msg.from && msg.from.id.toString() === "2041384570";
+        const isGroupAdmin = msg.chat.id.toString() === config.bot.groupId;
+
+        if (!isPrivateAdmin && !isGroupAdmin) return;
 
         try {
+            // --- СТАТИСТИКА (/stats) ---
             if (cmd === 'stats') {
                 const res = await db.query(`
-                    SELECT status, COUNT(*), SUM(total_work_cost) as total 
-                    FROM leads GROUP BY status
+                    SELECT o.status, COUNT(*), SUM(l.total_work_cost) as total 
+                    FROM orders o
+                    JOIN leads l ON o.lead_id = l.id
+                    GROUP BY o.status
                 `);
                 
-                let statsMsg = "📊 <b>АНАЛИТИКА PROELECTRO:</b>\n\n";
-                const labels = {
-                    'new': '🆕 Новые', 'discuss': '🗣 Обсуждение', 
-                    'work': '🏗 В работе', 'done': '✅ Решено', 'cancel': '❌ Отказ'
-                };
-
+                let statsMsg = "📊 <b>ВОРОНКА ПРОДАЖ (ORDERS):</b>\n\n";
                 let grandTotal = 0;
+
                 res.rows.forEach(r => {
-                    const label = labels[r.status] || r.status;
+                    const cfg = STATUS_CONFIG[r.status] || { label: r.status, icon: '❓' };
                     const sum = Math.round(r.total || 0);
-                    statsMsg += `${label}: <b>${r.count} шт.</b> (~${sum.toLocaleString()} ₸)\n`;
-                    if (r.status !== 'cancel') grandTotal += sum;
+                    statsMsg += `${cfg.icon} ${cfg.label}: <b>${r.count} шт.</b> (~${sum.toLocaleString()} ₸)\n`;
+                    
+                    if (r.status !== ORDER_STATUS.CANCEL) grandTotal += sum;
                 });
                 
-                statsMsg += `\n💰 Потенциал (без отказов): <b>${grandTotal.toLocaleString()} ₸</b>`;
+                statsMsg += `\n💰 <b>ПОТЕНЦИАЛ: ~${grandTotal.toLocaleString()} ₸</b>`;
                 return bot.sendMessage(msg.chat.id, statsMsg, { parse_mode: 'HTML' });
             }
 
+            // --- СПИСКИ ЗАКАЗОВ (/list, /new, /work ...) ---
             const statusFilter = cmd === 'list' ? '%' : cmd;
             const res = await db.query(`
-                SELECT l.id, u.first_name, u.phone, l.area, l.total_work_cost, l.status, l.created_at 
-                FROM leads l 
-                JOIN users u ON l.user_id = u.id 
-                WHERE l.status LIKE $1 
-                ORDER BY l.created_at DESC LIMIT 20
+                SELECT o.id, u.first_name, u.phone, l.area, l.total_work_cost, o.status, o.created_at 
+                FROM orders o 
+                JOIN users u ON o.user_id = u.id 
+                JOIN leads l ON o.lead_id = l.id
+                WHERE o.status LIKE $1 
+                ORDER BY o.created_at DESC LIMIT 15
             `, [statusFilter]);
 
             if (res.rows.length === 0) {
-                return bot.sendMessage(msg.chat.id, `📭 Категория [${cmd.toUpperCase()}] пуста.`);
+                return bot.sendMessage(msg.chat.id, `📭 В категории [${cmd.toUpperCase()}] пока пусто.`);
             }
 
-            let response = `📋 <b>СПИСОК [${cmd.toUpperCase()}]:</b>\n\n`;
+            let response = `📋 <b>СПИСОК ЗАКАЗОВ [${cmd.toUpperCase()}]:</b>\n\n`;
             res.rows.forEach((row, i) => {
                 const date = new Date(row.created_at).toLocaleDateString('ru-RU');
-                response += `${i + 1}. ID: ${row.id} | 👤 ${row.first_name}\n`;
-                response += `   📱 <code>${row.phone}</code> | 📐 ${row.area}м²\n`;
-                response += `   💰 ~${Math.round(row.total_work_cost).toLocaleString()}₸ | [${row.status}] | ${date}\n\n`;
+                const cfg = STATUS_CONFIG[row.status];
+                
+                response += `${i + 1}. <b>Заказ #${row.id}</b> | ${cfg?.icon || ''}\n`;
+                response += `   👤 ${row.first_name} | 📱 <code>${row.phone}</code>\n`;
+                response += `   📐 ${row.area}м² | 💰 ~${Math.round(row.total_work_cost).toLocaleString()}₸ | ${date}\n\n`;
             });
 
             await bot.sendMessage(msg.chat.id, response, { parse_mode: 'HTML' });
+
         } catch (e) {
             console.error('💥 [CRM CMD ERROR]:', e);
         }
     });
 
-    // --- СТАНДАРТНЫЕ ФУНКЦИИ ---
+    // ============================================================
+    // 2. КЛИЕНТСКАЯ ЛОГИКА (Для обычных юзеров)
+    // ============================================================
+    
+    // Команда /start
     bot.onText(/\/start/, async (msg) => {
         const chatId = msg.chat.id;
-        try {
-            const res = await db.query('SELECT phone FROM users WHERE telegram_id = $1', [msg.from.id]);
-            if (res.rows.length > 0 && res.rows[0].phone) {
-                sessions.set(chatId, { step: 'IDLE', data: {} });
-                await bot.sendMessage(chatId, `Салам, ${msg.from.first_name}! Объект ждет? Давай посчитаем.`, KB.MAIN_MENU);
-            } else {
-                await bot.sendMessage(chatId, '👋 Привет! Я бот ProElectro. Подтверди номер, чтобы пользоваться калькулятором.', KB.CONTACT);
-            }
-        } catch (e) { console.error(e); }
+        const res = await db.query('SELECT phone FROM users WHERE telegram_id = $1', [msg.from.id]);
+        
+        if (res.rows.length > 0 && res.rows[0].phone) {
+            sessions.set(chatId, { step: 'IDLE', data: {} });
+            await bot.sendMessage(chatId, `Салам, ${msg.from.first_name}! Готов считать объекты.`, KB.MAIN_MENU);
+        } else {
+            await bot.sendMessage(chatId, '👋 Привет! Для начала работы нажмите кнопку ниже:', KB.CONTACT);
+        }
     });
 
+    // Получение контакта (Регистрация)
     bot.on('contact', async (msg) => {
         const chatId = msg.chat.id;
         if (msg.contact.user_id !== msg.from.id) return;
-        await db.upsertUser(msg.from.id, msg.from.first_name, msg.from.username, msg.contact.phone_number);
+        
+        // Сохраняем и получаем статус (new/active)
+        const user = await db.upsertUser(msg.from.id, msg.from.first_name, msg.from.username, msg.contact.phone_number);
+        
         sessions.set(chatId, { step: 'IDLE', data: {} });
         
-        await notifyAdmin(
-            `🆕 <b>НОВЫЙ ПОЛЬЗОВАТЕЛЬ</b>\n` +
-            `👤 Имя: ${msg.from.first_name}\n` +
-            `📱 Тел: <code>${msg.contact.phone_number}</code>`,
-            null // Тут кнопок CRM не нужно
-        );
-        
-        await bot.sendMessage(chatId, '✅ Доступ открыт!', KB.MAIN_MENU);
+        // УВЕДОМЛЯЕМ АДМИНА ТОЛЬКО ЕСЛИ ЭТО НОВИЧОК
+        if (user.status === 'new') {
+            await notifyAdmin(
+                `🆕 <b>НОВЫЙ КЛИЕНТ ЗАРЕГИСТРИРОВАЛСЯ!</b>\n` +
+                `👤 Имя: ${msg.from.first_name}\n` +
+                `📱 Тел: <code>${msg.contact.phone_number}</code>`
+            );
+            // Сразу помечаем как "активного", чтобы не спамить
+            await db.query("UPDATE users SET status = 'active' WHERE id = $1", [user.id]);
+        }
+
+        await bot.sendMessage(chatId, '✅ Отлично! Доступ к калькулятору открыт.', KB.MAIN_MENU);
     });
 
+    // Текстовые сообщения (Калькулятор)
     bot.on('message', async (msg) => {
         if (!msg.text || msg.text.startsWith('/') || msg.contact) return;
         const chatId = msg.chat.id;
+        
+        // Если пишет в админ-группу, бот не должен пытаться считать смету
+        if (chatId.toString() === config.bot.groupId) return;
+
         let session = sessions.get(chatId) || { step: 'IDLE', data: {} };
 
+        // КНОПКА "РАССЧИТАТЬ СМЕТУ"
         if (msg.text === '⚡️ Рассчитать смету') {
             session.step = 'WAITING_FOR_AREA';
             sessions.set(chatId, session);
-            await bot.sendMessage(chatId, '📏 Введите площадь помещения в м²:', { reply_markup: { remove_keyboard: true } });
+            await bot.sendMessage(chatId, '📏 Введите площадь помещения (м²):', { reply_markup: { remove_keyboard: true } });
             return;
         }
 
+        // КНОПКА "МОИ РАСЧЕТЫ"
         if (msg.text === '📂 Мои расчеты') {
-            const res = await db.query('SELECT area, total_work_cost FROM leads WHERE user_id = (SELECT id FROM users WHERE telegram_id = $1) ORDER BY created_at DESC LIMIT 3', [msg.from.id]);
-            if (res.rows.length === 0) return bot.sendMessage(chatId, 'Расчетов нет.', KB.MAIN_MENU);
+            const res = await db.query(
+                'SELECT area, total_work_cost, created_at FROM leads WHERE user_id = (SELECT id FROM users WHERE telegram_id = $1) ORDER BY created_at DESC LIMIT 3', 
+                [msg.from.id]
+            );
+            if (res.rows.length === 0) return bot.sendMessage(chatId, '📭 История расчетов пуста.', KB.MAIN_MENU);
+            
             let text = '📂 <b>Ваши последние расчеты:</b>\n\n';
-            res.rows.forEach(r => text += `— ${r.area} м²: ~${Math.round(r.total_work_cost).toLocaleString()} ₸\n`);
+            res.rows.forEach((r, i) => {
+                const date = new Date(r.created_at).toLocaleDateString();
+                text += `${i+1}. ${r.area} м² — ${Math.round(r.total_work_cost).toLocaleString()} ₸ (${date})\n`;
+            });
             await bot.sendMessage(chatId, text, { parse_mode: 'HTML' }, KB.MAIN_MENU);
             return;
         }
 
+        // ШАГ 1: ПОЛУЧЕНИЕ ПЛОЩАДИ
         if (session.step === 'WAITING_FOR_AREA') {
             const area = parseFloat(msg.text.replace(',', '.'));
-            if (isNaN(area) || area <= 0) return bot.sendMessage(chatId, '⚠️ Введите число.');
+            if (isNaN(area) || area <= 0) {
+                return bot.sendMessage(chatId, '⚠️ Пожалуйста, введите корректное число (например: 65)');
+            }
             session.data.area = area;
             session.step = 'WAITING_FOR_WALLS';
             sessions.set(chatId, session);
-            await bot.sendMessage(chatId, `Объект: ${area} м². Какая сложность стен?`, {
+            
+            await bot.sendMessage(chatId, `🏢 Объект: ${area} м².\nИз чего сделаны стены?`, {
                 reply_markup: { inline_keyboard: [
-                    [{ text: '🟢 Легкие', callback_data: 'wall_light' }],
-                    [{ text: '🟡 Средние', callback_data: 'wall_medium' }],
-                    [{ text: '🔴 Тяжелые', callback_data: 'wall_heavy' }]
+                    [{ text: '🟢 Легкие (ГКЛ/Газоблок)', callback_data: 'wall_light' }],
+                    [{ text: '🟡 Средние (Кирпич)',      callback_data: 'wall_medium' }],
+                    [{ text: '🔴 Тяжелые (Бетон/Монолит)', callback_data: 'wall_heavy' }]
                 ]}
             });
         }
