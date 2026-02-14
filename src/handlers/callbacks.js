@@ -1,11 +1,10 @@
 import { bot } from '../core.js';
 import { db } from '../db.js';
-import { config } from '../config.js';
-import { sessions } from './messages.js';
+import { sessions, notifyAdmin } from './messages.js';
 
 /**
  * 🛠 Форматтер валюты (Казахстанский тенге)
- * Senior-подход: использование международного стандарта Intl для точности
+ * Использование международного стандарта Intl для точности расчетов.
  */
 const formatKZT = (num) => {
     return new Intl.NumberFormat('ru-KZ', { 
@@ -23,162 +22,117 @@ export const setupCallbackHandlers = () => {
         const messageId = query.message.message_id;
         const session = sessions.get(chatId);
 
-        // Проверка сессии: защита от падения, если юзер нажал кнопку после перезагрузки сервера
+        // Fail-safe: защита от нажатий на старые кнопки после перезапуска
         if (!session) {
             return bot.answerCallbackQuery(query.id, { text: '⚠️ Сессия устарела. Введите /start' });
         }
 
         try {
-            // --- ШАГ 2: ВЫБОР СТЕН -> ПЕРЕХОД К ТИПУ МОНТАЖА ---
+            // --- ЭТАП 2: ВЫБОР СТЕН (Три уровня сложности) ---
             if (data.startsWith('wall_')) {
-                // Сохраняем выбор стен
                 session.data.wallType = data.replace('wall_', '');
-                session.step = 'WAITING_FOR_MOUNTING';
-                sessions.set(chatId, session);
-
-                // Редактируем старое сообщение (UX лучше, чем слать новое)
-                await bot.editMessageText(
-                    `🧱 Стены: <b>${session.data.wallType.toUpperCase()}</b>\n\n` +
-                    `<b>Шаг 3 из 4: Тип монтажа</b>\nГде прокладываем основные трассы?`, 
-                    {
-                        chat_id: chatId,
-                        message_id: messageId,
-                        parse_mode: 'HTML',
-                        reply_markup: {
-                            inline_keyboard: [
-                                [{ text: '☁️ По потолку (в гофре)', callback_data: 'mount_ceiling' }],
-                                [{ text: '🚜 По полу (в стяжке)', callback_data: 'mount_floor' }]
-                            ]
-                        }
-                    }
-                );
-                return bot.answerCallbackQuery(query.id);
-            }
-
-            // --- ШАГ 3: ТИП МОНТАЖА -> ВЫБОР БРЕНДА ---
-            if (data.startsWith('mount_')) {
-                session.data.mountingType = data.replace('mount_', '');
-                session.step = 'WAITING_FOR_BRAND';
-                sessions.set(chatId, session);
-
-                await bot.editMessageText(
-                    `⚙️ Монтаж: <b>${session.data.mountingType === 'ceiling' ? 'ПОТОЛОК' : 'ПОЛ'}</b>\n\n` +
-                    `<b>Шаг 4 из 4: Уровень оборудования</b>\nВыбери надежность и бюджет:`, 
-                    {
-                        chat_id: chatId,
-                        message_id: messageId,
-                        parse_mode: 'HTML',
-                        reply_markup: {
-                            inline_keyboard: [
-                                [{ text: '🥉 Эконом (IEK / Karat)', callback_data: 'brand_economy' }],
-                                [{ text: '🥈 Стандарт (Schneider / Resi9)', callback_data: 'brand_standard' }],
-                                [{ text: '🥇 Премиум (ABB / Hager)', callback_data: 'brand_premium' }]
-                            ]
-                        }
-                    }
-                );
-                return bot.answerCallbackQuery(query.id);
-            }
-
-            // --- ШАГ 4: ВЫБОР БРЕНДА И ФИНАЛЬНЫЙ РАСЧЕТ ---
-            if (data.startsWith('brand_')) {
-                session.data.brandLevel = data.replace('brand_', '');
+                session.step = 'IDLE'; // Сбрасываем в ожидание для корректной работы меню
                 
-                // Показываем юзеру, что бот "думает"
-                bot.sendChatAction(chatId, 'typing');
+                const area = session.data.area;
 
-                // 🧮 ТЯНЕМ АКТУАЛЬНЫЕ ЦЕНЫ ИЗ ТВОЕГО "ДАШБОРДА" (SQL Settings)
+                // 🧮 ЭМПИРИЧЕСКИЙ РАСЧЕТ (Профессиональные коэффициенты)
+                const estCable = Math.ceil(area * 5);        // В среднем 5 метров на 1 м²
+                const estPoints = Math.ceil(area * 0.9);     // В среднем 0.9 точки на 1 м²
+                const estShield = Math.ceil(area / 15) + 4;  // Автоматы (1 на 15м² + 4 силовых)
+                const matCostM2 = 4000;                      // Средняя цена черновых материалов на м² в Алматы
+
+                // Тянем цены из БД или используем рыночные дефолты
                 const settings = await db.getSettings();
                 
-                // --- ЛОГИКА РАСЧЕТА (Senior Calc) ---
-                
-                // 1. Расчет работы
-                // Базовая цена точки (если нет в БД, берем 4500)
-                const basePrice = settings[`wall_${session.data.wallType}`] || 4500;
-                
-                // Наценка за сложность монтажа (потолок обычно дороже/дешевле пола)
-                const markup = settings[`markup_${session.data.mountingType}`] || 1.0;
-                
-                // Кол-во точек (Эвристика: 1.5 точки на м2)
-                const pointsCount = Math.ceil(session.data.area * 1.5); 
-                
-                const totalWork = pointsCount * basePrice * markup;
+                const wallPrices = {
+                    'light': parseInt(settings.wall_light) || 4500,   // Газоблок/ГКЛ
+                    'medium': parseInt(settings.wall_medium) || 5500,  // Кирпич
+                    'heavy': parseInt(settings.wall_heavy) || 7500    // Монолит/Бетон
+                };
 
-                // 2. Расчет материалов
-                // Цена материалов за м2 зависит от бренда (Эконом/Премиум)
-                const matPriceKey = `mat_m2_${session.data.brandLevel}`;
-                const matPricePerM2 = settings[matPriceKey] || 3500; // Дефолт 3500 тг/м2
-                
-                const totalMat = session.data.area * matPricePerM2;
-
+                const pricePerPoint = wallPrices[session.data.wallType] || 5500;
+                const totalWork = estPoints * pricePerPoint;
+                const totalMat = area * matCostM2;
                 const totalSum = totalWork + totalMat;
 
-                // --- СОХРАНЕНИЕ ЛИДА В БД ДЛЯ АНАЛИТИКИ ---
-                try {
-                    const userRes = await db.query('SELECT id FROM users WHERE telegram_id = $1', [query.from.id]);
-                    if (userRes.rows.length > 0) {
-                        await db.query(
-                            `INSERT INTO leads (user_id, area, wall_type, mounting_type, brand_level, total_work_cost, total_mat_cost)
-                             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                            [userRes.rows[0].id, session.data.area, session.data.wallType, session.data.mountingType, session.data.brandLevel, totalWork, totalMat]
-                        );
-                    }
-                } catch (e) {
-                    console.error('Ошибка сохранения лида:', e);
-                }
+                const wallLabel = { 'light': 'Легкие', 'medium': 'Средние', 'heavy': 'Тяжелые' }[session.data.wallType];
 
-                // Формируем красивый чек
+                // 📄 ФОРМИРОВАНИЕ ПОДРОБНОЙ СМЕТЫ
                 const resultText = 
-                    `✅ <b>Ваш расчет готов!</b>\n\n` +
-                    `📐 Площадь: ${session.data.area} м²\n` +
-                    `🧱 Стены: ${session.data.wallType === 'concrete' ? 'Бетон' : 'Кирпич'}\n` +
-                    `⚡️ Класс: ${session.data.brandLevel.toUpperCase()}\n` +
-                    `➖➖➖➖➖➖➖➖\n` +
+                    `✅ <b>ПОЛНЫЙ РАСЧЕТ ДЛЯ ${area} м²</b>\n\n` +
+                    `🧱 Стены: <b>${wallLabel}</b>\n` +
+                    `🛠 <b>Примерная спецификация:</b>\n` +
+                    `— Кабель (ВВГнг-LS): <b>~${estCable} м.</b>\n` +
+                    `— Электроточки (подрозетники): <b>~${estPoints} шт.</b>\n` +
+                    `— Щит (автоматы/модули): <b>~${estShield} мод.</b>\n\n` +
                     `🛠 <b>Работа: ~${formatKZT(totalWork)}</b>\n` +
                     `🔌 <b>Материалы: ~${formatKZT(totalMat)}</b>\n` +
                     `➖➖➖➖➖➖➖➖\n` +
                     `💰 <b>ИТОГО: ~${formatKZT(totalSum)}</b>\n\n` +
-                    `<i>⚠️ Это предварительная смета (+-15%). Мы работаем честно: оплата за работу и материалы раздельно.</i>`;
+                    `<i>⚠️ Смета предварительная (+-15%). Точный расчет возможен только после замера на объекте.</i>`;
 
-                // Отправляем результат (новое сообщение, чтобы чек сохранился в истории)
-                await bot.sendMessage(chatId, resultText, {
+                await bot.sendMessage(chatId, resultText, { 
                     parse_mode: 'HTML',
                     reply_markup: {
                         inline_keyboard: [
-                            [{ text: '📦 Заказать закуп под ключ (30к)', callback_data: 'order_procurement' }],
-                            [{ text: '👷‍♂️ Вызвать инженера на замер', callback_data: 'order_zamer' }]
+                            [{ text: '🟢 Обсудить в WhatsApp', callback_data: 'contact_wa' }],
+                            [{ text: '👷‍♂️ Записаться на замер', callback_data: 'contact_call' }]
                         ]
                     }
                 });
 
-                sessions.delete(chatId); // Очищаем сессию (задача выполнена)
+                // --- СОХРАНЕНИЕ И УВЕДОМЛЕНИЕ ---
+                const userRes = await db.query('SELECT id FROM users WHERE telegram_id = $1', [query.from.id]);
+                if (userRes.rows.length > 0) {
+                    await db.query(
+                        `INSERT INTO leads (user_id, area, wall_type, total_work_cost, total_mat_cost)
+                         VALUES ($1, $2, $3, $4, $5)`,
+                        [userRes.rows[0].id, area, session.data.wallType, totalWork, totalMat]
+                    );
+                }
+
+                await notifyAdmin(
+                    `💰 <b>НОВЫЙ РАСЧЕТ</b>\n` +
+                    `👤 @${query.from.username || 'скрыт'}\n` +
+                    `📐 Объект: ${area} м² (${wallLabel})\n` +
+                    `💵 Работа: ${formatKZT(totalWork)}\n` +
+                    `🔌 Материалы: ${formatKZT(totalMat)}`
+                );
+
+                // Очищаем временные данные, оставляем сессию в IDLE
+                session.data = {};
+                sessions.set(chatId, session);
+                
                 return bot.answerCallbackQuery(query.id);
             }
 
-            // --- ОБРАБОТКА ЗАЯВОК (Замер / Закуп) ---
-            if (data === 'order_zamer' || data === 'order_procurement') {
-                const isProcurement = data === 'order_procurement';
+            // --- ОБРАБОТКА КОНТАКТОВ (WA / TG / ЗВОНОК) ---
+            if (data.startsWith('contact_')) {
+                const type = data.split('_')[1];
+                const user = await db.query('SELECT phone FROM users WHERE telegram_id = $1', [query.from.id]);
+                const phone = user.rows[0]?.phone || 'Номер не найден';
+
+                let responseMsg = '🚀 Заявка принята! Мастер свяжется с вами в ближайшее время.';
+                if (type === 'wa') responseMsg = '✅ Переходите в чат WhatsApp: https://wa.me/77066066323';
+                if (type === 'tg') responseMsg = '✅ Пишите мастеру в Telegram: @yeeeerniyaz';
+
+                await bot.sendMessage(chatId, responseMsg);
                 
-                await bot.sendMessage(chatId, '🚀 Заявка принята! Инженер свяжется с вами в течение 15 минут.');
+                // Моментальное уведомление в канал с активной ссылкой
+                await notifyAdmin(
+                    `🔥 <b>НУЖЕН КОНТАКТ!</b>\n` +
+                    `Способ: ${type.toUpperCase()}\n` +
+                    `👤 Клиент: @${query.from.username || 'скрыт'}\n` +
+                    `📱 Тел: <code>${phone}</code>\n` +
+                    `<i>Пожалуйста, свяжитесь с клиентом.</i>`
+                );
                 
-                if (config.bot.groupId) {
-                    const typeText = isProcurement ? '📦 ЗАКУП МАТЕРИАЛОВ' : '👷‍♂️ ЗАМЕР ОБЪЕКТА';
-                    const username = query.from.username ? `@${query.from.username}` : 'Без юзернейма';
-                    
-                    bot.sendMessage(config.bot.groupId, 
-                        `🔥 <b>ГОРЯЧИЙ ЛИД: ${typeText}</b>\n` +
-                        `👤 Клиент: ${username}\n` +
-                        `📱 ID: <code>${query.from.id}</code>\n` +
-                        `Клиент уже в базе, можно звонить!`, 
-                        { parse_mode: 'HTML' }
-                    );
-                }
-                return bot.answerCallbackQuery(query.id, { text: 'Отправлено!' });
+                return bot.answerCallbackQuery(query.id);
             }
 
         } catch (error) {
             console.error('💥 [CALLBACK ERROR]', error);
-            bot.answerCallbackQuery(query.id, { text: '❌ Ошибка в расчетах' });
+            bot.answerCallbackQuery(query.id, { text: '❌ Ошибка в обработке' });
         }
     });
 };
