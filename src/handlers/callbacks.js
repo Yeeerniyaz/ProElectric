@@ -31,35 +31,38 @@ export const setupCallbackHandlers = () => {
             }
 
             if (statusText) {
-                let originalText = query.message.text || "";
-                // Очищаем текст от предыдущих меток статуса, если они были
-                originalText = originalText.replace(/^.*СТАТУС:.*\n\n/g, '');
+                const originalText = query.message.text || "";
+                const cleanedText = originalText.replace(/^.*СТАТУС:.*\n\n/g, '');
+                const updatedText = `${icon} <b>СТАТУС: ${statusText}</b>\n\n${cleanedText}`;
 
-                const updatedText = `${icon} <b>СТАТУС: ${statusText}</b>\n\n${originalText}`;
+                if (originalText === updatedText) {
+                    return bot.answerCallbackQuery(query.id, { text: `Уже стоит статус: ${statusText}` });
+                }
 
                 try {
                     await bot.editMessageText(updatedText, {
                         chat_id: chatId,
                         message_id: messageId,
                         parse_mode: 'HTML',
-                        reply_markup: query.message.reply_markup // Оставляем кнопки управления
+                        reply_markup: query.message.reply_markup 
                     });
-                    return bot.answerCallbackQuery(query.id, { text: `Статус: ${statusText}` });
+                    return bot.answerCallbackQuery(query.id, { text: `Статус изменен на: ${statusText}` });
                 } catch (e) {
+                    if (e.message.includes('message is not modified')) {
+                        return bot.answerCallbackQuery(query.id);
+                    }
                     console.error('CRM Update Error:', e.message);
                     return bot.answerCallbackQuery(query.id);
                 }
             }
         }
 
-        // --- ОБЫЧНАЯ ЛОГИКА БОТА ---
         const session = sessions.get(chatId);
         if (!session) {
             return bot.answerCallbackQuery(query.id, { text: '⚠️ Сессия устарела. Введите /start' });
         }
 
         try {
-            // Расчет сметы по типу стен
             if (data.startsWith('wall_')) {
                 session.data.wallType = data.replace('wall_', '');
                 session.step = 'IDLE'; 
@@ -116,11 +119,13 @@ export const setupCallbackHandlers = () => {
                     );
                 }
 
+                // Уведомление о РАСЧЕТЕ — добавляем кнопки CRM (true)
                 await notifyAdmin(
                     `💰 <b>НОВЫЙ РАСЧЕТ</b>\n` +
                     `👤 @${query.from.username || 'скрыт'}\n` +
                     `📐 Объект: ${area} м² (${wallLabel})\n` +
-                    `💵 Работа: ${formatKZT(totalWork)}`
+                    `💵 Работа: ${formatKZT(totalWork)}`,
+                    true
                 );
 
                 session.data = {};
@@ -128,7 +133,6 @@ export const setupCallbackHandlers = () => {
                 return bot.answerCallbackQuery(query.id);
             }
 
-            // Запросы контактов
             if (data.startsWith('contact_')) {
                 const type = data.split('_')[1];
                 const user = await db.query('SELECT phone FROM users WHERE telegram_id = $1', [query.from.id]);
@@ -140,11 +144,13 @@ export const setupCallbackHandlers = () => {
 
                 await bot.sendMessage(chatId, responseMsg);
                 
+                // Уведомление о контакте — без кнопок CRM (false), чтобы не спамить
                 await notifyAdmin(
                     `🔥 <b>НУЖЕН КОНТАКТ!</b>\n` +
                     `Способ: ${type.toUpperCase()}\n` +
                     `👤 Клиент: @${query.from.username || 'скрыт'}\n` +
-                    `📱 Тел: <code>${phone}</code>`
+                    `📱 Тел: <code>${phone}</code>`,
+                    false
                 );
                 
                 return bot.answerCallbackQuery(query.id);

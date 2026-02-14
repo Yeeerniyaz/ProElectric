@@ -6,29 +6,33 @@ import { config } from '../config.js';
 export const sessions = new Map();
 
 /**
- * 📢 Универсальный уведомитель для канала ProElectro LEAD с кнопками CRM
+ * 📢 Senior-уведомитель для канала ProElectro LEAD
+ * isLead: если true — добавляем кнопки CRM, если false — просто текст (для регистраций)
  */
-export const notifyAdmin = async (text) => {
-    if (config.bot.groupId) {
-        try {
-            await bot.sendMessage(config.bot.groupId, text, { 
-                parse_mode: 'HTML',
-                reply_markup: {
-                    inline_keyboard: [
-                        [
-                            { text: '🗣 Обсуждение', callback_data: 'status_discuss' },
-                            { text: '🏗 В работе', callback_data: 'status_work' }
-                        ],
-                        [
-                            { text: '✅ Решено', callback_data: 'status_done' },
-                            { text: '❌ Отказ', callback_data: 'status_cancel' }
-                        ]
-                    ]
-                }
-            });
-        } catch (e) {
-            console.error('⚠️ [NOTIFY ERROR]:', e.message);
-        }
+export const notifyAdmin = async (text, isLead = false) => {
+    if (!config.bot.groupId) return;
+
+    const options = { parse_mode: 'HTML' };
+
+    if (isLead) {
+        options.reply_markup = {
+            inline_keyboard: [
+                [
+                    { text: '🗣 Обсуждение', callback_data: 'status_discuss' },
+                    { text: '🏗 В работе', callback_data: 'status_work' }
+                ],
+                [
+                    { text: '✅ Решено', callback_data: 'status_done' },
+                    { text: '❌ Отказ', callback_data: 'status_cancel' }
+                ]
+            ]
+        };
+    }
+
+    try {
+        await bot.sendMessage(config.bot.groupId, text, options);
+    } catch (e) {
+        console.error('⚠️ [NOTIFY ERROR]:', e.message);
     }
 };
 
@@ -52,11 +56,40 @@ const KB = {
 };
 
 export const setupMessageHandlers = () => {
+    // СЕКРЕТНАЯ КОМАНДА: Выгрузка списка всех лидов для тебя
+    bot.onText(/\/list/, async (msg) => {
+        // Доступ только для Ернияза
+        if (msg.from.id.toString() !== "2041384570") return;
+
+        try {
+            const res = await db.query(`
+                SELECT u.first_name, u.phone, l.area, l.total_work_cost, l.created_at 
+                FROM leads l 
+                JOIN users u ON l.user_id = u.id 
+                ORDER BY l.created_at DESC LIMIT 20
+            `);
+
+            if (res.rows.length === 0) {
+                return bot.sendMessage(msg.chat.id, "📭 Список лидов пока пуст.");
+            }
+
+            let response = "📋 <b>ПОСЛЕДНИЕ 20 ЗАЯВОК:</b>\n\n";
+            res.rows.forEach((row, i) => {
+                const date = new Date(row.created_at).toLocaleDateString('ru-RU');
+                response += `${i + 1}. 👤 ${row.first_name} | 📱 <code>${row.phone}</code>\n`;
+                response += `   📐 ${row.area}м² | 💰 ~${Math.round(row.total_work_cost).toLocaleString()}₸ | 📅 ${date}\n\n`;
+            });
+
+            await bot.sendMessage(msg.chat.id, response, { parse_mode: 'HTML' });
+        } catch (e) {
+            console.error('💥 [LIST ERROR]:', e);
+        }
+    });
+
     bot.onText(/\/start/, async (msg) => {
         const chatId = msg.chat.id;
         try {
             const res = await db.query('SELECT phone FROM users WHERE telegram_id = $1', [msg.from.id]);
-            
             if (res.rows.length > 0 && res.rows[0].phone) {
                 sessions.set(chatId, { step: 'IDLE', data: {} });
                 await bot.sendMessage(chatId, `Салам, ${msg.from.first_name}! Объект ждет? Давай посчитаем.`, KB.MAIN_MENU);
@@ -76,11 +109,13 @@ export const setupMessageHandlers = () => {
             await db.upsertUser(msg.from.id, msg.from.first_name, msg.from.username, msg.contact.phone_number);
             sessions.set(chatId, { step: 'IDLE', data: {} });
             
+            // Простое уведомление без кнопок CRM
             await notifyAdmin(
-                `🆕 <b>НОВЫЙ КЛИЕНТ В БАЗЕ</b>\n` +
+                `🆕 <b>НОВЫЙ ПОЛЬЗОВАТЕЛЬ</b>\n` +
                 `👤 Имя: ${msg.from.first_name}\n` +
                 `📱 Тел: <code>${msg.contact.phone_number}</code>\n` +
-                `🔗 Линк: @${msg.from.username || 'скрыт'}`
+                `🔗 Линк: @${msg.from.username || 'скрыт'}`,
+                false
             );
             
             await bot.sendMessage(chatId, '✅ Доступ открыт! Теперь ты можешь рассчитать смету.', KB.MAIN_MENU);
@@ -91,7 +126,6 @@ export const setupMessageHandlers = () => {
 
     bot.on('message', async (msg) => {
         if (!msg.text || msg.text.startsWith('/') || msg.contact) return;
-        
         const chatId = msg.chat.id;
         let session = sessions.get(chatId) || { step: 'IDLE', data: {} };
 
@@ -99,7 +133,9 @@ export const setupMessageHandlers = () => {
             session.step = 'WAITING_FOR_AREA';
             sessions.set(chatId, session);
             
-            await notifyAdmin(`🔍 @${msg.from.username || msg.from.id} зашел в калькулятор...`);
+            // Уведомление о проявленном интересе (без кнопок)
+            await notifyAdmin(`🔍 @${msg.from.username || msg.from.id} зашел в калькулятор...`, false);
+            
             await bot.sendMessage(chatId, '📏 Введите площадь помещения в м² (например, 65):', {
                 reply_markup: { remove_keyboard: true }
             });
@@ -143,11 +179,9 @@ export const setupMessageHandlers = () => {
 
         if (session.step === 'WAITING_FOR_AREA') {
             const area = parseFloat(msg.text.replace(',', '.'));
-            
             if (isNaN(area) || area <= 0) {
                 return bot.sendMessage(chatId, '⚠️ Введите корректное число (площадь).');
             }
-
             session.data.area = area;
             session.step = 'WAITING_FOR_WALLS';
             sessions.set(chatId, session);
