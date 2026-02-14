@@ -56,25 +56,26 @@ const KB = {
 
 export const setupMessageHandlers = () => {
     
+// ============================================================
+    // 1. АДМИН-ПАНЕЛЬ (Универсальный обработчик для ЛС и КАНАЛОВ)
     // ============================================================
-    // 1. АДМИН-ПАНЕЛЬ
-    // ============================================================
-    bot.onText(/\/(stats|new|discuss|work|done|cancel|list)/, async (msg, match) => {
+    
+    const handleAdminCommand = async (msg, match) => {
         const cmd = match[1];
         const chatId = msg.chat.id.toString();
         const myAdminId = "2041384570";
         const groupAdminId = config.bot.groupId ? config.bot.groupId.toString() : '';
 
-        // ЛОГИ ДЛЯ ОТЛАДКИ (Потом можно убрать)
-        console.log(`[CMD] /${cmd} from ${chatId} (User: ${msg.from.id})`);
-
+        // Проверка прав: ты в ЛС или пост в твоем канале/группе
         const isPrivateAdmin = msg.from && msg.from.id.toString() === myAdminId;
         const isGroupAdmin = groupAdminId && chatId === groupAdminId;
 
         if (!isPrivateAdmin && !isGroupAdmin) {
-            console.log(`❌ [ACCESS DENIED] ChatID: ${chatId} !== GroupID: ${groupAdminId}`);
+            console.log(`❌ [ACCESS DENIED] ChatID: ${chatId}`);
             return;
         }
+
+        console.log(`👇 [DEBUG] Команда /${cmd} принята в чате ${chatId}`);
 
         try {
             // --- СТАТИСТИКА (/stats) ---
@@ -93,12 +94,11 @@ export const setupMessageHandlers = () => {
                     const cfg = STATUS_CONFIG[r.status] || { label: r.status, icon: '❓' };
                     const sum = Math.round(r.total || 0);
                     statsMsg += `${cfg.icon} ${cfg.label}: <b>${r.count} шт.</b> (~${sum.toLocaleString()} ₸)\n`;
-                    
                     if (r.status !== ORDER_STATUS.CANCEL) grandTotal += sum;
                 });
                 
                 statsMsg += `\n💰 <b>ПОТЕНЦИАЛ: ~${grandTotal.toLocaleString()} ₸</b>`;
-                return bot.sendMessage(msg.chat.id, statsMsg, { parse_mode: 'HTML' });
+                return bot.sendMessage(chatId, statsMsg, { parse_mode: 'HTML' });
             }
 
             // --- СПИСКИ ЗАКАЗОВ (/list, /new...) ---
@@ -113,7 +113,7 @@ export const setupMessageHandlers = () => {
             `, [statusFilter]);
 
             if (res.rows.length === 0) {
-                return bot.sendMessage(msg.chat.id, `📭 В категории [${cmd.toUpperCase()}] пусто.`);
+                return bot.sendMessage(chatId, `📭 В категории [${cmd.toUpperCase()}] пусто.`);
             }
 
             let response = `📋 <b>СПИСОК ЗАКАЗОВ [${cmd.toUpperCase()}]:</b>\n\n`;
@@ -126,10 +126,21 @@ export const setupMessageHandlers = () => {
                 response += `   📐 ${row.area}м² | 💰 ~${Math.round(row.total_work_cost).toLocaleString()}₸ | ${date}\n\n`;
             });
 
-            await bot.sendMessage(msg.chat.id, response, { parse_mode: 'HTML' });
+            await bot.sendMessage(chatId, response, { parse_mode: 'HTML' });
 
         } catch (e) {
             console.error('💥 [CRM CMD ERROR]:', e);
+        }
+    };
+
+    // Слушаем команды в обычных чатах/группах
+    bot.onText(/\/(stats|new|discuss|work|done|cancel|list)/, handleAdminCommand);
+
+    // 🔥 ДОПОЛНИТЕЛЬНО: Слушаем посты в КАНАЛАХ
+    bot.on('channel_post', (msg) => {
+        const match = msg.text ? msg.text.match(/\/(stats|new|discuss|work|done|cancel|list)/) : null;
+        if (match) {
+            handleAdminCommand(msg, match);
         }
     });
 
