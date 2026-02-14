@@ -58,19 +58,23 @@ export const setupMessageHandlers = () => {
     
     // ============================================================
     // 1. АДМИН-ПАНЕЛЬ
-    // Команды работают, если пишет Админ (ты) или сообщение из Админ-группы
     // ============================================================
     bot.onText(/\/(stats|new|discuss|work|done|cancel|list)/, async (msg, match) => {
         const cmd = match[1];
-        
-        // ID твоего личного аккаунта (хардкод для надежности)
-        const MY_ADMIN_ID = "2041384570"; 
-        
-        const isPrivateAdmin = msg.from && msg.from.id.toString() === MY_ADMIN_ID;
-        const isGroupAdmin = config.bot.groupId && msg.chat.id.toString() === config.bot.groupId.toString();
+        const chatId = msg.chat.id.toString();
+        const myAdminId = "2041384570";
+        const groupAdminId = config.bot.groupId ? config.bot.groupId.toString() : '';
 
-        // Если пишет не админ и не из группы — игнорируем
-        if (!isPrivateAdmin && !isGroupAdmin) return;
+        // ЛОГИ ДЛЯ ОТЛАДКИ (Потом можно убрать)
+        console.log(`[CMD] /${cmd} from ${chatId} (User: ${msg.from.id})`);
+
+        const isPrivateAdmin = msg.from && msg.from.id.toString() === myAdminId;
+        const isGroupAdmin = groupAdminId && chatId === groupAdminId;
+
+        if (!isPrivateAdmin && !isGroupAdmin) {
+            console.log(`❌ [ACCESS DENIED] ChatID: ${chatId} !== GroupID: ${groupAdminId}`);
+            return;
+        }
 
         try {
             // --- СТАТИСТИКА (/stats) ---
@@ -154,9 +158,7 @@ export const setupMessageHandlers = () => {
         const chatId = msg.chat.id;
         if (msg.contact.user_id !== msg.from.id) return;
         
-        // Сохраняем и получаем статус
         const user = await db.upsertUser(msg.from.id, msg.from.first_name, msg.from.username, msg.contact.phone_number);
-        
         sessions.set(chatId, { step: 'IDLE', data: {} });
         
         // УВЕДОМЛЯЕМ АДМИНА ТОЛЬКО ЕСЛИ НОВИЧОК
@@ -166,10 +168,8 @@ export const setupMessageHandlers = () => {
                 `👤 Имя: ${msg.from.first_name}\n` +
                 `📱 Тел: <code>${msg.contact.phone_number}</code>`
             );
-            // Меняем статус на active
             await db.query("UPDATE users SET status = 'active' WHERE id = $1", [user.id]);
         }
-
         await bot.sendMessage(chatId, '✅ Отлично! Доступ к калькулятору открыт.', KB.MAIN_MENU);
     });
 
@@ -179,7 +179,6 @@ export const setupMessageHandlers = () => {
         const chatId = msg.chat.id;
         
         // ВАЖНО: Если сообщение пришло из админ-группы — игнорируем его!
-        // Бот не должен пытаться считать смету, когда вы общаетесь в группе.
         if (config.bot.groupId && chatId.toString() === config.bot.groupId.toString()) return;
 
         let session = sessions.get(chatId) || { step: 'IDLE', data: {} };
