@@ -1,6 +1,6 @@
 import { bot } from '../core.js';
 import { db } from '../db.js';
-import { config } from '../bot.js';
+import { config } from '../config.js';
 
 // --- 🧠 STATE MACHINE (Временная память сессий) ---
 const sessions = new Map();
@@ -77,8 +77,8 @@ export const setupMessageHandlers = () => {
             );
 
             // 🔔 Мгновенный алерт в группу бригады
-            if (config.groupId) {
-                bot.sendMessage(config.groupId, 
+            if (config.bot.groupId) {
+                bot.sendMessage(config.bot.groupId, 
                     `🚨 <b>НОВЫЙ КЛИЕНТ!</b>\n\n` +
                     `👤 Имя: ${sanitize(msg.from.first_name)}\n` +
                     `📱 Тел: <code>${contact.phone_number}</code>\n` +
@@ -108,7 +108,7 @@ export const setupMessageHandlers = () => {
         if (session.step === 'WAITING_FOR_AREA') {
             const area = parseFloat(text.replace(',', '.'));
             if (isNaN(area) || area <= 0 || area > 1000) {
-                return bot.sendMessage(chatId, '⚠️ Введите корректное число (например: 65.5).');
+                return bot.sendMessage(chatId, '⚠️ Введите корректное число (до 1000 м²).');
             }
 
             session.data = { area };
@@ -144,7 +144,7 @@ export const setupMessageHandlers = () => {
                     break;
 
                 case '📞 Вызвать мастера':
-                    await bot.sendMessage(chatId, 'Связь с инженером: @твой_юзернейм\nИли нажмите на кнопку замера в калькуляторе.');
+                    await bot.sendMessage(chatId, `Связь с инженером: ${config.bot.bossUsername}\nИли нажмите на кнопку замера в калькуляторе.`);
                     break;
             }
         }

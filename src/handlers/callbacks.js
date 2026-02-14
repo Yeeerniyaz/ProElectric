@@ -1,11 +1,11 @@
 import { bot } from '../core.js';
 import { db } from '../db.js';
-import { config } from '../bot.js';
+import { config } from '../config.js';
 import { sessions } from './messages.js';
 
 /**
  * 🛠 Форматтер валюты (Казахстанский тенге)
- * Senior-подход: использование Intl для локализации
+ * Senior-подход: использование международного стандарта Intl для точности
  */
 const formatKZT = (num) => {
     return new Intl.NumberFormat('ru-KZ', { 
@@ -23,7 +23,7 @@ export const setupCallbackHandlers = () => {
         const messageId = query.message.message_id;
         const session = sessions.get(chatId);
 
-        // Защита от потери контекста при перезагрузке сервера
+        // Проверка сессии: защита от падения, если юзер нажал кнопку после перезагрузки сервера
         if (!session) {
             return bot.answerCallbackQuery(query.id, { text: '⚠️ Сессия устарела. Введите /start' });
         }
@@ -39,7 +39,9 @@ export const setupCallbackHandlers = () => {
                     `🧱 Стены: <b>${session.data.wallType.toUpperCase()}</b>\n\n` +
                     `<b>Шаг 3/5: Тип монтажа</b>\nГде прокладываем основные трассы?`, 
                     {
-                        chat_id: chatId, message_id: messageId, parse_mode: 'HTML',
+                        chat_id: chatId,
+                        message_id: messageId,
+                        parse_mode: 'HTML',
                         reply_markup: {
                             inline_keyboard: [
                                 [{ text: '☁️ По потолку (в гофре)', callback_data: 'mount_ceiling' }],
@@ -61,7 +63,9 @@ export const setupCallbackHandlers = () => {
                     `⚙️ Монтаж: <b>${session.data.mountingType === 'ceiling' ? 'ПОТОЛОК' : 'ПОЛ'}</b>\n\n` +
                     `<b>Шаг 4/5: Уровень оборудования</b>\nВыбери надежность и бюджет:`, 
                     {
-                        chat_id: chatId, message_id: messageId, parse_mode: 'HTML',
+                        chat_id: chatId,
+                        message_id: messageId,
+                        parse_mode: 'HTML',
                         reply_markup: {
                             inline_keyboard: [
                                 [{ text: '🥉 Эконом (IEK / Karat)', callback_data: 'brand_economy' }],
@@ -80,34 +84,33 @@ export const setupCallbackHandlers = () => {
                 bot.sendChatAction(chatId, 'typing');
 
                 // 🧮 ТЯНЕМ АКТУАЛЬНЫЕ ЦЕНЫ ИЗ ТВОЕГО "ДАШБОРДА" (SQL Settings)
-                const settingsRes = await db.query('SELECT key, value FROM settings');
-                const settings = {};
-                settingsRes.rows.forEach(row => settings[row.key] = parseFloat(row.value));
+                const settings = await db.getSettings();
                 
-                // 1. Расчет работы (Точки * Цена * Наценка за монтаж)
+                // 1. Расчет работы (Цена точки * Коэффициент монтажа * Кол-во точек)
                 const basePrice = settings[`wall_${session.data.wallType}`] || 4500;
                 const markup = settings[`markup_${session.data.mountingType}`] || 1.0;
-                const pointsCount = Math.ceil(session.data.area * 1.5); // Senior эвристика: ~1.5 точки на м2
+                const pointsCount = Math.ceil(session.data.area * 1.5); // Эвристика: ~1.5 точки на м2
                 const totalWork = pointsCount * basePrice * markup;
 
                 // 2. Расчет материалов (Цена за м2 в зависимости от бренда)
-                const matPricePerM2 = settings[`mat_m2_${session.data.brandLevel}`] || 2500;
+                const matPriceKey = `mat_m2_${session.data.brandLevel}`;
+                const matPricePerM2 = settings[matPriceKey] || 2500;
                 const totalMat = session.data.area * matPricePerM2;
 
                 const totalSum = totalWork + totalMat;
 
-                // --- СОХРАНЕНИЕ ЛИДА В БД ДЛЯ ТВОЕГО АНАЛИЗА ---
+                // --- СОХРАНЕНИЕ ЛИДА В БД ДЛЯ АНАЛИТИКИ ---
                 const userRes = await db.query('SELECT id FROM users WHERE telegram_id = $1', [query.from.id]);
                 if (userRes.rows.length > 0) {
                     await db.query(
-                        `INSERT INTO leads (user_id, area, wall_type, method_type, estimated_price)
-                         VALUES ($1, $2, $3, $4, $5)`,
-                        [userRes.rows[0].id, session.data.area, session.data.wallType, session.data.mountingType, totalSum]
+                        `INSERT INTO leads (user_id, area, wall_type, mounting_type, brand_level, total_work_cost, total_mat_cost)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                        [userRes.rows[0].id, session.data.area, session.data.wallType, session.data.mountingType, session.data.brandLevel, totalWork, totalMat]
                     );
                 }
 
                 const resultText = 
-                    `✅ <b>Расчет готов!</b>\n\n` +
+                    `✅ <b>Ваш расчет готов!</b>\n\n` +
                     `📐 Площадь: ${session.data.area} м²\n` +
                     `🧱 Стены: ${session.data.wallType}\n` +
                     `⚡️ Класс: ${session.data.brandLevel.toUpperCase()}\n` +
@@ -128,23 +131,25 @@ export const setupCallbackHandlers = () => {
                     }
                 });
 
-                sessions.delete(chatId); // Очистка сессии после успеха
+                sessions.delete(chatId); // Задача выполнена — очищаем память
                 return bot.answerCallbackQuery(query.id);
             }
 
-            // --- ОБРАБОТКА ЗАЯВОК ---
+            // --- ОБРАБОТКА ЗАЯВОК (Замер / Закуп) ---
             if (data === 'order_zamer' || data === 'order_procurement') {
+                const isProcurement = data === 'order_procurement';
                 await bot.sendMessage(chatId, '🚀 Заявка принята! Инженер свяжется с вами в течение 15 минут.');
                 
-                if (config.groupId) {
-                    bot.sendMessage(config.groupId, 
-                        `🔥 <b>ГОРЯЧИЙ ЛИД!</b>\n` +
-                        `Клиент: @${query.from.username || 'скрыт'}\n` +
-                        `Тип: ${data === 'order_zamer' ? 'ЗАМЕР' : 'ЗАКУП'}`, 
+                if (config.bot.groupId) {
+                    bot.sendMessage(config.bot.groupId, 
+                        `🔥 <b>ГОРЯЧИЙ ЛИД: ${isProcurement ? 'ЗАКУП' : 'ЗАМЕР'}</b>\n` +
+                        `👤 Клиент: @${query.from.username || 'скрыт'}\n` +
+                        `📱 ID: <code>${query.from.id}</code>\n` +
+                        `Уже авторизован, можно звонить!`, 
                         { parse_mode: 'HTML' }
                     );
                 }
-                return bot.answerCallbackQuery(query.id);
+                return bot.answerCallbackQuery(query.id, { text: 'Отправлено!' });
             }
 
         } catch (error) {

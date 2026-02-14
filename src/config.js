@@ -1,17 +1,20 @@
-import "dotenv/config";
+import 'dotenv/config';
 
 export const config = {
-  botToken: process.env.BOT_TOKEN,
-  groupId: process.env.GROUP_ID,
-  sessionSecret: process.env.SESSION_SECRET,
-  adminLogin: process.env.ADMIN_LOGIN,
-  adminPassHash: process.env.ADMIN_PASS_HASH,
-  webPort: process.env.WEB_PORT || 3000,
-  db: {
-    user: process.env.DB_USER,
-    host: process.env.DB_HOST,
-    database: process.env.DB_NAME,
-    password: process.env.DB_PASSWORD,
-    port: process.env.DB_PORT || 5432,
-  },
+    bot: {
+        token: process.env.BOT_TOKEN,
+        groupId: process.env.GROUP_ID,
+        bossUsername: process.env.BOSS_USERNAME || '@yeeerniyaz'
+    },
+    db: {
+        user: process.env.DB_USER,
+        password: process.env.DB_PASSWORD,
+        host: process.env.DB_HOST,
+        database: process.env.DB_NAME,
+        port: parseInt(process.env.DB_PORT, 10) || 5432,
+    },
+    server: {
+        port: process.env.WEB_PORT || 3000,
+        sessionSecret: process.env.SESSION_SECRET || 'pro_electro_secret'
+    }
 };
