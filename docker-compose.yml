@@ -1,32 +1,47 @@
 version: '3.8'
 
 services:
+  # --- 1. База Данных PostgreSQL ---
   proelectro-db:
-    image: postgres:16-alpine
     container_name: proelectro-db
-    restart: always
+    image: postgres:16-alpine
+    restart: unless-stopped
+    # Берем переменные из .env файла
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
+    # Сохраняем данные, чтобы они не исчезли после перезагрузки
     volumes:
       - pg_data:/var/lib/postgresql/data
+    # Проверка здоровья базы (Senior feature)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - pe_network
 
+  # --- 2. Наш Telegram Бот ---
   proelectro-bot:
-    build: .
     container_name: proelectro-bot
-    restart: always
-    depends_on:
-      - proelectro-db
+    build: .
+    restart: unless-stopped
+    # Пробрасываем переменные окружения внутрь
     env_file:
       - .env
+    # Бот запустится ТОЛЬКО когда база будет полностью готова
+    depends_on:
+      proelectro-db:
+        condition: service_healthy
+    # Открываем порт для Portainer Healthcheck
     ports:
       - "${WEB_PORT:-3000}:3000"
     networks:
       - pe_network
 
+# --- Сети и Тома ---
 networks:
   pe_network:
     driver: bridge
