@@ -1,45 +1,53 @@
 import pg from 'pg';
-import { config } from './config.js'; // Исправлен путь к конфигу
+import { config } from './config.js';
 
 const { Pool } = pg;
 
-// Настраиваем пул соединений с защитой от перегрузок
+// Создаем пул соединений (это эффективнее, чем открывать новое на каждый запрос)
 const pool = new Pool(config.db);
 
-/**
- * Объект для работы с базой данных
- */
+// Обработчик ошибок пула (если БД упадет, мы увидим это в логах)
+pool.on('error', (err) => {
+    console.error('💥 [DB CRITICAL] Внезапная ошибка клиента PostgreSQL', err);
+    process.exit(-1);
+});
+
 export const db = {
     /**
-     * Выполнение любого SQL запроса
+     * Выполнить произвольный SQL-запрос
+     * @param {string} text - SQL запрос
+     * @param {Array} params - Параметры для защиты от SQL-инъекций
      */
     query: (text, params) => pool.query(text, params),
 
     /**
-     * Получение клиента из пула для сложных операций (транзакций)
+     * Получить клиент из пула для транзакций (BEGIN -> COMMIT -> ROLLBACK)
      */
     getClient: () => pool.connect(),
 
     /**
-     * Динамическое получение настроек из БД.
-     * Позволяет менять цены за точки и материалы через дашборд мгновенно.
+     * Загрузка настроек и цен из таблицы settings
+     * Возвращает объект вида { "price_concrete": 4000, ... }
      */
     getSettings: async () => {
         try {
             const res = await pool.query('SELECT key, value FROM settings');
             const settings = {};
             res.rows.forEach(row => {
-                settings[row.key] = parseFloat(row.value);
+                // Пытаемся привести к числу, если это возможно
+                const num = parseFloat(row.value);
+                settings[row.key] = isNaN(num) ? row.value : num;
             });
             return settings;
         } catch (error) {
-            console.error('❌ [DB ERROR] Ошибка загрузки settings:', error.message);
-            return {};
+            console.error('⚠️ [DB] Не удалось загрузить настройки:', error.message);
+            return {}; // Возвращаем пустой объект, чтобы бот не упал
         }
     },
 
     /**
-     * Регистрация или обновление данных пользователя (Фейсконтроль)
+     * "Умное" сохранение пользователя (Upsert)
+     * Используем PostgreSQL фичу ON CONFLICT для атомарности
      */
     upsertUser: async (telegramId, firstName, username, phone) => {
         const sql = `
@@ -49,7 +57,8 @@ export const db = {
             DO UPDATE SET 
                 first_name = EXCLUDED.first_name,
                 username = EXCLUDED.username,
-                phone = EXCLUDED.phone
+                phone = EXCLUDED.phone,
+                updated_at = NOW()
             RETURNING id;
         `;
         const res = await pool.query(sql, [telegramId, firstName, username, phone]);
@@ -58,19 +67,19 @@ export const db = {
 };
 
 /**
- * Инициализация базы данных и проверка "искры"
+ * Функция проверки здоровья базы при старте
  */
 export const initDB = async () => {
     try {
-        const res = await pool.query('SELECT NOW() as now');
-        console.log(`✅ [DB] Соединение установлено. Время БД: ${res.rows[0].now}`);
-        
-        const checkSettings = await pool.query("SELECT COUNT(*) FROM settings");
-        console.log(`📊 [DB] В таблице настроек найдено записей: ${checkSettings.rows[0].count}`);
-        
+        const start = Date.now();
+        const res = await pool.query('SELECT NOW(), version()');
+        const duration = Date.now() - start;
+        console.log(`✅ [DB] Подключено к ${config.db.database} за ${duration}мс`);
+        console.log(`   └─ Версия: ${res.rows[0].version}`);
     } catch (err) {
-        console.error('💥 [DB FATAL] Короткое замыкание при подключении к БД!');
-        console.error('Детали:', err.message);
-        process.exit(1);
+        console.error('💥 [DB FATAL] Нет подключения к базе данных!');
+        console.error('   └─ Проверь .env и запущен ли контейнер proelectro-db');
+        console.error('   └─ Ошибка:', err.message);
+        process.exit(1); // Жесткий выход, чтобы Docker перезапустил контейнер
     }
 };

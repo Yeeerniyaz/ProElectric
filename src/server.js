@@ -1,28 +1,47 @@
 import express from 'express';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import { config } from './config.js';
 
 const app = express();
-const PORT = config.server.port || 3000;
 
 /**
- * Инициализация веб-сервера для Healthcheck и мониторинга
+ * Настройка безопасности (Senior Level)
+ */
+// 1. Helmet скрывает заголовки, по которым хакеры узнают, что это Express
+app.use(helmet());
+
+// 2. Ограничитель запросов (Rate Limiter)
+// Чтобы никто не мог "задудосить" твой healthcheck
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 минут
+    max: 100, // Максимум 100 запросов с одного IP
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+app.use(limiter);
+
+/**
+ * Запуск веб-сервера
  */
 export const startServer = () => {
-    // Простой эндпоинт для проверки статуса
+    // Простой маршрут, чтобы проверить, что сервер отвечает
+    app.get('/', (req, res) => {
+        res.send('⚡️ ProElectro Bot System is Online');
+    });
+
+    // Маршрут Healthcheck для Docker/Portainer
+    // Если этот url отдает 200 OK, значит бот жив
     app.get('/health', (req, res) => {
-        res.status(200).json({ 
-            status: 'ok', 
-            uptime: process.uptime(),
-            message: 'ProElectro Bot is running' 
+        res.json({
+            status: 'ok',
+            uptime: process.uptime(), // Сколько секунд работает без перезагрузки
+            timestamp: new Date().toISOString()
         });
     });
 
-    // Маршрут по умолчанию
-    app.get('/', (req, res) => {
-        res.send('⚡️ ProElectro System is Online');
-    });
-
-    app.listen(PORT, '0.0.0.0', () => {
-        console.log(`🌐 [SERVER] Healthcheck доступен по порту ${PORT}`);
+    // Запуск слушателя
+    app.listen(config.server.port, '0.0.0.0', () => {
+        console.log(`🌐 [SERVER] Веб-интерфейс запущен на порту ${config.server.port}`);
     });
 };

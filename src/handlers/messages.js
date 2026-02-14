@@ -2,153 +2,148 @@ import { bot } from '../core.js';
 import { db } from '../db.js';
 import { config } from '../config.js';
 
-// --- 🧠 STATE MACHINE (Временная память сессий) ---
-const sessions = new Map();
+// Хранилище сессий в оперативной памяти
+// Ключ: chatId, Значение: { step: 'IDLE' | 'WAITING_FOR_AREA', data: {...} }
+export const sessions = new Map();
 
-// --- 🛡 HELPER: Санитайзинг ввода ---
-const sanitize = (str) => (str || '').replace(/[<>'"/]/g, '');
-
-// --- 🕹 KEYBOARDS (Интерфейс) ---
+// Константы клавиатур (чтобы не дублировать код)
 const KB = {
-    CONTACT: {
-        reply_markup: {
-            keyboard: [[{ text: '📱 Поделиться контактом', request_contact: true }]],
-            resize_keyboard: true, one_time_keyboard: true
-        }
+    CONTACT: { 
+        reply_markup: { 
+            keyboard: [[{ text: '📱 Отправить свой телефон', request_contact: true }]], 
+            resize_keyboard: true, 
+            one_time_keyboard: true 
+        } 
     },
-    MAIN_MENU: {
-        reply_markup: {
+    MAIN_MENU: { 
+        reply_markup: { 
             keyboard: [
                 ['⚡️ Рассчитать смету', '📂 Мои расчеты'],
                 ['📞 Вызвать мастера', 'ℹ️ О компании']
-            ],
-            resize_keyboard: true
-        }
+            ], 
+            resize_keyboard: true 
+        } 
     },
     REMOVE: { reply_markup: { remove_keyboard: true } }
 };
 
 export const setupMessageHandlers = () => {
     
-    // 1️⃣ КОМАНДА /START: Проверка доступа
+    // 1. Обработка команды /start
     bot.onText(/\/start/, async (msg) => {
         const chatId = msg.chat.id;
-        const telegramId = msg.from.id;
-
         try {
-            const res = await db.query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
-            const user = res.rows[0];
-
-            if (user && user.phone) {
+            // Проверяем, есть ли юзер в базе и есть ли у него телефон
+            const res = await db.query('SELECT phone FROM users WHERE telegram_id = $1', [msg.from.id]);
+            
+            if (res.rows.length > 0 && res.rows[0].phone) {
+                // Если свой — сразу меню
                 sessions.set(chatId, { step: 'IDLE' });
-                await bot.sendMessage(chatId, `С возвращением, ${user.first_name}! 🫡\nГотов к новым расчетам?`, KB.MAIN_MENU);
+                await bot.sendMessage(chatId, `С возвращением, ${msg.from.first_name}! 🫡\nЧем займемся?`, KB.MAIN_MENU);
             } else {
+                // Если новенький — просим контакт (защита от ботов и конкурентов)
                 await bot.sendMessage(chatId, 
-                    `👋 Привет! Это бот инженерной бригады <b>ProElectro Almaty</b>.\n\n` +
-                    `Мы ценим точность и конфиденциальность. Чтобы открыть доступ к калькулятору и ценам, подтвердите, что вы реальный клиент.`,
-                    { parse_mode: 'HTML' }
+                    `👋 Привет! Это бот <b>ProElectro</b>.\n\n` +
+                    `Чтобы получить доступ к калькулятору сметы, пожалуйста, подтвердите ваш номер телефона.`, 
+                    { parse_mode: 'HTML', ...KB.CONTACT }
                 );
-                
-                setTimeout(() => {
-                    bot.sendMessage(chatId, `👇 Нажмите кнопку ниже для авторизации:`, KB.CONTACT);
-                }, 800);
             }
-        } catch (error) {
-            console.error('[AUTH ERROR]', error);
+        } catch (e) {
+            console.error('Ошибка в /start:', e);
         }
     });
 
-    // 2️⃣ ОБРАБОТКА КОНТАКТА: Регистрация Лида
+    // 2. Обработка получения контакта
     bot.on('contact', async (msg) => {
         const chatId = msg.chat.id;
-        const contact = msg.contact;
-
-        if (!contact || contact.user_id !== msg.from.id) {
-            return bot.sendMessage(chatId, '❌ Пожалуйста, отправьте именно СВОЙ контакт через кнопку.');
+        
+        // Важная проверка: юзер может переслать чужой контакт. Проверяем, что это ЕГО номер.
+        if (msg.contact.user_id !== msg.from.id) {
+            return bot.sendMessage(chatId, '⛔️ Пожалуйста, используйте кнопку, чтобы отправить СВОЙ номер.');
         }
 
         try {
-            // Сохраняем "Профи" методом upsert
-            await db.upsertUser(
-                msg.from.id, 
-                sanitize(msg.from.first_name), 
-                sanitize(msg.from.username), 
-                contact.phone_number
-            );
-
-            // 🔔 Мгновенный алерт в группу бригады
+            // Сохраняем в базу (Upsert)
+            await db.upsertUser(msg.from.id, msg.from.first_name, msg.from.username, msg.contact.phone_number);
+            
+            // Сбрасываем сессию
+            sessions.set(chatId, { step: 'IDLE' });
+            
+            await bot.sendMessage(chatId, '✅ Отлично! Доступ открыт.', KB.MAIN_MENU);
+            
+            // Уведомление Админу/В группу
             if (config.bot.groupId) {
-                bot.sendMessage(config.bot.groupId, 
-                    `🚨 <b>НОВЫЙ КЛИЕНТ!</b>\n\n` +
-                    `👤 Имя: ${sanitize(msg.from.first_name)}\n` +
-                    `📱 Тел: <code>${contact.phone_number}</code>\n` +
-                    `🔗 Ссылка: @${msg.from.username || 'нет'}`,
+                const username = msg.from.username ? `@${msg.from.username}` : 'Нет юзернейма';
+                await bot.sendMessage(config.bot.groupId, 
+                    `🚨 <b>НОВЫЙ ПОЛЬЗОВАТЕЛЬ!</b>\n` +
+                    `👤 Имя: ${msg.from.first_name}\n` +
+                    `📱 Тел: <code>${msg.contact.phone_number}</code>\n` +
+                    `🔗 Линк: ${username}`, 
                     { parse_mode: 'HTML' }
                 );
             }
-
-            sessions.set(chatId, { step: 'IDLE' });
-            await bot.sendMessage(chatId, '✅ Доступ открыт! Теперь вы можете пользоваться всеми функциями ProElectro.', KB.MAIN_MENU);
-
-        } catch (error) {
-            console.error('[CONTACT SAVE ERROR]', error);
-            bot.sendMessage(chatId, '⚠️ Ошибка при регистрации. Попробуйте позже.');
+        } catch (e) {
+            console.error('Ошибка сохранения контакта:', e);
         }
     });
 
-    // 3️⃣ ЛОГИКА ТЕКСТОВЫХ КОМАНД
+    // 3. Обработка текстовых сообщений (Меню и Ввод данных)
     bot.on('message', async (msg) => {
-        if (msg.text?.startsWith('/') || msg.contact) return;
-
+        // Игнорируем команды (/start) и служебные сообщения (контакты)
+        if (!msg.text || msg.text.startsWith('/') || msg.contact) return;
+        
         const chatId = msg.chat.id;
-        const text = msg.text;
-        const session = sessions.get(chatId) || { step: 'IDLE' };
+        const session = sessions.get(chatId) || { step: 'IDLE' }; // Если сессии нет, считаем что IDLE
 
-        // Состояние ожидания площади
-        if (session.step === 'WAITING_FOR_AREA') {
-            const area = parseFloat(text.replace(',', '.'));
-            if (isNaN(area) || area <= 0 || area > 1000) {
-                return bot.sendMessage(chatId, '⚠️ Введите корректное число (до 1000 м²).');
-            }
-
-            session.data = { area };
-            session.step = 'WAITING_FOR_WALLS';
-            sessions.set(chatId, session);
-
-            await bot.sendMessage(chatId, 
-                `📐 Площадь: <b>${area} м²</b>\n\n<b>Шаг 2/5: Материал стен</b>\nОт этого зависит сложность штробления.`, 
-                {
-                    parse_mode: 'HTML',
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: '🏗 Бетон (Монолит)', callback_data: 'wall_concrete' }],
-                            [{ text: '🧱 Кирпич', callback_data: 'wall_brick' }],
-                            [{ text: '⬜️ Газоблок', callback_data: 'wall_block' }]
-                        ]
-                    }
-                }
-            );
+        // --- ЛОГИКА ГЛАВНОГО МЕНЮ ---
+        if (msg.text === '⚡️ Рассчитать смету') {
+            sessions.set(chatId, { step: 'WAITING_FOR_AREA' });
+            await bot.sendMessage(chatId, '📐 <b>Шаг 1 из 2</b>\nВведите площадь помещения (в м²):', { 
+                parse_mode: 'HTML', 
+                ...KB.REMOVE // Убираем клавиатуру, чтобы не мешала вводить цифры
+            });
+            return;
+        }
+        
+        if (msg.text === '📞 Вызвать мастера') {
+            await bot.sendMessage(chatId, `Связь с главным инженером: ${config.bot.bossUsername}`);
             return;
         }
 
-        // Обработка кнопок главного меню
-        if (session.step === 'IDLE') {
-            switch (text) {
-                case '⚡️ Рассчитать смету':
-                    sessions.set(chatId, { step: 'WAITING_FOR_AREA' });
-                    await bot.sendMessage(chatId, '📐 <b>Шаг 1/5: Площадь</b>\nВведите площадь объекта в м²:', { parse_mode: 'HTML', ...KB.REMOVE });
-                    break;
-                
-                case 'ℹ️ О компании':
-                    await bot.sendMessage(chatId, '🛠 <b>ProElectro Almaty</b>\nИнженерный электромонтаж по ГОСТу.\nГарантия 5 лет. Договор. Профессиональный инструмент.');
-                    break;
+        if (msg.text === 'ℹ️ О компании') {
+            await bot.sendMessage(chatId, 'ProElectro — профессиональный электромонтаж. Мы работаем по СНиП и ПУЭ.');
+            return;
+        }
 
-                case '📞 Вызвать мастера':
-                    await bot.sendMessage(chatId, `Связь с инженером: ${config.bot.bossUsername}\nИли нажмите на кнопку замера в калькуляторе.`);
-                    break;
+        // --- ЛОГИКА КАЛЬКУЛЯТОРА (Ввод площади) ---
+        if (session.step === 'WAITING_FOR_AREA') {
+            // Заменяем запятую на точку (для удобства юзера)
+            let area = parseFloat(msg.text.replace(',', '.'));
+
+            // Валидация ввода
+            if (isNaN(area) || area <= 0) {
+                return bot.sendMessage(chatId, '⚠️ Пожалуйста, введите корректное число (например: 45 или 60.5).');
             }
+            if (area > 3000) {
+                return bot.sendMessage(chatId, '😳 Ого! Для таких объемов лучше сразу звонить боссу.');
+            }
+
+            // Сохраняем площадь в сессию и переходим к выбору стен
+            sessions.set(chatId, { 
+                step: 'WAITING_FOR_WALLS', 
+                data: { area: area } 
+            });
+
+            await bot.sendMessage(chatId, `Принято: <b>${area} м²</b>.\n\n🧱 <b>Шаг 2 из 2:</b> Выберите материал стен:`, {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: '🧱 Кирпич (Тяжело штробить)', callback_data: 'wall_brick' }],
+                        [{ text: '🏗 Бетон/Монолит (Самое жесткое)', callback_data: 'wall_concrete' }],
+                        [{ text: '⬜️ Газоблок (Мягкий)', callback_data: 'wall_block' }]
+                    ]
+                }
+            });
         }
     });
 };
-
-export { sessions };
