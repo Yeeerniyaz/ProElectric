@@ -1,20 +1,16 @@
 version: '3.8'
 
 services:
-  # --- 1. База Данных PostgreSQL ---
   proelectro-db:
-    container_name: proelectro-db
     image: postgres:16-alpine
-    restart: unless-stopped
-    # Берем переменные из .env файла
+    container_name: proelectro-db
+    restart: always
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
-    # Сохраняем данные, чтобы они не исчезли после перезагрузки
     volumes:
       - pg_data:/var/lib/postgresql/data
-    # Проверка здоровья базы (Senior feature)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 10s
@@ -23,22 +19,40 @@ services:
     networks:
       - pe_network
 
-  # --- 2. Наш Telegram Бот ---
   proelectro-bot:
-    container_name: proelectro-bot
     build: .
-    restart: unless-stopped
-    # Бот запустится ТОЛЬКО когда база будет полностью готова
+    container_name: proelectro-bot
+    restart: always
     depends_on:
       proelectro-db:
         condition: service_healthy
-    # Открываем порт для Portainer Healthcheck
+    # --- УДАЛЯЕМ ЭТО ---
+    # env_file:
+    #   - .env
+    # -------------------
+    
+    # --- ВСТАВЛЯЕМ ЭТО ---
+    # Мы явно прокидываем переменные из Portainer внутрь контейнера
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      GROUP_ID: ${GROUP_ID}
+      BOSS_USERNAME: ${BOSS_USERNAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      WEB_PORT: ${WEB_PORT}
+      SESSION_SECRET: ${SESSION_SECRET}
+      ADMIN_LOGIN: ${ADMIN_LOGIN}
+      ADMIN_PASS_HASH: ${ADMIN_PASS_HASH}
+    # ---------------------
+    
     ports:
       - "${WEB_PORT:-3000}:3000"
     networks:
       - pe_network
 
-# --- Сети и Тома ---
 networks:
   pe_network:
     driver: bridge
