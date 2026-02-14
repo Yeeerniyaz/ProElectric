@@ -28,9 +28,6 @@ services:
     container_name: proelectro-bot
     build: .
     restart: unless-stopped
-    # Пробрасываем переменные окружения внутрь
-    env_file:
-      - .env
     # Бот запустится ТОЛЬКО когда база будет полностью готова
     depends_on:
       proelectro-db:
