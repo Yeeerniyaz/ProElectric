@@ -83,3 +83,5 @@ export const initDB = async () => {
         process.exit(1); // Жесткий выход, чтобы Docker перезапустил контейнер
     }
 };
+
+// psql -U proelectro -d proelectro_db

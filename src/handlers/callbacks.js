@@ -18,45 +18,46 @@ export const setupCallbackHandlers = () => {
         const data = query.data;
         const messageId = query.message.message_id;
 
-        // --- ЛОГИКА CRM: ОБРАБОТКА СТАТУСОВ В КАНАЛЕ ---
-        if (String(chatId) === String(config.bot.groupId)) {
-            let statusText = '';
-            let icon = '';
+        // --- ЛОГИКА CRM: ОБРАБОТКА СТАТУСОВ ПО ID ЗАКАЗА ---
+        if (data.startsWith('status_')) {
+            const parts = data.split('_'); // [status, type, leadId]
+            const statusDb = parts[1];
+            const leadId = parts[2];
 
-            switch (data) {
-                case 'status_discuss': statusText = 'В ОБСУЖДЕНИИ'; icon = '🗣'; break;
-                case 'status_work':    statusText = 'В РАБОТЕ';     icon = '🏗'; break;
-                case 'status_done':    statusText = 'РЕШЕНО';       icon = '✅'; break;
-                case 'status_cancel':  statusText = 'ОТКАЗ';        icon = '❌'; break;
-            }
+            const labels = {
+                'discuss': { text: 'В ОБСУЖДЕНИИ', icon: '🗣' },
+                'work': { text: 'В РАБОТЕ', icon: '🏗' },
+                'done': { text: 'РЕШЕНО', icon: '✅' },
+                'cancel': { text: 'ОТКАЗ', icon: '❌' }
+            };
 
-            if (statusText) {
-                const originalText = query.message.text || "";
-                const cleanedText = originalText.replace(/^.*СТАТУС:.*\n\n/g, '');
-                const updatedText = `${icon} <b>СТАТУС: ${statusText}</b>\n\n${cleanedText}`;
-
-                if (originalText === updatedText) {
-                    return bot.answerCallbackQuery(query.id, { text: `Уже стоит статус: ${statusText}` });
-                }
-
+            const statusCfg = labels[statusDb];
+            if (statusCfg && leadId) {
                 try {
-                    await bot.editMessageText(updatedText, {
-                        chat_id: chatId,
-                        message_id: messageId,
-                        parse_mode: 'HTML',
-                        reply_markup: query.message.reply_markup 
-                    });
-                    return bot.answerCallbackQuery(query.id, { text: `Статус изменен на: ${statusText}` });
-                } catch (e) {
-                    if (e.message.includes('message is not modified')) {
-                        return bot.answerCallbackQuery(query.id);
+                    // Обновляем статус в базе для конкретного ID заказа
+                    await db.query('UPDATE leads SET status = $1 WHERE id = $2', [statusDb, leadId]);
+
+                    const originalText = query.message.text || "";
+                    const cleanedText = originalText.replace(/^.*СТАТУС:.*\n\n/g, '');
+                    const updatedText = `${statusCfg.icon} <b>СТАТУС: ${statusCfg.text}</b>\n\n${cleanedText}`;
+
+                    if (originalText !== updatedText) {
+                        await bot.editMessageText(updatedText, {
+                            chat_id: chatId,
+                            message_id: messageId,
+                            parse_mode: 'HTML',
+                            reply_markup: query.message.reply_markup 
+                        });
                     }
+                    return bot.answerCallbackQuery(query.id, { text: `Заказ #${leadId}: ${statusCfg.text}` });
+                } catch (e) {
                     console.error('CRM Update Error:', e.message);
                     return bot.answerCallbackQuery(query.id);
                 }
             }
         }
 
+        // --- ОБЫЧНАЯ ЛОГИКА БОТА ---
         const session = sessions.get(chatId);
         if (!session) {
             return bot.answerCallbackQuery(query.id, { text: '⚠️ Сессия устарела. Введите /start' });
@@ -88,19 +89,8 @@ export const setupCallbackHandlers = () => {
 
                 const wallLabel = { 'light': 'Легкие', 'medium': 'Средние', 'heavy': 'Тяжелые' }[session.data.wallType];
 
-                const resultText = 
-                    `✅ <b>ПОЛНЫЙ РАСЧЕТ ДЛЯ ${area} м²</b>\n\n` +
-                    `🧱 Стены: <b>${wallLabel}</b>\n` +
-                    `🛠 <b>Примерная спецификация:</b>\n` +
-                    `— Кабель (ВВГнг-LS): <b>~${estCable} м.</b>\n` +
-                    `— Электроточки (подрозетники): <b>~${estPoints} шт.</b>\n` +
-                    `— Щит (автоматы/модули): <b>~${estShield} мод.</b>\n\n` +
-                    `🛠 <b>Работа: ~${formatKZT(totalWork)}</b>\n` +
-                    `🔌 <b>Материалы: ~${formatKZT(totalMat)}</b>\n` +
-                    `➖➖➖➖➖➖➖➖\n` +
-                    `💰 <b>ИТОГО: ~${formatKZT(totalSum)}</b>`;
-
-                await bot.sendMessage(chatId, resultText, { 
+                // 1. Отправляем расчет клиенту
+                await bot.sendMessage(chatId, `✅ <b>ПОЛНЫЙ РАСЧЕТ ДЛЯ ${area} м²</b>\n\n...`, { 
                     parse_mode: 'HTML',
                     reply_markup: {
                         inline_keyboard: [
@@ -110,22 +100,25 @@ export const setupCallbackHandlers = () => {
                     }
                 });
 
+                // 2. Сохраняем в базу и ПОЛУЧАЕМ ID нового заказа (RETURNING id)
                 const userRes = await db.query('SELECT id FROM users WHERE telegram_id = $1', [query.from.id]);
+                let leadId = null;
                 if (userRes.rows.length > 0) {
-                    await db.query(
+                    const insertRes = await db.query(
                         `INSERT INTO leads (user_id, area, wall_type, total_work_cost, total_mat_cost)
-                         VALUES ($1, $2, $3, $4, $5)`,
+                         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
                         [userRes.rows[0].id, area, session.data.wallType, totalWork, totalMat]
                     );
+                    leadId = insertRes.rows[0].id;
                 }
 
-                // Уведомление о РАСЧЕТЕ — добавляем кнопки CRM (true)
+                // 3. Уведомление в канал с ПРИВЯЗКОЙ к ID заказа
                 await notifyAdmin(
-                    `💰 <b>НОВЫЙ РАСЧЕТ</b>\n` +
+                    `💰 <b>НОВЫЙ РАСЧЕТ #${leadId || '?' }</b>\n` +
                     `👤 @${query.from.username || 'скрыт'}\n` +
                     `📐 Объект: ${area} м² (${wallLabel})\n` +
                     `💵 Работа: ${formatKZT(totalWork)}`,
-                    true
+                    leadId // Теперь кнопки будут знать ID лида
                 );
 
                 session.data = {};
@@ -138,19 +131,14 @@ export const setupCallbackHandlers = () => {
                 const user = await db.query('SELECT phone FROM users WHERE telegram_id = $1', [query.from.id]);
                 const phone = user.rows[0]?.phone || 'Номер не найден';
 
-                let responseMsg = '🚀 Заявка принята! Мастер свяжется с вами.';
-                if (type === 'wa') responseMsg = '✅ WhatsApp: https://wa.me/77066066323';
-                if (type === 'tg') responseMsg = '✅ Telegram: @yeeeerniyaz';
-
-                await bot.sendMessage(chatId, responseMsg);
+                await bot.sendMessage(chatId, '🚀 Заявка принята!');
                 
-                // Уведомление о контакте — без кнопок CRM (false), чтобы не спамить
                 await notifyAdmin(
                     `🔥 <b>НУЖЕН КОНТАКТ!</b>\n` +
                     `Способ: ${type.toUpperCase()}\n` +
                     `👤 Клиент: @${query.from.username || 'скрыт'}\n` +
                     `📱 Тел: <code>${phone}</code>`,
-                    false
+                    null
                 );
                 
                 return bot.answerCallbackQuery(query.id);
