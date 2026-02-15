@@ -1,258 +1,429 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru" data-bs-theme="dark">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ProElectro Enterprise</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link href="css/style.css" rel="stylesheet">
-</head>
-<body>
-
-    <div id="loginOverlay">
-        <div class="glass-card p-5 text-center fade-in-up" style="width: 400px; max-width: 90%;">
-            <div class="mb-4">
-                <i class="bi bi-lightning-charge-fill text-warning display-4"></i>
-                <h3 class="text-white mt-3 fw-bold">ProElectro ERP</h3>
-            </div>
-            <form id="loginForm">
-                <div class="form-floating mb-3">
-                    <input type="password" class="form-control bg-dark text-white border-secondary" id="passwordInput" placeholder="Password" required>
-                    <label for="passwordInput" class="text-muted">Access Key</label>
-                </div>
-                <button type="submit" class="btn btn-warning w-100 fw-bold py-3 shadow-warning">ВОЙТИ В СИСТЕМУ</button>
-            </form>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>ProElectro Admin</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap"
+      rel="stylesheet"
+    />
+    <link href="css/style.css" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="loginOverlay" class="login-container">
+      <div class="login-card fade-in-up">
+        <div class="text-center mb-5">
+          <div class="logo-icon mb-3">
+            <i class="bi bi-lightning-charge-fill"></i>
+          </div>
+          <h2 class="fw-bold text-white">ProElectro</h2>
+          <p class="text-muted">Enterprise System</p>
         </div>
+        <form id="loginForm">
+          <div class="form-floating mb-3">
+            <input
+              type="password"
+              class="form-control"
+              id="passwordInput"
+              placeholder="Access Key"
+              required
+            />
+            <label for="passwordInput">Access Key</label>
+          </div>
+          <button
+            type="submit"
+            class="btn btn-primary w-100 py-3 fw-bold rounded-4"
+          >
+            ВОЙТИ
+          </button>
+        </form>
+      </div>
     </div>
 
-    <div id="app" class="d-flex h-100" style="display: none !important;">
-        
-        <div class="sidebar d-flex flex-column p-3">
-            <div class="d-flex align-items-center gap-2 mb-5 px-2 text-white">
-                <div class="bg-warning rounded p-1"><i class="bi bi-lightning-charge-fill text-dark"></i></div>
-                <span class="fs-5 fw-bold tracking-tight">ProElectro</span>
+    <div id="app" class="app-wrapper" style="display: none !important">
+      <header class="app-header">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <h5 class="m-0 fw-bold text-white" id="pageTitle">Дашборд</h5>
+            <div class="d-flex align-items-center gap-1">
+              <span class="indicator-dot online"></span>
+              <small class="text-muted" style="font-size: 10px">ONLINE</small>
             </div>
-            
-            <nav class="nav nav-pills flex-column gap-2">
-                <a href="#dashboard" class="nav-link active"><i class="bi bi-speedometer2 me-2"></i> Дашборд</a>
-                <a href="#orders" class="nav-link"><i class="bi bi-box-seam me-2"></i> Заказы</a>
-                <a href="#finance" class="nav-link"><i class="bi bi-wallet2 me-2"></i> Финансы</a>
-                <a href="#crm" class="nav-link"><i class="bi bi-people me-2"></i> Команда</a>
-                <a href="#settings" class="nav-link"><i class="bi bi-sliders me-2"></i> Настройки</a>
-            </nav>
+          </div>
+          <button class="btn btn-icon text-danger" onclick="logout()">
+            <i class="bi bi-box-arrow-right"></i>
+          </button>
+        </div>
+      </header>
 
-            <div class="mt-auto pt-3 border-top border-secondary">
-                <button class="btn btn-outline-danger w-100 btn-sm" onclick="logout()">
-                    <i class="bi bi-box-arrow-left me-2"></i> Выйти
-                </button>
+      <main class="app-content pb-5 mb-5">
+        <div id="view-dashboard" class="view-section fade-in">
+          <div class="kpi-scroll-container mb-4">
+            <div class="d-flex gap-3" id="kpiGrid"></div>
+          </div>
+
+          <div class="row g-2 mb-4">
+            <div class="col-6">
+              <button
+                class="btn btn-action w-100"
+                data-bs-toggle="modal"
+                data-bs-target="#manualOrderModal"
+              >
+                <i class="bi bi-plus-circle-fill text-success mb-2 fs-3"></i>
+                <span>Новый заказ</span>
+              </button>
             </div>
+            <div class="col-6">
+              <button
+                class="btn btn-action w-100"
+                data-bs-toggle="modal"
+                data-bs-target="#transferModal"
+              >
+                <i class="bi bi-arrow-left-right text-warning mb-2 fs-3"></i>
+                <span>Перевод</span>
+              </button>
+            </div>
+          </div>
+
+          <h6 class="section-title">Счета</h6>
+          <div
+            id="dashboardAccounts"
+            class="d-flex flex-column gap-2 mb-4"
+          ></div>
+
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <h6 class="section-title m-0">Последние заказы</h6>
+            <a href="#orders" class="text-warning text-decoration-none small"
+              >Все ></a
+            >
+          </div>
+          <div id="recentOrdersBody" class="d-flex flex-column gap-2"></div>
         </div>
 
-        <div class="main-content flex-grow-1 p-4 overflow-auto">
-            
-            <header class="d-flex justify-content-between align-items-center mb-5">
-                <div>
-                    <h4 class="text-white fw-bold m-0" id="pageTitle">Обзор</h4>
-                    <small class="text-muted" id="currentDate">-</small>
-                </div>
-                <div class="d-flex align-items-center gap-3">
-                    <div class="badge bg-success bg-opacity-10 text-success border border-success px-3 py-2 rounded-pill">
-                        <i class="bi bi-wifi me-1"></i> System Online
-                    </div>
-                </div>
-            </header>
+        <div
+          id="view-orders"
+          class="view-section fade-in"
+          style="display: none"
+        >
+          <div class="filters-scroll mb-3">
+            <button
+              class="filter-chip active"
+              onclick="App.filterOrders('all')"
+              data-status="all"
+            >
+              Все
+            </button>
+            <button
+              class="filter-chip"
+              onclick="App.filterOrders('new')"
+              data-status="new"
+            >
+              Новые
+            </button>
+            <button
+              class="filter-chip"
+              onclick="App.filterOrders('discuss')"
+              data-status="discuss"
+            >
+              Замер
+            </button>
+            <button
+              class="filter-chip"
+              onclick="App.filterOrders('work')"
+              data-status="work"
+            >
+              В работе
+            </button>
+            <button
+              class="filter-chip"
+              onclick="App.filterOrders('done')"
+              data-status="done"
+            >
+              Готовые
+            </button>
+          </div>
 
-            <div id="view-dashboard" class="view-section fade-in">
-                <div class="row g-4 mb-4" id="kpiGrid"></div>
+          <div class="search-bar mb-3">
+            <i class="bi bi-search"></i>
+            <input
+              type="text"
+              id="orderSearchInput"
+              placeholder="Поиск (Имя, Телефон, ID)"
+            />
+          </div>
 
-                <div class="row g-4">
-                    <div class="col-lg-8">
-                        <div class="glass-card p-4 h-100">
-                            <div class="d-flex justify-content-between align-items-center mb-4">
-                                <h5 class="text-white m-0">🔥 Активные заказы</h5>
-                                <a href="#orders" class="btn btn-sm btn-outline-light">Все заказы</a>
-                            </div>
-                            <div class="table-responsive">
-                                <table class="table table-dark table-hover align-middle mb-0">
-                                    <thead>
-                                        <tr class="text-muted small text-uppercase">
-                                            <th>ID</th><th>Клиент</th><th>Сумма</th><th>Статус</th><th>Мастер</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="recentOrdersBody"></tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-lg-4">
-                        <div class="glass-card p-4 h-100">
-                            <h5 class="text-white mb-4">💰 Баланс счетов</h5>
-                            <div id="dashboardAccounts" class="d-flex flex-column gap-3"></div>
-                            <button class="btn btn-warning w-100 mt-4" data-bs-toggle="modal" data-bs-target="#transferModal">
-                                <i class="bi bi-arrow-left-right me-2"></i> Быстрый перевод
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
+          <div id="allOrdersBody" class="d-flex flex-column gap-3"></div>
 
-            <div id="view-orders" class="view-section fade-in" style="display:none;">
-                <div class="glass-card p-4">
-                    <div class="d-flex flex-wrap justify-content-between gap-3 mb-4">
-                        <div class="btn-group">
-                            <button class="btn btn-dark filter-btn active" onclick="App.filterOrders('all')" data-status="all">Все</button>
-                            <button class="btn btn-dark filter-btn" onclick="App.filterOrders('new')" data-status="new">Новые</button>
-                            <button class="btn btn-dark filter-btn" onclick="App.filterOrders('work')" data-status="work">В работе</button>
-                            <button class="btn btn-dark filter-btn" onclick="App.filterOrders('done')" data-status="done">Готовые</button>
-                        </div>
-                        <div class="d-flex gap-2">
-                            <input type="text" id="orderSearchInput" class="form-control bg-dark border-secondary text-white" placeholder="Поиск...">
-                            <button class="btn btn-success text-nowrap" data-bs-toggle="modal" data-bs-target="#manualOrderModal">
-                                <i class="bi bi-plus-lg me-2"></i> Новый заказ
-                            </button>
-                        </div>
-                    </div>
-                    <div class="table-responsive">
-                        <table class="table table-dark table-hover align-middle">
-                            <thead>
-                                <tr class="text-muted small text-uppercase">
-                                    <th>ID</th><th>Клиент</th><th>Сумма</th><th>Менеджер</th><th>Статус</th><th>Дата</th><th></th>
-                                </tr>
-                            </thead>
-                            <tbody id="allOrdersBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div id="view-finance" class="view-section fade-in" style="display:none;">
-                <div class="row g-4 mb-4" id="financeAccountsGrid"></div>
-                <div class="glass-card p-4">
-                    <h5 class="text-white mb-4">📊 История транзакций</h5>
-                    <div class="alert alert-secondary d-flex align-items-center">
-                        <i class="bi bi-info-circle-fill me-2"></i>
-                        История транзакций скоро появится в версии 6.3
-                    </div>
-                </div>
-            </div>
-
-            <div id="view-crm" class="view-section fade-in" style="display:none;">
-                <div class="glass-card p-4">
-                    <h5 class="text-white mb-4">👥 Пользователи и Роли</h5>
-                    <div class="table-responsive">
-                        <table class="table table-dark table-hover align-middle">
-                            <thead>
-                                <tr class="text-muted small text-uppercase">
-                                    <th>Telegram ID</th><th>Имя</th><th>Телефон</th><th>Роль</th><th>Регистрация</th>
-                                </tr>
-                            </thead>
-                            <tbody id="usersTableBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div id="view-settings" class="view-section fade-in" style="display:none;">
-                <div class="row">
-                    <div class="col-md-8 col-xl-6">
-                        <div class="glass-card p-4">
-                            <h5 class="text-white mb-4">🛠 Настройки системы</h5>
-                            <form id="fullSettingsForm">
-                                <h6 class="text-warning mb-3">Калькулятор (Цены)</h6>
-                                <div class="row g-3 mb-4">
-                                    <div class="col-6"><label class="small text-muted">Газоблок</label><input name="wall_light" class="form-control bg-dark text-white border-secondary"></div>
-                                    <div class="col-6"><label class="small text-muted">Кирпич</label><input name="wall_medium" class="form-control bg-dark text-white border-secondary"></div>
-                                    <div class="col-6"><label class="small text-muted">Бетон</label><input name="wall_heavy" class="form-control bg-dark text-white border-secondary"></div>
-                                    <div class="col-6"><label class="small text-muted">Материал/м²</label><input name="material_m2" class="form-control bg-dark text-white border-secondary"></div>
-                                </div>
-                                <h6 class="text-warning mb-3">Распределение финансов (%)</h6>
-                                <div class="input-group mb-4">
-                                    <span class="input-group-text bg-dark text-muted border-secondary">Бизнес</span>
-                                    <input name="business_percent" class="form-control bg-dark text-white border-secondary">
-                                    <span class="input-group-text bg-dark text-muted border-secondary">Оклад</span>
-                                    <input name="staff_percent" class="form-control bg-dark text-white border-secondary">
-                                </div>
-                                <button class="btn btn-primary w-100">Сохранить изменения</button>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-        </div> </div> <div class="modal fade" id="editOrderModal" tabindex="-1">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content bg-dark text-white border-secondary">
-                <div class="modal-header border-secondary"><h5 class="modal-title">Редактирование заказа</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
-                <div class="modal-body">
-                    <form id="editOrderForm">
-                        <input type="hidden" name="orderId">
-                        <div class="mb-3">
-                            <label class="small text-muted">Статус</label>
-                            <select name="status" class="form-select bg-dark text-white border-secondary">
-                                <option value="new">🆕 Новый</option>
-                                <option value="work">🛠 В работе</option>
-                                <option value="done">✅ Выполнен</option>
-                                <option value="cancel">❌ Отмена</option>
-                            </select>
-                        </div>
-                        <div class="mb-3">
-                            <label class="small text-muted">Менеджер</label>
-                            <select name="assignee_id" class="form-select bg-dark text-white border-secondary"></select>
-                        </div>
-                        <button class="btn btn-success w-100">Сохранить</button>
-                    </form>
-                </div>
-            </div>
+          <div
+            id="ordersPagination"
+            class="d-flex justify-content-center align-items-center gap-3 mt-4 mb-5"
+          ></div>
         </div>
+
+        <div
+          id="view-finance"
+          class="view-section fade-in"
+          style="display: none"
+        >
+          <div id="financeAccountsGrid" class="row g-3 mb-4"></div>
+          <div
+            class="alert alert-dark border-secondary d-flex align-items-center"
+          >
+            <i class="bi bi-info-circle text-warning me-2"></i>
+            <small>История транзакций скоро появится</small>
+          </div>
+        </div>
+
+        <div id="view-crm" class="view-section fade-in" style="display: none">
+          <div class="search-bar mb-3">
+            <i class="bi bi-search"></i>
+            <input
+              type="text"
+              id="crmSearchInput"
+              placeholder="Поиск по ID или Имени"
+            />
+          </div>
+          <div id="usersTableBody" class="d-flex flex-column gap-2"></div>
+        </div>
+
+        <div
+          id="view-settings"
+          class="view-section fade-in"
+          style="display: none"
+        >
+          <form id="fullSettingsForm">
+            <div class="settings-card mb-3">
+              <h6 class="text-warning mb-3">Калькулятор</h6>
+              <div class="mb-2">
+                <label>Газоблок</label
+                ><input name="wall_light" class="form-control" />
+              </div>
+              <div class="mb-2">
+                <label>Кирпич</label
+                ><input name="wall_medium" class="form-control" />
+              </div>
+              <div class="mb-2">
+                <label>Бетон</label
+                ><input name="wall_heavy" class="form-control" />
+              </div>
+              <div class="mb-2">
+                <label>Материал/м²</label
+                ><input name="material_m2" class="form-control" />
+              </div>
+            </div>
+            <div class="settings-card mb-3">
+              <h6 class="text-warning mb-3">Распределение (%)</h6>
+              <div class="input-group mb-2">
+                <span class="input-group-text">Бизнес</span>
+                <input name="business_percent" class="form-control" />
+                <span class="input-group-text">Оклад</span>
+                <input name="staff_percent" class="form-control" />
+              </div>
+            </div>
+            <button class="btn btn-primary w-100 py-3 fw-bold rounded-4">
+              Сохранить
+            </button>
+          </form>
+        </div>
+      </main>
+
+      <nav class="bottom-nav">
+        <a href="#dashboard" class="nav-item active">
+          <i class="bi bi-house-door-fill"></i>
+          <span>Главная</span>
+        </a>
+        <a href="#orders" class="nav-item">
+          <i class="bi bi-card-checklist"></i>
+          <span>Заказы</span>
+        </a>
+        <a href="#finance" class="nav-item">
+          <i class="bi bi-wallet-fill"></i>
+          <span>Финансы</span>
+        </a>
+        <a href="#crm" class="nav-item">
+          <i class="bi bi-people-fill"></i>
+          <span>Команда</span>
+        </a>
+        <a href="#settings" class="nav-item">
+          <i class="bi bi-gear-fill"></i>
+          <span>Меню</span>
+        </a>
+      </nav>
+    </div>
+
+    <div class="modal fade" id="editOrderModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered modal-fullscreen-sm-down">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Редактирование</h5>
+            <button
+              type="button"
+              class="btn-close btn-close-white"
+              data-bs-dismiss="modal"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <form id="editOrderForm">
+              <input type="hidden" name="orderId" />
+
+              <div class="mb-3">
+                <label class="form-label text-muted">Статус</label>
+                <select name="status" class="form-select form-select-lg">
+                  <option value="new">🆕 Новый</option>
+                  <option value="discuss">💬 Обсуждение</option>
+                  <option value="work">🛠 В работе</option>
+                  <option value="done">✅ Выполнен</option>
+                  <option value="cancel">❌ Отмена</option>
+                </select>
+              </div>
+              <div class="mb-4">
+                <label class="form-label text-muted">Мастер</label>
+                <select
+                  name="assignee_id"
+                  class="form-select form-select-lg"
+                ></select>
+              </div>
+
+              <div class="card bg-dark border-secondary p-3 mb-3">
+                <h6 class="text-warning mb-3">
+                  <i class="bi bi-cash"></i> Финансы
+                </h6>
+                <div class="mb-2">
+                  <label class="small text-muted">Факт. цена</label>
+                  <input
+                    name="final_price"
+                    type="number"
+                    class="form-control"
+                    placeholder="0"
+                  />
+                </div>
+                <div class="mb-0">
+                  <label class="small text-muted">Расходы</label>
+                  <input
+                    name="expenses"
+                    type="number"
+                    class="form-control"
+                    placeholder="0"
+                  />
+                </div>
+              </div>
+
+              <button class="btn btn-success w-100 py-3 rounded-4 fw-bold">
+                Сохранить
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="modal fade" id="manualOrderModal" tabindex="-1">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content bg-dark text-white border-secondary">
-                <div class="modal-header border-secondary"><h5 class="modal-title">Новый заказ</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
-                <div class="modal-body">
-                    <form id="manualOrderForm">
-                        <div class="mb-3"><input name="clientName" class="form-control bg-dark text-white border-secondary" placeholder="Имя клиента" required></div>
-                        <div class="mb-3"><input name="clientPhone" class="form-control bg-dark text-white border-secondary" placeholder="Телефон"></div>
-                        <div class="row g-2 mb-3">
-                            <div class="col-6"><input name="area" type="number" class="form-control bg-dark text-white border-secondary" placeholder="Площадь (м²)" required></div>
-                            <div class="col-6">
-                                <select name="wallType" class="form-select bg-dark text-white border-secondary">
-                                    <option value="light">Газоблок</option>
-                                    <option value="medium">Кирпич</option>
-                                    <option value="heavy">Бетон</option>
-                                </select>
-                            </div>
-                        </div>
-                        <button class="btn btn-primary w-100">Создать</button>
-                    </form>
-                </div>
-            </div>
+      <div class="modal-dialog modal-fullscreen-sm-down">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Новый заказ</h5>
+            <button
+              class="btn-close btn-close-white"
+              data-bs-dismiss="modal"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <form id="manualOrderForm">
+              <input
+                name="clientName"
+                class="form-control mb-3 py-3"
+                placeholder="Имя клиента"
+                required
+              />
+              <input
+                name="clientPhone"
+                class="form-control mb-3 py-3"
+                placeholder="Телефон"
+              />
+              <input
+                name="area"
+                type="number"
+                class="form-control mb-3 py-3"
+                placeholder="Площадь (м²)"
+                required
+              />
+              <select name="wallType" class="form-select mb-3 py-3">
+                <option value="light">Газоблок</option>
+                <option value="medium">Кирпич</option>
+                <option value="heavy">Бетон</option>
+              </select>
+              <button class="btn btn-primary w-100 py-3 rounded-4">
+                Создать
+              </button>
+            </form>
+          </div>
         </div>
+      </div>
     </div>
 
     <div class="modal fade" id="transferModal" tabindex="-1">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content bg-dark text-white border-secondary">
-                <div class="modal-header border-secondary"><h5 class="modal-title">Перевод средств</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
-                <div class="modal-body">
-                    <form id="transferForm">
-                        <div class="mb-2"><label class="small text-muted">Откуда</label><select name="fromId" id="fromAccount" class="form-select bg-dark text-white border-secondary"></select></div>
-                        <div class="mb-2"><label class="small text-muted">Куда</label><select name="toId" id="toAccount" class="form-select bg-dark text-white border-secondary"></select></div>
-                        <div class="mb-3"><label class="small text-muted">Сумма</label><input name="amount" type="number" class="form-control bg-dark text-white border-secondary" required></div>
-                        <div class="mb-3"><input name="comment" class="form-control bg-dark text-white border-secondary" placeholder="Комментарий"></div>
-                        <button class="btn btn-warning w-100">Перевести</button>
-                    </form>
-                </div>
-            </div>
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Перевод</h5>
+            <button
+              class="btn-close btn-close-white"
+              data-bs-dismiss="modal"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <form id="transferForm">
+              <select
+                name="fromId"
+                id="fromAccount"
+                class="form-select mb-2 py-3"
+              ></select>
+              <div class="text-center my-1">
+                <i class="bi bi-arrow-down"></i>
+              </div>
+              <select
+                name="toId"
+                id="toAccount"
+                class="form-select mb-3 py-3"
+              ></select>
+              <input
+                name="amount"
+                type="number"
+                class="form-control mb-3 py-3"
+                placeholder="Сумма"
+                required
+              />
+              <input
+                name="comment"
+                class="form-control mb-3"
+                placeholder="Комментарий"
+              />
+              <button
+                class="btn btn-warning w-100 py-3 rounded-4 text-dark fw-bold"
+              >
+                Перевести
+              </button>
+            </form>
+          </div>
         </div>
+      </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <script src="js/api.js"></script>
     <script src="js/app.js"></script>
-</body>
+  </body>
 </html>

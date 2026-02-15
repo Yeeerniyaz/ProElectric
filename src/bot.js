@@ -1,7 +1,7 @@
 /**
  * @file src/bot.js
  * @description Инициализация Telegram бота.
- * Исправлена ошибка 'deleteWebhook is not a function'.
+ * Исправлена работа Polling и Webhook.
  */
 
 import TelegramBot from 'node-telegram-bot-api';
@@ -10,19 +10,27 @@ import { setupAuthHandlers } from './handlers/auth.js';
 import { setupMessageHandlers } from './handlers/messages.js';
 import { setupCallbackHandlers } from './handlers/callbacks.js';
 
-export const bot = new TelegramBot(config.bot.token, { polling: true });
+// Polling параметрлерін күшейтеміз
+export const bot = new TelegramBot(config.bot.token, { 
+    polling: {
+        interval: 300,      // Жиі тексереміз
+        autoStart: true,
+        params: { timeout: 10 }
+    }
+});
 
 export const initBot = async () => {
-    console.log('🤖 [BOT] Инициализация подсистем...');
+    console.log('🤖 [BOT] Инициализация...');
 
-    // 🔥 ТҮЗЕТІЛДІ: deleteWebHook (Webhook емес WebHook)
+    // Webhook қатесін болдырмау үшін try-catch
     try {
         await bot.deleteWebHook();
-        console.log('🧹 [BOT] Вебхук успешно очищен.');
+        console.log('🧹 [BOT] Вебхук тазаланды.');
     } catch (e) {
-        // Егер бұрын вебхук болмаса, қате шығуы қалыпты, елемейміз
+        // Егер вебхук болмаса, қате емес
     }
 
+    // Хендлерлерді қосу
     setupMessageHandlers();
     setupCallbackHandlers();
     setupAuthHandlers();
@@ -32,12 +40,12 @@ export const initBot = async () => {
         bot.emit('message', msg);
     });
 
-    // Қателерді сүзу
+    // Қателерден құлап қалмау
     bot.on('polling_error', (error) => {
         if (error.code !== 'EFATAL' && error.code !== 'ETIMEDOUT') {
-            console.error(`💥 [BOT ERROR] ${error.code}: ${error.message}`);
+            console.error(`⚠️ [BOT] Polling: ${error.message}`);
         }
     });
 
-    console.log('✅ [BOT] Система активна и принимает команды (в т.ч. из каналов).');
+    console.log('✅ [BOT] Система активна!');
 };

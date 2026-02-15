@@ -1,8 +1,8 @@
 /**
  * @file src/server.js
- * @description REST API для CRM-системы.
- * Работает через Service Layer и безопасные транзакции.
- * @version 6.2.0 (Manager Filter Added)
+ * @description REST API для CRM-системы (ProElectro Enterprise).
+ * Реализован Service Layer, безопасные транзакции и расширенная валидация.
+ * @version 6.5.0 (Financial Patch Update)
  */
 
 import express from "express";
@@ -23,14 +23,16 @@ const __dirname = path.dirname(__filename);
 
 export const startServer = () => {
   const app = express();
+
+  // =========================================================================
+  // 🛡 SECURITY & MIDDLEWARE
+  // =========================================================================
   app.set("trust proxy", 1);
-
-  // =========================================================================
-  // 🛡 MIDDLEWARE & SECURITY
-  // =========================================================================
-
   app.use(
-    helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }),
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginEmbedderPolicy: false,
+    }),
   );
   app.use(
     cors({
@@ -38,41 +40,37 @@ export const startServer = () => {
       credentials: true,
     }),
   );
-
   app.use(
     rateLimit({
       windowMs: 15 * 60 * 1000,
-      max: 1000,
+      max: 2000, // Лимитті сәл көтердік (Front-end polling үшін)
       standardHeaders: true,
-      message: { error: "⛔️ Too many requests" },
     }),
   );
-
-  app.use(express.json({ limit: "1mb" }));
+  app.use(express.json({ limit: "5mb" }));
   app.use(express.urlencoded({ extended: true }));
 
   app.use(
     session({
       name: "proelectro_sid",
-      secret: config.security.sessionSecret || "dev_secret",
+      secret: config.security.sessionSecret || "dev_secret_key_v1",
       resave: false,
       saveUninitialized: false,
       cookie: {
         httpOnly: true,
         secure: config.server.env === "production",
-        maxAge: 24 * 60 * 60 * 1000, // 24 часа
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 күн
         sameSite: "strict",
       },
     }),
   );
 
   // =========================================================================
-  // 🔐 AUTHENTICATION
+  // 🔐 AUTH GUARD
   // =========================================================================
-
   const requireAuth = (req, res, next) => {
     if (req.session && req.session.isAdmin) return next();
-    res.status(401).json({ error: "Unauthorized" });
+    res.status(401).json({ error: "Access Denied: Unauthorized" });
   };
 
   const requestLogger = (req, res, next) => {
@@ -85,9 +83,12 @@ export const startServer = () => {
   };
   app.use(requestLogger);
 
-  // Login
+  // =========================================================================
+  // 🔑 AUTH ROUTES
+  // =========================================================================
   app.post("/api/login", (req, res) => {
     const { password } = req.body;
+    // SHA-256 Hash тексеру
     const hash = crypto
       .createHash("sha256")
       .update(password || "")
@@ -95,13 +96,12 @@ export const startServer = () => {
 
     if (hash === config.security.adminPassHash) {
       req.session.isAdmin = true;
-      // В будущем здесь можно сохранять telegram_id менеджера, если вход через Telegram Login
-      return res.json({ success: true });
+      req.session.telegram_id = 999; // System Admin ID
+      return res.json({ success: true, user: { role: "admin" } });
     }
-    res.status(403).json({ error: "Invalid password" });
+    res.status(403).json({ error: "Invalid credentials" });
   });
 
-  // Logout
   app.post("/api/logout", (req, res) => {
     req.session.destroy(() => res.json({ success: true }));
   });
@@ -111,14 +111,13 @@ export const startServer = () => {
   );
 
   // =========================================================================
-  // 📊 ANALYTICS & DASHBOARD
+  // 📊 ANALYTICS
   // =========================================================================
-
   app.get("/api/analytics/kpi", requireAuth, async (req, res) => {
     try {
       const [revRes, activeRes, totalRes, doneRes] = await Promise.all([
         db.query(
-          `SELECT SUM(l.total_work_cost) as total FROM orders o JOIN leads l ON o.lead_id = l.id WHERE o.status = 'done'`,
+          `SELECT SUM(total_work_cost) as total FROM leads l JOIN orders o ON o.lead_id = l.id WHERE o.status = 'done'`,
         ),
         db.query(
           `SELECT COUNT(*) as count FROM orders WHERE status IN ('new', 'work', 'discuss')`,
@@ -144,20 +143,21 @@ export const startServer = () => {
   });
 
   // =========================================================================
-  // 🏗 ORDER MANAGEMENT
+  // 🏗 ORDER MANAGEMENT (CORE)
   // =========================================================================
 
-  // Получить список заказов (с фильтрацией)
+  // Список заказов + Фильтры
   app.get("/api/orders", requireAuth, async (req, res) => {
-    // 🔥 assignee_id параметрі қосылды
     const { status, page = 1, limit = 20, search, assignee_id } = req.query;
     const offset = (page - 1) * limit;
     const params = [];
+
+    // 🔥 ЖАҢА: final_price және expenses өрістерін аламыз
     let query = `
-      SELECT o.id, o.status, o.created_at, 
+      SELECT o.id, o.status, o.created_at, o.final_price, o.expenses,
              u.first_name as client_name, u.phone as client_phone,
              l.area, l.total_work_cost, 
-             m.first_name as manager_name
+             m.first_name as manager_name, m.telegram_id as assignee_id
       FROM orders o
       JOIN users u ON o.user_id = u.telegram_id
       JOIN leads l ON o.lead_id = l.id
@@ -170,7 +170,6 @@ export const startServer = () => {
       query += ` AND o.status = $${params.length}`;
     }
 
-    // 🔥 Егер менеджер ID келсе, тек соның заказдырын сүземіз
     if (assignee_id) {
       params.push(assignee_id);
       query += ` AND o.assignee_id = $${params.length}`;
@@ -197,67 +196,77 @@ export const startServer = () => {
     }
   });
 
-  // Создать заказ ВРУЧНУЮ
+  // Создание заказа (Ручное)
   app.post("/api/orders", requireAuth, async (req, res) => {
     const { clientName, clientPhone, area, wallType } = req.body;
-
     try {
       await db.transaction(async (client) => {
-        // 1. Создаем или находим юзера (Фейковый ID для ручных заказов)
-        const fakeId = -Date.now();
+        const fakeId = -Date.now(); // Fake ID for Manual User
         await client.query(
           `INSERT INTO users (telegram_id, first_name, phone, role) VALUES ($1, $2, $3, 'client')`,
           [fakeId, clientName, clientPhone],
         );
 
-        // 2. Считаем смету через Сервис (но цены берем простые)
-        const pricesRes = await client.query("SELECT key, value FROM settings");
-        const prices = {};
-        pricesRes.rows.forEach((r) => (prices[r.key] = parseFloat(r.value)));
-
-        const totalWork = area * 5000;
+        const prices = await db.getSettings();
+        const totalWork = area * 5000; // Simplified
         const totalMat = area * (prices.material_m2 || 4000);
 
-        // 3. Лид
         const leadRes = await client.query(
           `INSERT INTO leads (user_id, area, wall_type, total_work_cost, total_mat_cost) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
           [fakeId, area, wallType || "manual", totalWork, totalMat],
         );
 
-        // 4. Заказ
         await client.query(
           `INSERT INTO orders (user_id, lead_id, status) VALUES ($1, $2, 'new')`,
           [fakeId, leadRes.rows[0].id],
         );
       });
-
       res.json({ success: true });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
   });
 
-  // Обновить статус или менеджера
+  // 🔥 UPDATE ORDER (PATCH) - Бұл жерде бағаны да өзгертеміз
   app.patch("/api/orders/:id", requireAuth, async (req, res) => {
     const { id } = req.params;
-    const { status, assignee_id } = req.body;
+    const { status, assignee_id, final_price, expenses } = req.body;
 
     try {
+      const updates = [];
+      const values = [];
+      let idx = 1;
+
+      // 1. Статус өзгерту (Service арқылы - хабарлама жіберу үшін)
       if (status) {
-        await OrderService.updateStatus(
-          id,
-          status,
-          req.session.telegram_id || 0,
-        );
+        await OrderService.updateStatus(id, status, req.session.telegram_id);
       }
+
+      // 2. Басқа өрістерді SQL арқылы жаңарту
       if (assignee_id) {
+        updates.push(`assignee_id = $${idx++}`);
+        values.push(assignee_id);
+      }
+      if (final_price !== undefined && final_price !== "") {
+        updates.push(`final_price = $${idx++}`);
+        values.push(parseFloat(final_price));
+      }
+      if (expenses !== undefined && expenses !== "") {
+        updates.push(`expenses = $${idx++}`);
+        values.push(parseFloat(expenses));
+      }
+
+      if (updates.length > 0) {
+        values.push(id);
         await db.query(
-          `UPDATE orders SET assignee_id = $1, updated_at = NOW() WHERE id = $2`,
-          [assignee_id, id],
+          `UPDATE orders SET ${updates.join(", ")}, updated_at = NOW() WHERE id = $${idx}`,
+          values,
         );
       }
+
       res.json({ success: true });
     } catch (e) {
+      console.error(e);
       res.status(500).json({ error: e.message });
     }
   });
@@ -265,7 +274,6 @@ export const startServer = () => {
   // =========================================================================
   // 💰 FINANCE ERP
   // =========================================================================
-
   app.get("/api/accounts", requireAuth, async (req, res) => {
     try {
       const accounts = await db.getAccounts();
@@ -282,7 +290,7 @@ export const startServer = () => {
         fromAccountId: fromId,
         toAccountId: toId,
         amount: parseFloat(amount),
-        userId: req.session.telegram_id || 0,
+        userId: req.session.telegram_id,
         comment: comment || "Web Transfer",
       });
       res.json({ success: true });
@@ -291,37 +299,9 @@ export const startServer = () => {
     }
   });
 
-  app.post("/api/transactions", requireAuth, async (req, res) => {
-    try {
-      const { accountId, amount, type, category, comment, orderId } = req.body;
-      await db.addTransaction({
-        userId: req.session.telegram_id || 0,
-        accountId,
-        amount: parseFloat(amount),
-        type,
-        category,
-        comment,
-        orderId,
-      });
-      res.json({ success: true });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.get("/api/analytics/finance", requireAuth, async (req, res) => {
-    try {
-      const data = await db.getFinancialAnalytics();
-      res.json(data);
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
   // =========================================================================
-  // ⚙️ SETTINGS & USERS
+  // ⚙️ SYSTEM (Settings & Users)
   // =========================================================================
-
   app.get("/api/settings", requireAuth, async (req, res) => {
     const settings = await db.getSettings();
     res.json(settings);
@@ -333,7 +313,7 @@ export const startServer = () => {
         for (const [key, val] of Object.entries(req.body)) {
           await client.query(
             `INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, NOW()) 
-                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
             [key, parseFloat(val)],
           );
         }
@@ -344,7 +324,7 @@ export const startServer = () => {
     }
   });
 
-  // Получить пользователей (Для CRM)
+  // CRM Users List
   app.get("/api/users", requireAuth, async (req, res) => {
     try {
       const users = await db.query(
@@ -356,7 +336,6 @@ export const startServer = () => {
     }
   });
 
-  // Смена роли пользователя
   app.post("/api/users/:id/role", requireAuth, async (req, res) => {
     try {
       await db.query("UPDATE users SET role = $1 WHERE telegram_id = $2", [
@@ -370,9 +349,8 @@ export const startServer = () => {
   });
 
   // =========================================================================
-  // 🌍 SERVER START
+  // 🌍 SPA FALLBACK
   // =========================================================================
-
   app.use(express.static(path.join(__dirname, "../public")));
 
   app.get("*path", (req, res) => {
@@ -380,6 +358,6 @@ export const startServer = () => {
   });
 
   app.listen(config.server.port, "0.0.0.0", () => {
-    console.log(`🚀 [SERVER] Running on port ${config.server.port}`);
+    console.log(`🚀 [SERVER] Started on port ${config.server.port}`);
   });
 };
