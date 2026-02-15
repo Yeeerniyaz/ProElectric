@@ -185,9 +185,9 @@ export const startServer = () => {
   });
 
   // SPA Fallback (любой другой запрос ведет на admin.html)
-  app.get("/:any*", (req, res) => {
-    res.sendFile(path.join(__dirname, "../public/admin.html"));
-  });
+  app.get('/:path*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../public/admin.html'));
+});
 
   // ============================================================
   // 🚀 START
