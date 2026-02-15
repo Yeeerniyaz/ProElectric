@@ -374,10 +374,11 @@ export const startServer = () => {
   // =========================================================================
 
   app.use(express.static(path.join(__dirname, "../public")));
-  
-  app.get("/:path*", (req, res) => {
+
+  app.get("*path", (req, res) => {
     res.sendFile(path.join(__dirname, "../public/admin.html"));
   });
+
   app.listen(config.server.port, "0.0.0.0", () => {
     console.log(`🚀 [SERVER] Running on port ${config.server.port}`);
   });
