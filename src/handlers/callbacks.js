@@ -175,6 +175,7 @@ export const setupCallbackHandlers = () => {
             ],
           },
         });
+
         sessions.delete(chatId);
         return;
       }
