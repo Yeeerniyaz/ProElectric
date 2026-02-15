@@ -302,10 +302,6 @@ export const db = {
   },
 };
 
-/**
- * AUTO-MIGRATION SYSTEM (Senior ERP Edition)
- * Базаны нөлден жасайды немесе ескі нұсқаны автоматты түрде жаңартады.
- */
 export const initDB = async () => {
   const client = await pool.connect();
   try {
@@ -314,7 +310,7 @@ export const initDB = async () => {
     // Барлығы бір транзакцияда өтуі тиіс
     await client.query("BEGIN");
 
-    // 1. ПАЙДАЛАНУШЫЛАР (USERS) + Migration
+    // 1. ПАЙДАЛАНУШЫЛАР (USERS)
     await client.query(`
             CREATE TABLE IF NOT EXISTS users (
                 telegram_id BIGINT PRIMARY KEY,
@@ -326,33 +322,13 @@ export const initDB = async () => {
             );
         `);
 
-    // Егер кесте бұрыннан болса, жетіспейтін бағандарды қосамыз
+    // Миграция: Пайдаланушылар кестесіне жетіспейтін бағандарды қосу
     await client.query(`
             ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
         `);
 
-    // 2. ШОТТАР (ACCOUNTS)
-    await client.query(`
-            CREATE TABLE IF NOT EXISTS accounts (
-                id SERIAL PRIMARY KEY,
-                name TEXT NOT NULL,
-                balance NUMERIC DEFAULT 0,
-                type TEXT DEFAULT 'cash', -- 'bank', 'cash', 'saving'
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-
-    // 3. БАПТАУЛАР (SETTINGS)
-    await client.query(`
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY, 
-                value NUMERIC NOT NULL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-
-    // 4. ЛИДТЕР (LEADS)
+    // 2. ЛИДТЕР (LEADS)
     await client.query(`
             CREATE TABLE IF NOT EXISTS leads (
                 id SERIAL PRIMARY KEY, 
@@ -365,15 +341,39 @@ export const initDB = async () => {
             );
         `);
 
-    // 5. ТАПСЫРЫСТАР (ORDERS)
+    // 3. ТАПСЫРЫСТАР (ORDERS)
     await client.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY, 
                 user_id BIGINT REFERENCES users(telegram_id),
-                lead_id INTEGER REFERENCES leads(id),
                 status TEXT DEFAULT 'new', 
                 assignee_id BIGINT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+    // 🔥 МИГРАЦИЯ: Тапсырыстар кестесіне lead_id бағанын қосу
+    await client.query(`
+            ALTER TABLE orders ADD COLUMN IF NOT EXISTS lead_id INTEGER REFERENCES leads(id);
+        `);
+
+    // 4. ШОТТАР (ACCOUNTS)
+    await client.query(`
+            CREATE TABLE IF NOT EXISTS accounts (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                balance NUMERIC DEFAULT 0,
+                type TEXT DEFAULT 'cash',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+    // 5. БАПТАУЛАР (SETTINGS)
+    await client.query(`
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY, 
+                value NUMERIC NOT NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
@@ -382,23 +382,20 @@ export const initDB = async () => {
     await client.query(`
             CREATE TABLE IF NOT EXISTS transactions (
                 id SERIAL PRIMARY KEY,
-                user_id BIGINT REFERENCES users(telegram_id), -- Кім жасады
-                account_id INTEGER REFERENCES accounts(id), -- Қай шот бойынша
-                order_id INTEGER REFERENCES orders(id),        -- Қай заказға қатысты
+                user_id BIGINT REFERENCES users(telegram_id),
+                account_id INTEGER REFERENCES accounts(id),
+                order_id INTEGER REFERENCES orders(id),
                 amount NUMERIC NOT NULL,
-                type TEXT NOT NULL,         -- 'income', 'expense'
-                category TEXT NOT NULL,     -- 'salary', 'material', 'transfer', 'business'
+                type TEXT NOT NULL, 
+                category TEXT NOT NULL, 
                 comment TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
 
-    // --- БАЗАНЫ БАСТАПҚЫ ДЕРЕКТЕРМЕН ТОЛТЫРУ (SEEDING) ---
-
-    // Шоттарды тексеру және қосу
+    // --- БАЗАНЫ БАСТАПҚЫ ДЕРЕКТЕРМЕН ТОЛТЫРУ ---
     const accountCheck = await client.query("SELECT COUNT(*) FROM accounts");
     if (parseInt(accountCheck.rows[0].count) === 0) {
-      console.log("🏦 [DB] Creating default ERP accounts...");
       await client.query(`
                 INSERT INTO accounts (name, type, balance) VALUES 
                 ('Каспий Бизнес', 'bank', 0),
@@ -409,7 +406,6 @@ export const initDB = async () => {
             `);
     }
 
-    // Прайс-лист және пайыздарды тексеру
     const initialSettings = [
       ["material_m2", 4000],
       ["wall_light", 4500],
@@ -437,12 +433,10 @@ export const initDB = async () => {
     }
 
     await client.query("COMMIT");
-    console.log(
-      `✅ [DB] Database initialized successfully (Accounts & ERP v3.0)`,
-    );
+    console.log(`✅ [DB] Database verified and migrated successfully.`);
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error("💥 [DB FATAL] Initialization or Migration failed:", err);
+    console.error("💥 [DB FATAL] Initialization failed:", err);
     process.exit(1);
   } finally {
     client.release();
