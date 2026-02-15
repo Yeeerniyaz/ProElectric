@@ -2,7 +2,7 @@
  * @file src/services/OrderService.js
  * @description Слой бизнес-логики (Business Logic Layer).
  * Единая точка доступа к данным для Бота и Web-админки.
- * @version 6.1.0 (Full Features)
+ * @version 6.2.0 (Manager Features Added)
  */
 
 import { db } from "../db.js";
@@ -106,6 +106,29 @@ export class OrderService {
   // =========================================================================
   // 👓 READ OPERATIONS (ЧТЕНИЕ И СТАТИСТИКА)
   // =========================================================================
+
+  /**
+   * 🔥 ЖАҢА ФУНКЦИЯ: Менеджердің активті объектілері
+   * (Статус: 'work' немесе 'discuss')
+   */
+  static async getManagerActiveOrders(managerId) {
+    const sql = `
+            SELECT 
+                o.id, o.status, o.created_at, 
+                l.total_work_cost, l.area, l.wall_type,
+                u.first_name as client_name, 
+                u.phone as client_phone,
+                u.username as client_user
+            FROM orders o
+            JOIN leads l ON o.lead_id = l.id
+            JOIN users u ON o.user_id = u.telegram_id
+            WHERE o.assignee_id = $1 
+            AND o.status IN ('work', 'discuss') 
+            ORDER BY o.updated_at DESC
+        `;
+    const res = await db.query(sql, [managerId]);
+    return res.rows;
+  }
 
   /**
    * Получить историю заказов пользователя (для меню "Мои заказы")

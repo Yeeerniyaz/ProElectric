@@ -2,7 +2,7 @@
  * @file src/handlers/messages.js
  * @description Обработчик текстовых сообщений и команд (/start, /admin).
  * Работает как Контроллер: принимает запрос -> вызывает Service -> отдает ответ.
- * @version 6.0.0 (Refactored)
+ * @version 6.2.0 (Manager Panel Added)
  */
 
 import { bot } from "../core.js";
@@ -16,14 +16,21 @@ export const sessions = new Map();
 // ====================================================
 // 🔘 UI CONFIGURATION (КЛАВИАТУРЫ)
 // ====================================================
+
+// Функция для динамического меню (зависит от роли)
+const getMainMenu = (role) => {
+  const buttons = [
+    [{ text: "🧮 Рассчитать стоимость" }, { text: "📂 Мои заказы" }],
+    [{ text: "💰 Прайс-лист" }, { text: "📞 Контакты" }],
+  ];
+  // Если Админ или Менеджер — добавляем спец. кнопку
+  if (["admin", "manager"].includes(role)) {
+    buttons.unshift([{ text: "👷‍♂️ Мои объекты (Активные)" }]);
+  }
+  return { keyboard: buttons, resize_keyboard: true };
+};
+
 export const KB = {
-  MAIN: {
-    keyboard: [
-      [{ text: "🧮 Рассчитать стоимость" }, { text: "📂 Мои заказы" }],
-      [{ text: "💰 Прайс-лист" }, { text: "📞 Контакты" }],
-    ],
-    resize_keyboard: true,
-  },
   CONTACT: {
     keyboard: [
       [{ text: "📱 Отправить номер", request_contact: true }],
@@ -66,18 +73,24 @@ export const setupMessageHandlers = () => {
   // 1. /start & Регистрация
   bot.onText(/\/start/, async (msg) => {
     try {
-      await db.upsertUser(msg.from.id, msg.from.first_name, msg.from.username);
+      // Обновляем/создаем юзера и получаем его актуальную роль
+      const user = await db.upsertUser(
+        msg.from.id,
+        msg.from.first_name,
+        msg.from.username,
+      );
+
       await bot.sendMessage(
         msg.chat.id,
-        `Салам, <b>${msg.from.first_name}</b>! 👋\nЯ бот <b>ProElectro</b>. Готов к работе!`,
-        { parse_mode: "HTML", reply_markup: KB.MAIN },
+        `Салам, <b>${msg.from.first_name}</b>! 👋\nЯ бот <b>ProElectro</b>. Готов к работе!\nВаш статус: <b>${user.role}</b>`,
+        { parse_mode: "HTML", reply_markup: getMainMenu(user.role) },
       );
     } catch (e) {
       console.error("Start Error:", e);
     }
   });
 
-  // 2. Админ-панель
+  // 2. Админ-панель (команда /admin)
   bot.onText(/\/admin/, async (msg) => {
     const isAdmin =
       String(msg.from.id) === String(config.bot.bossUsername) ||
@@ -94,9 +107,15 @@ export const setupMessageHandlers = () => {
   // 3. Контакты
   bot.on("contact", async (msg) => {
     if (msg.contact.user_id !== msg.from.id) return;
-    await db.updateUserPhone(msg.from.id, msg.contact.phone_number);
+    // Обновляем телефон и сразу получаем роль для перерисовки меню
+    const user = await db.upsertUser(
+      msg.from.id,
+      msg.from.first_name,
+      msg.from.username,
+      msg.contact.phone_number,
+    );
     await bot.sendMessage(msg.chat.id, "✅ Номер сохранен!", {
-      reply_markup: KB.MAIN,
+      reply_markup: getMainMenu(user.role),
     });
   });
 
@@ -107,7 +126,34 @@ export const setupMessageHandlers = () => {
     const text = msg.text;
 
     try {
-      // --- 📂 МОИ ЗАКАЗЫ (Через Service) ---
+      // --- 👷‍♂️ МЕНЕДЖЕР: МОИ ОБЪЕКТЫ ---
+      if (text === "👷‍♂️ Мои объекты (Активные)") {
+        // Запрашиваем через Сервис активные заказы этого менеджера
+        const orders = await OrderService.getManagerActiveOrders(msg.from.id);
+
+        if (orders.length === 0)
+          return bot.sendMessage(
+            chatId,
+            "📭 У вас нет активных объектов в работе.",
+          );
+
+        let response = "<b>👷‍♂️ СІЗДІҢ ЖҰМЫСТАҒЫ ОБЪЕКТІЛЕР:</b>\n\n";
+        orders.forEach((o) => {
+          const date = new Date(o.created_at).toLocaleDateString();
+          const link = o.client_user ? `@${o.client_user}` : "LS";
+
+          response += `🔌 <b>Заказ #${o.id}</b> (${date})\n`;
+          response += `👤 Клиент: ${o.client_name} (${link})\n`;
+          response += `📱 Тел: <code>${o.client_phone || "жоқ"}</code>\n`;
+          response += `📐 Объект: ${o.area} м² (${o.wall_type})\n`;
+          response += `💰 Смета: ${formatKZT(o.total_work_cost)}\n`;
+          response += `➖➖➖➖➖➖➖➖\n`;
+        });
+
+        return bot.sendMessage(chatId, response, { parse_mode: "HTML" });
+      }
+
+      // --- 📂 МОИ ЗАКАЗЫ (Для Клиента) ---
       if (text === "📂 Мои заказы") {
         const orders = await OrderService.getUserOrders(msg.from.id);
 
@@ -125,7 +171,7 @@ export const setupMessageHandlers = () => {
         return bot.sendMessage(chatId, response, { parse_mode: "HTML" });
       }
 
-      // --- 💰 ПРАЙС-ЛИСТ (Через Service) ---
+      // --- 💰 ПРАЙС-ЛИСТ ---
       if (text === "💰 Прайс-лист") {
         const p = await OrderService.getPublicPriceList();
         const msgText =
@@ -146,7 +192,7 @@ export const setupMessageHandlers = () => {
         );
       }
 
-      // --- 🧮 КАЛЬКУЛЯТОР (Логика UI) ---
+      // --- 🧮 КАЛЬКУЛЯТОР ---
       if (text === "🧮 Рассчитать стоимость") {
         sessions.set(chatId, { step: "WALLS", data: {} });
         return bot.sendMessage(chatId, "Введите <b>площадь (м²)</b> цифрами:", {
@@ -155,7 +201,7 @@ export const setupMessageHandlers = () => {
         });
       }
 
-      // Обработка ввода цифр для калькулятора
+      // Обработка цифр калькулятора
       const session = sessions.get(chatId);
       if (session && session.step === "WALLS") {
         const area = parseInt(text);
@@ -225,7 +271,7 @@ export const handleAdminCommand = async (msg, match) => {
   }
 };
 
-// Уведомлялка (оставляем здесь, так как она чисто UI)
+// Уведомлялка (UI only)
 export const notifyAdmin = async (text, orderId = null) => {
   if (!config.bot.workGroupId) return;
   const opts = {

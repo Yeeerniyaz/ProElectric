@@ -2,7 +2,7 @@
  * @file src/server.js
  * @description REST API для CRM-системы.
  * Работает через Service Layer и безопасные транзакции.
- * @version 5.0.0 (Senior Architecture)
+ * @version 6.2.0 (Manager Filter Added)
  */
 
 import express from "express";
@@ -42,7 +42,7 @@ export const startServer = () => {
   app.use(
     rateLimit({
       windowMs: 15 * 60 * 1000,
-      max: 1000, // Чуть подняли лимит для админки
+      max: 1000,
       standardHeaders: true,
       message: { error: "⛔️ Too many requests" },
     }),
@@ -95,6 +95,7 @@ export const startServer = () => {
 
     if (hash === config.security.adminPassHash) {
       req.session.isAdmin = true;
+      // В будущем здесь можно сохранять telegram_id менеджера, если вход через Telegram Login
       return res.json({ success: true });
     }
     res.status(403).json({ error: "Invalid password" });
@@ -115,7 +116,6 @@ export const startServer = () => {
 
   app.get("/api/analytics/kpi", requireAuth, async (req, res) => {
     try {
-      // Используем параллельные запросы для скорости
       const [revRes, activeRes, totalRes, doneRes] = await Promise.all([
         db.query(
           `SELECT SUM(l.total_work_cost) as total FROM orders o JOIN leads l ON o.lead_id = l.id WHERE o.status = 'done'`,
@@ -149,7 +149,8 @@ export const startServer = () => {
 
   // Получить список заказов (с фильтрацией)
   app.get("/api/orders", requireAuth, async (req, res) => {
-    const { status, page = 1, limit = 20, search } = req.query;
+    // 🔥 assignee_id параметрі қосылды
+    const { status, page = 1, limit = 20, search, assignee_id } = req.query;
     const offset = (page - 1) * limit;
     const params = [];
     let query = `
@@ -167,6 +168,12 @@ export const startServer = () => {
     if (status && status !== "all") {
       params.push(status);
       query += ` AND o.status = $${params.length}`;
+    }
+
+    // 🔥 Егер менеджер ID келсе, тек соның заказдырын сүземіз
+    if (assignee_id) {
+      params.push(assignee_id);
+      query += ` AND o.assignee_id = $${params.length}`;
     }
 
     if (search) {
@@ -190,12 +197,11 @@ export const startServer = () => {
     }
   });
 
-  // Создать заказ ВРУЧНУЮ (Manual Order via Transaction)
+  // Создать заказ ВРУЧНУЮ
   app.post("/api/orders", requireAuth, async (req, res) => {
     const { clientName, clientPhone, area, wallType } = req.body;
 
     try {
-      // Используем нашу новую обертку транзакций из db.js
       await db.transaction(async (client) => {
         // 1. Создаем или находим юзера (Фейковый ID для ручных заказов)
         const fakeId = -Date.now();
@@ -209,7 +215,7 @@ export const startServer = () => {
         const prices = {};
         pricesRes.rows.forEach((r) => (prices[r.key] = parseFloat(r.value)));
 
-        const totalWork = area * 5000; // Упрощенно
+        const totalWork = area * 5000;
         const totalMat = area * (prices.material_m2 || 4000);
 
         // 3. Лид
@@ -236,10 +242,8 @@ export const startServer = () => {
     const { id } = req.params;
     const { status, assignee_id } = req.body;
 
-    // Используем сервис для обновления (там есть логика финансов)
     try {
       if (status) {
-        // Если меняем статус — зовем сервис, он посчитает деньги если статус 'done'
         await OrderService.updateStatus(
           id,
           status,
@@ -259,7 +263,7 @@ export const startServer = () => {
   });
 
   // =========================================================================
-  // 💰 FINANCE ERP (ACCOUNTS & TRANSACTIONS)
+  // 💰 FINANCE ERP
   // =========================================================================
 
   app.get("/api/accounts", requireAuth, async (req, res) => {
@@ -278,7 +282,7 @@ export const startServer = () => {
         fromAccountId: fromId,
         toAccountId: toId,
         amount: parseFloat(amount),
-        userId: req.session.telegram_id || 0, // 0 = System/Admin
+        userId: req.session.telegram_id || 0,
         comment: comment || "Web Transfer",
       });
       res.json({ success: true });
@@ -340,15 +344,40 @@ export const startServer = () => {
     }
   });
 
+  // Получить пользователей (Для CRM)
+  app.get("/api/users", requireAuth, async (req, res) => {
+    try {
+      const users = await db.query(
+        "SELECT telegram_id, first_name, username, phone, role, created_at FROM users ORDER BY created_at DESC",
+      );
+      res.json(users.rows);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Смена роли пользователя
+  app.post("/api/users/:id/role", requireAuth, async (req, res) => {
+    try {
+      await db.query("UPDATE users SET role = $1 WHERE telegram_id = $2", [
+        req.body.role,
+        req.params.id,
+      ]);
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // =========================================================================
   // 🌍 SERVER START
   // =========================================================================
 
   app.use(express.static(path.join(__dirname, "../public")));
-  app.get("*", (req, res) =>
-    res.sendFile(path.join(__dirname, "../public/admin.html")),
-  );
-
+  
+  app.get("/:path*", (req, res) => {
+    res.sendFile(path.join(__dirname, "../public/admin.html"));
+  });
   app.listen(config.server.port, "0.0.0.0", () => {
     console.log(`🚀 [SERVER] Running on port ${config.server.port}`);
   });
