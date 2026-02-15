@@ -1,10 +1,44 @@
 import { bot } from "../core.js";
 import { db } from "../db.js";
-// 🔥 Импортируем всё необходимое
-import { handleAdminCommand, sessions, notifyAdmin, KB } from "./messages.js";
-import { STATUS_CONFIG } from "../constants.js";
+import { config } from "../config.js";
 
-// Утилита для красивого форматирования денег (1 000 000 ₸)
+// Хранилище сессий для калькулятора (кто на каком шаге)
+export const sessions = new Map();
+
+// ====================================================
+// 🔘 КЛАВИАТУРЫ (UI)
+// ====================================================
+export const KB = {
+  // 👤 МЕНЮ КЛИЕНТА (Никаких админских кнопок!)
+  MAIN_MENU: {
+    keyboard: [
+      [{ text: "🧮 Рассчитать стоимость" }, { text: "📂 Мои заказы" }],
+      [{ text: "💰 Прайс-лист" }, { text: "📞 Контакты" }],
+    ],
+    resize_keyboard: true,
+  },
+  // 📱 ЗАПРОС КОНТАКТА
+  CONTACT_REQUEST: {
+    keyboard: [
+      [{ text: "📱 Отправить мой номер", request_contact: true }],
+      [{ text: "🔙 Назад" }],
+    ],
+    resize_keyboard: true,
+  },
+  // 👮‍♂️ АДМИН-ПАНЕЛЬ (Видна только тебе по команде /admin)
+  ADMIN_PANEL: {
+    inline_keyboard: [
+      [{ text: "📊 Статистика (Funnel)", callback_data: "adm_stats" }],
+      [{ text: "✉️ Сделать рассылку", callback_data: "adm_spam" }],
+    ],
+  },
+};
+
+// ====================================================
+// ⚙️ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+// ====================================================
+
+// Утилита: Красивая цена (500 000 ₸)
 const formatKZT = (num) => {
   return new Intl.NumberFormat("ru-KZ", {
     style: "currency",
@@ -13,293 +47,298 @@ const formatKZT = (num) => {
   }).format(num);
 };
 
-export const setupCallbackHandlers = () => {
-  bot.on("callback_query", async (query) => {
-    const { id, data, message, from } = query;
-    const chatId = message.chat.id;
+// Утилита: Перевод статусов
+const getStatusLabel = (status) => {
+  const map = {
+    new: "🆕 Новый",
+    work: "🛠 В работе",
+    done: "✅ Выполнен",
+    cancel: "❌ Отменен",
+  };
+  return map[status] || status;
+};
+
+// Уведомление админам (через группу или лс)
+export const notifyAdmin = async (text, orderId = null) => {
+  try {
+    // Если есть ID рабочей группы - шлем туда
+    if (config.bot.workGroupId) {
+      const opts = { parse_mode: "HTML" };
+      // Добавляем кнопку "Взять в работу" для группы
+      if (orderId) {
+        opts.reply_markup = {
+          inline_keyboard: [
+            [
+              {
+                text: "🙋‍♂️ Взять в работу",
+                callback_data: `take_order_${orderId}`,
+              },
+            ],
+          ],
+        };
+      }
+      await bot.sendMessage(config.bot.workGroupId, text, opts);
+    } else {
+      // Иначе шлем Боссу в личку
+      await bot.sendMessage(config.bot.bossUsername, text, {
+        parse_mode: "HTML",
+      });
+    }
+  } catch (e) {
+    console.error("⚠️ Notify Admin Error:", e.message);
+  }
+};
+
+// ====================================================
+// 🚀 ОСНОВНОЙ ОБРАБОТЧИК СООБЩЕНИЙ
+// ====================================================
+export const setupMessageHandlers = () => {
+  // 1. Обработка /start (Вход для всех)
+  bot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id;
+    const user = msg.from;
 
     try {
-      // ====================================================
-      // 1. АДМИН-ПУЛЬТ (ЛОГИКА ИЗ КАНАЛА)
-      // ====================================================
-      if (data.startsWith("adm_")) {
-        const cmd = data.split("_")[1]; // stats, new, list...
-        await bot.answerCallbackQuery(id);
+      await db.upsertUser(user.id, user.first_name, user.username);
 
-        // 🔥 UX: Показываем, что бот работает
-        bot.sendChatAction(chatId, "typing");
-        console.log(`🔘 [ADMIN] Нажата кнопка: ${cmd} в чате ${chatId}`);
+      await bot.sendMessage(
+        chatId,
+        `Салам, <b>${user.first_name}</b>! 👋\n\n` +
+          `Я бот <b>ProElectro</b>. Помогу рассчитать стоимость электрики и оформить заявку.\n\n` +
+          `👇 Выбери действие в меню:`,
+        { parse_mode: "HTML", reply_markup: KB.MAIN_MENU },
+      );
+    } catch (e) {
+      console.error("Start Error:", e);
+    }
+  });
 
-        await handleAdminCommand(message, [null, cmd]);
-        return;
-      }
+  // 2. Обработка /admin (ТОЛЬКО ДЛЯ БОССА)
+  bot.onText(/\/admin/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = String(msg.from.id);
+    const bossId = String(config.bot.bossUsername);
 
-      // ====================================================
-      // 2. СМЕНА СТАТУСА (АВТО-НАЗНАЧЕНИЕ ОТВЕТСТВЕННОГО)
-      // ====================================================
-      if (data.startsWith("status_")) {
-        const [_, action, orderId] = data.split("_"); // Деструктуризация
-        const cfg = STATUS_CONFIG[action];
+    // Проверка: ты ли это?
+    if (
+      userId !== bossId &&
+      String(chatId) !== String(config.bot.workGroupId)
+    ) {
+      // Если пишет левый чувак - игнорим или прикидываемся шлангом
+      return bot.sendMessage(chatId, "❓ Команда не распознана.");
+    }
 
-        if (cfg && orderId) {
-          // Обновляем статус И назначаем того, кто нажал
-          await db.query(
-            `
-                        UPDATE orders 
-                        SET status = $1, 
-                            assignee_id = (SELECT id FROM users WHERE telegram_id = $2),
-                            updated_at = NOW() 
-                        WHERE id = $3
-                    `,
-            [action, from.id, orderId],
-          );
+    await bot.sendMessage(
+      chatId,
+      "🕵️‍♂️ <b>Админ-панель ProElectro</b>\nВыберите действие:",
+      {
+        parse_mode: "HTML",
+        reply_markup: KB.ADMIN_PANEL,
+      },
+    );
+  });
 
-          // Чистим текст сообщения от старых заголовков
-          const originalText = message.text || "";
-          const cleanedText = originalText
-            .replace(/^.*(СТАТУС|Ответственный):.*\n\n/g, "")
-            .replace(/^.*СТАТУС:.*\n\n/g, "");
+  // 3. Обработка контактов
+  bot.on("contact", async (msg) => {
+    const chatId = msg.chat.id;
+    const phone = msg.contact.phone_number;
 
-          const time = new Date().toLocaleTimeString("ru-RU", {
-            hour: "2-digit",
-            minute: "2-digit",
-          });
+    if (msg.contact.user_id !== msg.from.id) return;
 
-          const updatedText =
-            `${cfg.icon} <b>СТАТУС: ${cfg.label}</b>\n` +
-            `👷‍♂️ <b>Ответственный: ${from.first_name}</b> (обн. ${time})\n\n` +
-            `${cleanedText}`;
+    try {
+      await db.updateUserPhone(msg.from.id, phone);
+      await bot.sendMessage(chatId, "✅ Ваш номер успешно сохранен!", {
+        reply_markup: KB.MAIN_MENU,
+      });
+    } catch (e) {
+      console.error("Contact Error:", e);
+    }
+  });
 
-          try {
-            await bot.editMessageText(updatedText, {
-              chat_id: chatId,
-              message_id: message.message_id,
-              parse_mode: "HTML",
-              reply_markup: message.reply_markup,
-            });
-            await bot.answerCallbackQuery(id, {
-              text: `✅ Статус: ${cfg.label}`,
-            });
-          } catch (e) {
-            // Игнорируем ошибку, если текст не изменился
-            await bot.answerCallbackQuery(id);
-          }
-        }
-        return;
-      }
+  // 4. Текстовое меню
+  bot.on("message", async (msg) => {
+    if (!msg.text || msg.text.startsWith("/")) return;
 
-      // ====================================================
-      // 3. ЯВНОЕ ВЗЯТИЕ ЗАКАЗА (КНОПКА "ВЗЯТЬ В РАБОТУ")
-      // ====================================================
-      if (data.startsWith("take_order_")) {
-        const orderId = data.split("_")[2];
-        const userId = from.id;
+    const chatId = msg.chat.id;
+    const text = msg.text;
 
-        // Проверка прав
-        const userRes = await db.query(
-          "SELECT id, role, first_name FROM users WHERE telegram_id = $1",
-          [userId],
-        );
-        const user = userRes.rows[0];
+    // --- 🧮 КАЛЬКУЛЯТОР ---
+    if (text === "🧮 Рассчитать стоимость") {
+      sessions.set(chatId, { step: "WALLS", data: { area: 0 } });
 
-        if (!user || (user.role !== "admin" && user.role !== "manager")) {
-          return bot.answerCallbackQuery(id, {
-            text: "⛔️ У вас нет прав.",
-            show_alert: true,
-          });
-        }
-
-        // Назначаем
-        await db.query(
-          "UPDATE orders SET assignee_id = $1, status = $2 WHERE id = $3",
-          [user.id, "work", orderId],
-        );
-
-        const originalText = message.text || "";
-        const updatedText =
-          originalText + `\n\n✅ <b>Заказ принял: ${user.first_name}</b>`;
-
-        await bot.editMessageText(updatedText, {
-          chat_id: chatId,
-          message_id: message.message_id,
+      await bot.sendMessage(
+        chatId,
+        "Введите <b>площадь помещения</b> (м²):\n<i>Просто напишите число, например: 75</i>",
+        {
           parse_mode: "HTML",
-          reply_markup: { inline_keyboard: [] }, // Убираем кнопку
-        });
+          reply_markup: { remove_keyboard: true }, // Скрываем меню на время ввода
+        },
+      );
+      return;
+    }
 
-        return bot.answerCallbackQuery(id, {
-          text: "✅ Вы назначены ответственным!",
-        });
-      }
+    // --- 📂 МОИ ЗАКАЗЫ ---
+    if (text === "📂 Мои заказы") {
+      try {
+        const sql = `
+                    SELECT 
+                        o.id, o.status, o.created_at, 
+                        l.total_work_cost,
+                        u.first_name as manager_name, 
+                        u.username as manager_user,
+                        u.phone as manager_phone
+                    FROM orders o
+                    JOIN leads l ON o.lead_id = l.id
+                    LEFT JOIN users u ON o.assignee_id = u.telegram_id
+                    WHERE o.user_id = $1
+                    ORDER BY o.created_at DESC
+                    LIMIT 5
+                `;
+        const res = await db.query(sql, [msg.from.id]);
 
-      // ====================================================
-      // 4. КАЛЬКУЛЯТОР (СЕССИЯ И РАСЧЕТ)
-      // ====================================================
-      const session = sessions.get(chatId);
-
-      // Если сессия протухла
-      if (!session && data.startsWith("wall_")) {
-        return bot.answerCallbackQuery(id, {
-          text: "⚠️ Начните новый расчет /start",
-          show_alert: true,
-        });
-      }
-
-      if (data.startsWith("wall_")) {
-        bot.sendChatAction(chatId, "typing"); // UX
-
-        session.data.wallType = data.replace("wall_", "");
-        session.step = "IDLE";
-
-        // 1. Технический расчет (материалы)
-        const area = session.data.area;
-        const estCable = Math.ceil(area * 4.5); // 4.5м кабеля на м2
-        const estPoints = Math.ceil(area * 0.8); // 0.8 точек на м2
-        const estShield = Math.ceil(area / 6) + 8; // Размер щита
-
-        // 2. Финансовый расчет (цены)
-        // Дефолтные цены (Fallback)
-        let prices = {
-          wall_light: 4500,
-          wall_medium: 5500,
-          wall_heavy: 7500,
-          material_m2: 4000,
-        };
-
-        // Пытаемся взять из базы
-        try {
-          const dbPrices = await db.getSettings();
-          if (Object.keys(dbPrices).length > 0)
-            prices = { ...prices, ...dbPrices };
-        } catch (e) {
-          console.error("Calc Price Error:", e.message);
+        if (res.rows.length === 0) {
+          return bot.sendMessage(chatId, "📭 У вас пока нет активных заказов.");
         }
 
-        const pricePerPoint = prices[`wall_${session.data.wallType}`];
-        const totalWork = estPoints * pricePerPoint;
-        const totalMat = area * prices.material_m2;
-        const totalSum = totalWork + totalMat;
+        let response = "<b>📂 ВАШИ ПОСЛЕДНИЕ ЗАКАЗЫ:</b>\n\n";
 
-        const wallLabel = {
-          light: "Газоблок/ГКЛ",
-          medium: "Кирпич",
-          heavy: "Бетон/Монолит",
-        }[session.data.wallType];
+        res.rows.forEach((order) => {
+          const date = new Date(order.created_at).toLocaleDateString("ru-RU");
+          const status = getStatusLabel(order.status);
 
-        // 3. Сохранение Лида
-        const userRes = await db.query(
-          "SELECT id FROM users WHERE telegram_id = $1",
-          [from.id],
+          response += `🔹 <b>Заказ #${order.id}</b> от ${date}\n`;
+          response += `💰 Сумма: ${formatKZT(order.total_work_cost)}\n`;
+          response += `📊 Статус: <b>${status}</b>\n`;
+
+          if (order.manager_name) {
+            const link = order.manager_user ? `(@${order.manager_user})` : "";
+            response += `👷‍♂️ <b>Менеджер:</b> ${order.manager_name} ${link}\n`;
+            if (order.manager_phone)
+              response += `📞 Тел: ${order.manager_phone}\n`;
+          } else {
+            response += `🕒 <i>Ожидает распределения...</i>\n`;
+          }
+          response += `➖➖➖➖➖➖➖\n`;
+        });
+
+        await bot.sendMessage(chatId, response, { parse_mode: "HTML" });
+      } catch (e) {
+        console.error("My Orders Error:", e);
+        await bot.sendMessage(
+          chatId,
+          "❌ Ошибка при получении списка заказов.",
         );
-        let leadId = null;
-        if (userRes.rows.length > 0) {
-          const insert = await db.query(
-            `INSERT INTO leads (user_id, area, wall_type, total_work_cost, total_mat_cost) 
-                         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-            [
-              userRes.rows[0].id,
-              area,
-              session.data.wallType,
-              totalWork,
-              totalMat,
-            ],
-          );
-          leadId = insert.rows[0].id;
-        }
+      }
+      return;
+    }
 
-        // 4. Результат
-        const result =
-          `⚡️ <b>СМЕТА (Объект ${area} м²)</b>\n\n` +
-          `🧱 <b>Стены:</b> ${wallLabel}\n` +
-          `📋 <b>Материалы (ориентир):</b>\n • Кабель: ~${estCable}м\n • Точки: ~${estPoints}шт\n • Щит: ~${estShield} мод.\n\n` +
-          `💵 <b>Работа:</b> ${formatKZT(totalWork)}\n🔌 <b>Материал:</b> ~${formatKZT(totalMat)}\n` +
-          `➖➖➖➖\n💰 <b>ИТОГО: ~${formatKZT(totalSum)}</b>\n\n` +
-          `<i>*Цена примерная. Точная смета — после замера.</i>`;
+    // --- 💰 ПРАЙС ---
+    if (text === "💰 Прайс-лист") {
+      const prices = await db.getSettings();
+      const msgText =
+        `📋 <b>АКТУАЛЬНЫЙ ПРАЙС (Работа):</b>\n\n` +
+        `🧱 <b>Точка (Газоблок):</b> ${prices.wall_light} ₸\n` +
+        `🧱 <b>Точка (Кирпич):</b> ${prices.wall_medium} ₸\n` +
+        `🧱 <b>Точка (Бетон):</b> ${prices.wall_heavy} ₸\n\n` +
+        `🔌 <b>Материал (черновой):</b> ~${prices.material_m2} ₸/м²\n\n` +
+        `<i>*Цены могут меняться в зависимости от сложности.</i>`;
 
-        await bot.sendMessage(chatId, result, {
+      await bot.sendMessage(chatId, msgText, { parse_mode: "HTML" });
+      return;
+    }
+
+    // --- 📞 КОНТАКТЫ (Без сайта, без лишнего) ---
+    if (text === "📞 Контакты") {
+      await bot.sendMessage(
+        chatId,
+        `📞 <b>Наши контакты:</b>\n\n` +
+          `👤 Ернияз: +7 (706) 606-63-23\n` +
+          `📍 Алматы, Казахстан\n\n` +
+          `👇 Нажмите кнопку ниже, чтобы мы сами вам перезвонили:`,
+        {
+          parse_mode: "HTML",
+          reply_markup: KB.CONTACT_REQUEST,
+        },
+      );
+      return;
+    }
+
+    // --- ЛОГИКА КАЛЬКУЛЯТОРА (ВВОД ПЛОЩАДИ) ---
+    const session = sessions.get(chatId);
+    if (session && session.step === "WALLS") {
+      const area = parseInt(text);
+      if (isNaN(area) || area < 10 || area > 10000) {
+        return bot.sendMessage(
+          chatId,
+          "⚠️ Пожалуйста, введите корректную площадь (число от 10 до 10000).",
+        );
+      }
+
+      session.data.area = area;
+      session.step = "TYPE";
+
+      await bot.sendMessage(
+        chatId,
+        `✅ Площадь: ${area} м². \n🧱 <b>Выберите материал стен:</b>`,
+        {
           parse_mode: "HTML",
           reply_markup: {
             inline_keyboard: [
-              [
-                {
-                  text: "💬 Обсудить в WhatsApp",
-                  callback_data: `create_order_wa_${leadId}`,
-                },
-              ],
-              [
-                {
-                  text: "👷‍♂️ Записаться на замер",
-                  callback_data: `create_order_call_${leadId}`,
-                },
-              ],
+              [{ text: "🧱 Газоблок / ГКЛ", callback_data: "wall_light" }],
+              [{ text: "🧱 Кирпич", callback_data: "wall_medium" }],
+              [{ text: "🏗 Бетон / Монолит", callback_data: "wall_heavy" }],
             ],
           },
-        });
-
-        sessions.delete(chatId);
-        // 🔥 Возвращаем меню, чтобы юзер не потерялся
-        await bot.sendMessage(
-          chatId,
-          "👇 <b>Что делаем дальше?</b>",
-          KB.MAIN_MENU,
-        );
-
-        return bot.answerCallbackQuery(id);
-      }
-
-      // ====================================================
-      // 5. СОЗДАНИЕ ЗАКАЗА
-      // ====================================================
-      if (data.startsWith("create_order_")) {
-        const [, , type, leadId] = data.split("_"); // wa или call
-        bot.sendChatAction(chatId, "typing");
-
-        const userQuery = await db.query(
-          "SELECT id, username, phone, first_name FROM users WHERE telegram_id = $1",
-          [from.id],
-        );
-        const userData = userQuery.rows[0];
-
-        if (!userData)
-          return bot.answerCallbackQuery(id, {
-            text: "Ошибка: Нажмите /start",
-          });
-
-        // Создаем заказ в БД
-        const orderRes = await db.query(
-          `INSERT INTO orders (user_id, lead_id, status) VALUES ($1, $2, 'new') RETURNING id`,
-          [userData.id, leadId],
-        );
-        const newOrderId = orderRes.rows[0].id;
-
-        // Ответ клиенту
-        let clientMsg =
-          "✅ <b>Заявка принята!</b>\nМенеджер свяжется с вами в ближайшее время.";
-        if (type === "wa")
-          clientMsg =
-            "✅ <b>Переходим в WhatsApp...</b>\n👉 https://wa.me/77066066323"; // Твой номер
-
-        await bot.sendMessage(chatId, clientMsg, { parse_mode: "HTML" });
-
-        // Уведомление Админу
-        const leadInfo = await db.query(
-          "SELECT area, total_work_cost FROM leads WHERE id = $1",
-          [leadId],
-        );
-        const lead = leadInfo.rows[0];
-
-        await notifyAdmin(
-          `🔥 <b>НОВЫЙ ЗАКАЗ #${newOrderId}</b>\n` +
-            `👤 <b>Клиент:</b> ${userData.first_name} (@${userData.username || "нет"})\n` +
-            `📱 <b>Тел:</b> <code>${userData.phone}</code>\n` +
-            `💰 <b>Смета:</b> ~${formatKZT(lead.total_work_cost)}\n` +
-            `🎯 <b>Тип:</b> ${type === "wa" ? "WhatsApp" : "Замер"}`,
-          newOrderId,
-        );
-        return bot.answerCallbackQuery(id);
-      }
-    } catch (error) {
-      console.error("💥 [CALLBACK ERROR]", error);
-      await bot.answerCallbackQuery(id, { text: "❌ Ошибка сервера" });
+        },
+      );
+      return;
     }
   });
+};
+
+// ====================================================
+// 👮‍♂️ АДМИНСКИЕ КОМАНДЫ (Обработчик callback)
+// ====================================================
+export const handleAdminCommand = async (msg, match) => {
+  const chatId = msg.chat.id;
+  const cmd = match[1]; // stats или spam
+
+  const userId = String(msg.from.id); // КТО нажал кнопку
+  const bossId = String(config.bot.bossUsername);
+
+  // Двойная проверка прав
+  if (userId !== bossId && String(chatId) !== String(config.bot.workGroupId)) {
+    return bot.answerCallbackQuery(msg.id, {
+      text: "⛔️ Доступ запрещен",
+      show_alert: true,
+    });
+  }
+
+  if (cmd === "stats") {
+    const stats = await db.getStats();
+
+    let report = `📊 <b>СТАТИСТИКА:</b>\n\n`;
+    if (stats.funnel.length > 0) {
+      stats.funnel.forEach((row) => {
+        const label = getStatusLabel(row.status);
+        report += `${label}: ${row.count} заяв. (${formatKZT(row.money)})\n`;
+      });
+    } else {
+      report += `📭 Заявок пока нет.\n`;
+    }
+
+    report += `\n🆕 <b>Последние 5:</b>\n`;
+    stats.recent.slice(0, 5).forEach((o) => {
+      report += `#${o.id} - ${o.first_name} - ${getStatusLabel(o.status)}\n`;
+    });
+
+    await bot.sendMessage(chatId, report, { parse_mode: "HTML" });
+  }
+
+  if (cmd === "spam") {
+    await bot.sendMessage(
+      chatId,
+      '✉️ Введите текст рассылки (или фото с подписью). Начните с слова "РАССЫЛКА: "',
+    );
+  }
 };
