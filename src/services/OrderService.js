@@ -1,40 +1,39 @@
 /**
  * @file src/services/OrderService.js
  * @description Слой бизнес-логики (Business Logic Layer).
- * Отвечает за расчеты, управление статусами и финансовые операции.
+ * Единая точка доступа к данным для Бота и Web-админки.
+ * @version 6.1.0 (Full Features)
  */
 
 import { db } from "../db.js";
 import { ORDER_STATUS } from "../constants.js";
 
 export class OrderService {
+  // =========================================================================
+  // 🏗 WRITE OPERATIONS (СОЗДАНИЕ И ИЗМЕНЕНИЕ)
+  // =========================================================================
+
   /**
    * 🧮 Рассчитать предварительную смету (Калькулятор)
    */
   static async calculateEstimate(area, wallType) {
-    // 1. Получаем настройки (цены)
     const prices = await db.getSettings();
-
-    // 2. Коэффициенты сложности
     const wallFactor = { light: 1.0, medium: 1.25, heavy: 1.6 }[wallType] || 1;
 
-    // 3. Эвристика объемов (Volume Heuristics)
     const volume = {
-      points: Math.ceil(area * 0.85), // Точки
-      strobe: Math.ceil(area * 0.6), // Штроба
-      cable: Math.ceil(area * 4.8), // Кабель
-      boxes: Math.ceil(area * 0.85), // Подрозетники
-      shield: Math.ceil(area / 15) + 2, // Модули щита
+      points: Math.ceil(area * 0.85),
+      strobe: Math.ceil(area * 0.6),
+      cable: Math.ceil(area * 4.8),
+      boxes: Math.ceil(area * 0.85),
+      shield: Math.ceil(area / 15) + 2,
     };
 
-    // 4. Расчет стоимости работ
     const workCost =
       volume.points * (prices.work_point || 1500) +
       volume.strobe * (prices.work_strobe || 1500) * wallFactor +
       volume.cable * (prices.work_cable || 450) +
       (prices.work_shield_install || 18000);
 
-    // 5. Расчет материалов
     const matCost = Math.ceil(area * (prices.material_m2 || 4500));
 
     return {
@@ -50,7 +49,7 @@ export class OrderService {
   }
 
   /**
-   * Создать Лид (Сохранить расчет)
+   * Создать Лид
    */
   static async createLead(userId, estimate) {
     return await db.createLead(userId, {
@@ -62,18 +61,16 @@ export class OrderService {
   }
 
   /**
-   * Создать Заказ (Конверсия из Лида)
+   * Создать Заказ (Конверсия)
    */
   static async createOrder(userId, leadId) {
-    // Используем транзакционный метод из db.js
     return await db.createOrder(userId, leadId);
   }
 
   /**
-   * Взять заказ в работу (Assign)
+   * Взять заказ в работу
    */
   static async takeOrder(orderId, userId) {
-    // Проверка роли
     const userRes = await db.query(
       "SELECT role, first_name FROM users WHERE telegram_id = $1",
       [userId],
@@ -88,13 +85,11 @@ export class OrderService {
       `UPDATE orders SET assignee_id = $1, status = 'work', updated_at = NOW() WHERE id = $2`,
       [userId, orderId],
     );
-
-    return user; // Возвращаем данные мастера
+    return user;
   }
 
   /**
-   * Обновить статус заказа
-   * Возвращает финансовые данные, если заказ закрыт
+   * Обновить статус и вернуть фин. данные если закрыт
    */
   static async updateStatus(orderId, newStatus, userId) {
     await db.query(
@@ -102,16 +97,81 @@ export class OrderService {
       [newStatus, userId, orderId],
     );
 
-    // Если статус "Выполнен", считаем деньги
     if (newStatus === ORDER_STATUS.DONE) {
       return await this._calculateFinancialSplit(orderId);
     }
     return null;
   }
 
+  // =========================================================================
+  // 👓 READ OPERATIONS (ЧТЕНИЕ И СТАТИСТИКА)
+  // =========================================================================
+
   /**
-   * 💰 Приватный метод: Расчет распределения денег (ERP)
+   * Получить историю заказов пользователя (для меню "Мои заказы")
    */
+  static async getUserOrders(userId, limit = 5) {
+    const sql = `
+            SELECT 
+                o.id, o.status, o.created_at, 
+                l.total_work_cost,
+                u.first_name as manager_name, 
+                u.username as manager_user,
+                u.phone as manager_phone
+            FROM orders o
+            JOIN leads l ON o.lead_id = l.id
+            LEFT JOIN users u ON o.assignee_id = u.telegram_id
+            WHERE o.user_id = $1
+            ORDER BY o.created_at DESC
+            LIMIT $2
+        `;
+    const res = await db.query(sql, [userId, limit]);
+    return res.rows;
+  }
+
+  /**
+   * Глобальная статистика для Админки (Funnel)
+   */
+  static async getGlobalStats() {
+    // Воронка продаж
+    const funnelRes = await db.query(`
+            SELECT status, COUNT(*) as count, SUM(l.total_work_cost) as money
+            FROM orders o JOIN leads l ON o.lead_id = l.id
+            GROUP BY status
+        `);
+
+    // Последние 10 заказов
+    const recentRes = await db.query(`
+            SELECT o.id, u.first_name, l.total_work_cost, o.status, o.created_at
+            FROM orders o
+            JOIN users u ON o.user_id = u.telegram_id
+            JOIN leads l ON o.lead_id = l.id
+            ORDER BY o.created_at DESC LIMIT 10
+        `);
+
+    return {
+      funnel: funnelRes.rows,
+      recent: recentRes.rows,
+    };
+  }
+
+  /**
+   * Получить актуальный прайс-лист для отправки клиенту
+   */
+  static async getPublicPriceList() {
+    const settings = await db.getSettings();
+    return {
+      wall_light: settings.wall_light,
+      wall_medium: settings.wall_medium,
+      wall_heavy: settings.wall_heavy,
+      material_m2: settings.material_m2,
+    };
+  }
+
+  // =========================================================================
+  // 🔒 PRIVATE HELPERS
+  // =========================================================================
+
   static async _calculateFinancialSplit(orderId) {
     const res = await db.query(
       `
