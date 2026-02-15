@@ -1,7 +1,7 @@
 /**
  * @file src/bot.js
- * @description Инициализация Telegram бота и регистрации обработчиков.
- * Добавлена поддержка каналов (channel_post).
+ * @description Инициализация Telegram бота.
+ * Исправлена ошибка 'deleteWebhook is not a function'.
  */
 
 import TelegramBot from 'node-telegram-bot-api';
@@ -10,35 +10,32 @@ import { setupAuthHandlers } from './handlers/auth.js';
 import { setupMessageHandlers } from './handlers/messages.js';
 import { setupCallbackHandlers } from './handlers/callbacks.js';
 
-// 1. Создаем бота (Polling қосулы)
 export const bot = new TelegramBot(config.bot.token, { polling: true });
 
 export const initBot = async () => {
     console.log('🤖 [BOT] Инициализация подсистем...');
 
-    // 2. Вебхукты тазалау (Polling дұрыс істеуі үшін)
+    // 🔥 ТҮЗЕТІЛДІ: deleteWebHook (Webhook емес WebHook)
     try {
-        await bot.deleteWebhook();
+        await bot.deleteWebHook();
         console.log('🧹 [BOT] Вебхук успешно очищен.');
     } catch (e) {
-        console.warn('⚠️ [BOT] Ошибка очистки вебхука:', e.message);
+        // Егер бұрын вебхук болмаса, қате шығуы қалыпты, елемейміз
     }
 
-    // 3. Хендлерлерді қосу
-    setupAuthHandlers();
     setupMessageHandlers();
     setupCallbackHandlers();
+    setupAuthHandlers();
 
-    // 4. 🔥 КАНАЛДАРДЫ ҚОЛДАУ (Осы жер жаңа)
-    // Каналға жазған кезде 'channel_post' оқиғасы болады, біз оны 'message' деп қабылдаймыз
+    // Каналдарды қолдау
     bot.on('channel_post', (msg) => {
         bot.emit('message', msg);
     });
-    
-    // 5. Лог ошибок
+
+    // Қателерді сүзу
     bot.on('polling_error', (error) => {
         if (error.code !== 'EFATAL' && error.code !== 'ETIMEDOUT') {
-             console.error(`💥 [BOT ERROR] ${error.code}: ${error.message}`);
+            console.error(`💥 [BOT ERROR] ${error.code}: ${error.message}`);
         }
     });
 
