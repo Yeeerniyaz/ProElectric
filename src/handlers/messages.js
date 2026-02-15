@@ -19,15 +19,15 @@ export const sessions = new Map();
 
 // Функция для динамического меню (зависит от роли)
 const getMainMenu = (role) => {
-  const buttons = [
-    [{ text: "🧮 Рассчитать стоимость" }, { text: "📂 Мои заказы" }],
-    [{ text: "💰 Прайс-лист" }, { text: "📞 Контакты" }],
-  ];
-  // Если Админ или Менеджер — добавляем спец. кнопку
-  if (["admin", "manager"].includes(role)) {
-    buttons.unshift([{ text: "👷‍♂️ Мои объекты (Активные)" }]);
-  }
-  return { keyboard: buttons, resize_keyboard: true };
+    const buttons = [
+        [{ text: "🧮 Рассчитать стоимость" }, { text: "📂 Мои заказы" }],
+        [{ text: "💰 Прайс-лист" }, { text: "📞 Контакты" }],
+    ];
+    // Если Админ или Менеджер — добавляем спец. кнопку
+    if (['admin', 'manager'].includes(role)) {
+        buttons.unshift([{ text: "👷‍♂️ Мои объекты (Активные)" }]);
+    }
+    return { keyboard: buttons, resize_keyboard: true };
 };
 
 export const KB = {
@@ -70,16 +70,13 @@ const getStatusLabel = (status) => {
 // 🚀 MAIN HANDLERS
 // ====================================================
 export const setupMessageHandlers = () => {
+  
   // 1. /start & Регистрация
   bot.onText(/\/start/, async (msg) => {
     try {
       // Обновляем/создаем юзера и получаем его актуальную роль
-      const user = await db.upsertUser(
-        msg.from.id,
-        msg.from.first_name,
-        msg.from.username,
-      );
-
+      const user = await db.upsertUser(msg.from.id, msg.from.first_name, msg.from.username);
+      
       await bot.sendMessage(
         msg.chat.id,
         `Салам, <b>${msg.from.first_name}</b>! 👋\nЯ бот <b>ProElectro</b>. Готов к работе!\nВаш статус: <b>${user.role}</b>`,
@@ -108,12 +105,7 @@ export const setupMessageHandlers = () => {
   bot.on("contact", async (msg) => {
     if (msg.contact.user_id !== msg.from.id) return;
     // Обновляем телефон и сразу получаем роль для перерисовки меню
-    const user = await db.upsertUser(
-      msg.from.id,
-      msg.from.first_name,
-      msg.from.username,
-      msg.contact.phone_number,
-    );
+    const user = await db.upsertUser(msg.from.id, msg.from.first_name, msg.from.username, msg.contact.phone_number);
     await bot.sendMessage(msg.chat.id, "✅ Номер сохранен!", {
       reply_markup: getMainMenu(user.role),
     });
@@ -128,29 +120,25 @@ export const setupMessageHandlers = () => {
     try {
       // --- 👷‍♂️ МЕНЕДЖЕР: МОИ ОБЪЕКТЫ ---
       if (text === "👷‍♂️ Мои объекты (Активные)") {
-        // Запрашиваем через Сервис активные заказы этого менеджера
-        const orders = await OrderService.getManagerActiveOrders(msg.from.id);
+         // Запрашиваем через Сервис активные заказы этого менеджера
+         const orders = await OrderService.getManagerActiveOrders(msg.from.id);
 
-        if (orders.length === 0)
-          return bot.sendMessage(
-            chatId,
-            "📭 У вас нет активных объектов в работе.",
-          );
+         if (orders.length === 0) return bot.sendMessage(chatId, "📭 У вас нет активных объектов в работе.");
 
-        let response = "<b>👷‍♂️ СІЗДІҢ ЖҰМЫСТАҒЫ ОБЪЕКТІЛЕР:</b>\n\n";
-        orders.forEach((o) => {
-          const date = new Date(o.created_at).toLocaleDateString();
-          const link = o.client_user ? `@${o.client_user}` : "LS";
-
-          response += `🔌 <b>Заказ #${o.id}</b> (${date})\n`;
-          response += `👤 Клиент: ${o.client_name} (${link})\n`;
-          response += `📱 Тел: <code>${o.client_phone || "жоқ"}</code>\n`;
-          response += `📐 Объект: ${o.area} м² (${o.wall_type})\n`;
-          response += `💰 Смета: ${formatKZT(o.total_work_cost)}\n`;
-          response += `➖➖➖➖➖➖➖➖\n`;
-        });
-
-        return bot.sendMessage(chatId, response, { parse_mode: "HTML" });
+         let response = "<b>👷‍♂️ СІЗДІҢ ЖҰМЫСТАҒЫ ОБЪЕКТІЛЕР:</b>\n\n";
+         orders.forEach(o => {
+             const date = new Date(o.created_at).toLocaleDateString();
+             const link = o.client_user ? `@${o.client_user}` : 'LS';
+             
+             response += `🔌 <b>Заказ #${o.id}</b> (${date})\n`;
+             response += `👤 Клиент: ${o.client_name} (${link})\n`;
+             response += `📱 Тел: <code>${o.client_phone || 'жоқ'}</code>\n`;
+             response += `📐 Объект: ${o.area} м² (${o.wall_type})\n`;
+             response += `💰 Смета: ${formatKZT(o.total_work_cost)}\n`;
+             response += `➖➖➖➖➖➖➖➖\n`;
+         });
+         
+         return bot.sendMessage(chatId, response, { parse_mode: "HTML" });
       }
 
       // --- 📂 МОИ ЗАКАЗЫ (Для Клиента) ---
