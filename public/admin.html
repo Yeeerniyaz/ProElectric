@@ -1,301 +1,577 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru" data-bs-theme="dark">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>⚡️ ProElectro Admin</title>
-    
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ProElectro Enterprise ERP</title>
 
-    <style>
-        body { background-color: #121212; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; }
-        .card { background-color: #1e1e1e; border: 1px solid #333; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        .navbar { background-color: #1e1e1e; border-bottom: 1px solid #333; }
-        .btn-primary { background-color: #ff9800; border: none; color: #000; font-weight: bold; }
-        .btn-primary:hover { background-color: #e68900; }
-        .status-badge { font-size: 0.8em; padding: 5px 10px; border-radius: 12px; }
-        .status-new { background: #007bff; color: white; }
-        .status-work { background: #ffc107; color: black; }
-        .status-done { background: #28a745; color: white; }
-        .status-cancel { background: #dc3545; color: white; }
-        #loginOverlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #121212; z-index: 9999; display: flex; align-items: center; justify-content: center; }
-    </style>
-</head>
-<body>
-
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css"
+      rel="stylesheet"
+    />
+    <link href="css/style.css" rel="stylesheet" />
+  </head>
+  <body>
     <div id="loginOverlay">
-        <div class="card p-5" style="width: 400px; max-width: 90%;">
-            <div class="text-center mb-4">
-                <h2 class="text-warning"><i class="bi bi-lightning-charge-fill"></i> ProElectro</h2>
-                <p class="text-muted">Admin Panel v2.0</p>
+      <div
+        class="glass-card p-5 text-center"
+        style="width: 400px; max-width: 90%"
+      >
+        <div class="mb-4">
+          <i
+            class="bi bi-lightning-charge-fill text-warning"
+            style="font-size: 3rem"
+          ></i>
+          <h3 class="text-white mt-3 fw-bold">ProElectro ERP</h3>
+          <p class="text-muted small">Enterprise Resource Planning v5.0</p>
+        </div>
+        <form id="loginForm">
+          <div class="mb-3 position-relative">
+            <i
+              class="bi bi-key position-absolute top-50 start-0 translate-middle-y ms-3 text-muted"
+            ></i>
+            <input
+              type="password"
+              id="passwordInput"
+              class="form-control bg-dark text-white border-secondary ps-5"
+              placeholder="Access Key"
+              required
+            />
+          </div>
+          <button type="submit" class="btn btn-warning w-100 fw-bold py-2">
+            ВОЙТИ В СИСТЕМУ
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div id="app" class="app-container" style="display: none">
+      <div class="sidebar">
+        <div class="d-flex align-items-center gap-2 mb-5 px-2">
+          <div class="bg-warning rounded p-1">
+            <i class="bi bi-lightning-charge-fill text-dark"></i>
+          </div>
+          <span class="fs-5 fw-bold text-white tracking-tight">ProElectro</span>
+        </div>
+
+        <div class="d-grid gap-2 navigation">
+          <a
+            href="#dashboard"
+            class="btn btn-outline-secondary text-start border-0 nav-link active"
+          >
+            <i class="bi bi-grid-1x2-fill me-2"></i> Дашборд
+          </a>
+          <a
+            href="#orders"
+            class="btn btn-outline-secondary text-start border-0 nav-link"
+          >
+            <i class="bi bi-box-seam-fill me-2"></i> Заказы
+          </a>
+          <a
+            href="#finance"
+            class="btn btn-outline-secondary text-start border-0 nav-link"
+          >
+            <i class="bi bi-wallet-fill me-2"></i> Финансы
+          </a>
+          <a
+            href="#crm"
+            class="btn btn-outline-secondary text-start border-0 nav-link"
+          >
+            <i class="bi bi-people-fill me-2"></i> Пользователи
+          </a>
+          <a
+            href="#settings"
+            class="btn btn-outline-secondary text-start border-0 nav-link"
+          >
+            <i class="bi bi-sliders me-2"></i> Настройки
+          </a>
+        </div>
+
+        <div class="mt-auto pt-4 border-top border-secondary">
+          <button
+            class="btn btn-danger w-100 btn-sm bg-opacity-10 text-danger border-0"
+            onclick="logout()"
+          >
+            <i class="bi bi-box-arrow-left me-2"></i> Выйти
+          </button>
+        </div>
+      </div>
+
+      <div class="main-content">
+        <header class="d-flex justify-content-between align-items-center mb-4">
+          <h4 class="text-white fw-bold m-0" id="pageTitle">
+            Панель управления
+          </h4>
+          <div class="d-flex gap-3 align-items-center">
+            <span
+              class="badge bg-success bg-opacity-25 text-success border border-success px-3 py-2"
+            >
+              <i class="bi bi-wifi"></i> Online
+            </span>
+            <div
+              class="rounded-circle bg-secondary d-flex align-items-center justify-content-center text-white"
+              style="width: 35px; height: 35px"
+            >
+              <i class="bi bi-person-fill"></i>
             </div>
-            <form id="loginForm">
-                <div class="mb-3">
-                    <input type="password" id="passwordInput" class="form-control form-control-lg bg-dark text-light border-secondary" placeholder="Введите пароль..." required>
+          </div>
+        </header>
+
+        <div id="view-dashboard" class="view-section">
+          <div id="kpiGrid" class="account-grid mb-4"></div>
+
+          <div class="row g-4">
+            <div class="col-xl-8">
+              <div class="glass-card p-4 h-100">
+                <div class="d-flex justify-content-between mb-4">
+                  <h5 class="text-white mb-0">Последние заказы</h5>
+                  <a href="#orders" class="btn btn-sm btn-outline-light"
+                    >Все заказы</a
+                  >
                 </div>
-                <button type="submit" class="btn btn-primary w-100 btn-lg">ВОЙТИ</button>
+                <div class="table-responsive">
+                  <table class="custom-table">
+                    <thead>
+                      <tr>
+                        <th>ID</th>
+                        <th>Клиент</th>
+                        <th>Сумма</th>
+                        <th>Статус</th>
+                        <th>Действие</th>
+                      </tr>
+                    </thead>
+                    <tbody id="recentOrdersBody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+            <div class="col-xl-4">
+              <div class="glass-card p-4 h-100">
+                <h5 class="text-white mb-4">Счета</h5>
+                <div id="dashboardAccounts"></div>
+                <a
+                  href="#finance"
+                  class="btn btn-outline-warning w-100 mt-3 btn-sm"
+                  >Перейти в финансы</a
+                >
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="view-orders" class="view-section" style="display: none">
+          <div class="glass-card p-4">
+            <div
+              class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-3"
+            >
+              <div class="d-flex gap-2">
+                <button
+                  class="btn btn-primary filter-btn active"
+                  onclick="App.applyOrderFilter('all')"
+                  data-status="all"
+                >
+                  Все
+                </button>
+                <button
+                  class="btn btn-outline-secondary filter-btn"
+                  onclick="App.applyOrderFilter('new')"
+                  data-status="new"
+                >
+                  Новые
+                </button>
+                <button
+                  class="btn btn-outline-secondary filter-btn"
+                  onclick="App.applyOrderFilter('work')"
+                  data-status="work"
+                >
+                  В работе
+                </button>
+                <button
+                  class="btn btn-outline-secondary filter-btn"
+                  onclick="App.applyOrderFilter('done')"
+                  data-status="done"
+                >
+                  Готовые
+                </button>
+              </div>
+              <div class="d-flex gap-2">
+                <input
+                  type="text"
+                  id="orderSearchInput"
+                  class="form-control bg-dark text-white border-secondary"
+                  placeholder="Поиск (ID, Имя, Тел)..."
+                />
+                <button
+                  class="btn btn-success text-nowrap"
+                  data-bs-toggle="modal"
+                  data-bs-target="#manualOrderModal"
+                >
+                  <i class="bi bi-plus-lg me-1"></i> Новый заказ
+                </button>
+              </div>
+            </div>
+
+            <div class="table-responsive">
+              <table class="custom-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Клиент</th>
+                    <th>Сумма</th>
+                    <th>Менеджер</th>
+                    <th>Статус</th>
+                    <th>Дата</th>
+                    <th class="text-end">Управление</th>
+                  </tr>
+                </thead>
+                <tbody id="allOrdersBody"></tbody>
+              </table>
+            </div>
+
+            <div
+              class="d-flex justify-content-center mt-4"
+              id="ordersPagination"
+            ></div>
+          </div>
+        </div>
+
+        <div id="view-finance" class="view-section" style="display: none">
+          <div class="d-flex justify-content-between align-items-center mb-4">
+            <h5 class="text-white">Баланс счетов</h5>
+            <button
+              class="btn btn-warning"
+              data-bs-toggle="modal"
+              data-bs-target="#transferModal"
+            >
+              <i class="bi bi-arrow-left-right me-2"></i> Перевод средств
+            </button>
+          </div>
+
+          <div class="row g-4 mb-4" id="financeAccountsGrid"></div>
+
+          <div class="glass-card p-4">
+            <h5 class="text-white mb-3">История транзакций</h5>
+            <p class="text-muted">
+              Раздел в разработке (будет доступен в v5.1)
+            </p>
+          </div>
+        </div>
+
+        <div id="view-crm" class="view-section" style="display: none">
+          <div class="glass-card p-4">
+            <h5 class="text-white mb-4">Пользователи и Роли</h5>
+            <div class="table-responsive">
+              <table class="custom-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Имя</th>
+                    <th>Username</th>
+                    <th>Телефон</th>
+                    <th>Роль</th>
+                    <th>Дата регистрации</th>
+                  </tr>
+                </thead>
+                <tbody id="usersTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div id="view-settings" class="view-section" style="display: none">
+          <div class="row">
+            <div class="col-md-6">
+              <div class="glass-card p-4">
+                <h5 class="text-white mb-4">⚙️ Глобальные настройки</h5>
+                <form id="fullSettingsForm">
+                  <h6 class="text-warning mb-3">Прайс-лист (Калькулятор)</h6>
+                  <div class="row g-3 mb-4">
+                    <div class="col-6">
+                      <label class="text-muted small">Газоблок</label
+                      ><input
+                        name="wall_light"
+                        class="form-control bg-dark text-white border-secondary"
+                      />
+                    </div>
+                    <div class="col-6">
+                      <label class="text-muted small">Кирпич</label
+                      ><input
+                        name="wall_medium"
+                        class="form-control bg-dark text-white border-secondary"
+                      />
+                    </div>
+                    <div class="col-6">
+                      <label class="text-muted small">Бетон</label
+                      ><input
+                        name="wall_heavy"
+                        class="form-control bg-dark text-white border-secondary"
+                      />
+                    </div>
+                    <div class="col-6">
+                      <label class="text-muted small">Материал/м²</label
+                      ><input
+                        name="material_m2"
+                        class="form-control bg-dark text-white border-secondary"
+                      />
+                    </div>
+                  </div>
+
+                  <h6 class="text-warning mb-3">Стоимость работ (Детально)</h6>
+                  <div class="row g-3 mb-4">
+                    <div class="col-4">
+                      <label class="text-muted small">Точка</label
+                      ><input
+                        name="work_point"
+                        class="form-control bg-dark text-white border-secondary"
+                      />
+                    </div>
+                    <div class="col-4">
+                      <label class="text-muted small">Штроба</label
+                      ><input
+                        name="work_strobe"
+                        class="form-control bg-dark text-white border-secondary"
+                      />
+                    </div>
+                    <div class="col-4">
+                      <label class="text-muted small">Кабель/м</label
+                      ><input
+                        name="work_cable"
+                        class="form-control bg-dark text-white border-secondary"
+                      />
+                    </div>
+                    <div class="col-6">
+                      <label class="text-muted small">Сборка щита</label
+                      ><input
+                        name="work_shield_install"
+                        class="form-control bg-dark text-white border-secondary"
+                      />
+                    </div>
+                    <div class="col-6">
+                      <label class="text-muted small">Черновой этап</label
+                      ><input
+                        name="work_check"
+                        class="form-control bg-dark text-white border-secondary"
+                      />
+                    </div>
+                  </div>
+
+                  <h6 class="text-warning mb-3">Финансы (Распределение)</h6>
+                  <div class="input-group mb-3">
+                    <span
+                      class="input-group-text bg-dark text-muted border-secondary"
+                      >Бизнес %</span
+                    >
+                    <input
+                      name="business_percent"
+                      class="form-control bg-dark text-white border-secondary"
+                    />
+                    <span
+                      class="input-group-text bg-dark text-muted border-secondary"
+                      >Оклад %</span
+                    >
+                    <input
+                      name="staff_percent"
+                      class="form-control bg-dark text-white border-secondary"
+                    />
+                  </div>
+
+                  <button class="btn btn-warning w-100">
+                    Сохранить все настройки
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal fade" id="editOrderModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content bg-dark border-secondary text-white">
+          <div class="modal-header border-secondary">
+            <div>
+              <h5 class="modal-title" id="editOrderTitle">
+                Редактирование заказа
+              </h5>
+              <small class="text-muted"
+                >Изменение статуса и назначение мастера</small
+              >
+            </div>
+            <button
+              type="button"
+              class="btn-close btn-close-white"
+              data-bs-dismiss="modal"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <form id="editOrderForm">
+              <input type="hidden" name="orderId" />
+
+              <div class="mb-3">
+                <label class="form-label text-muted small"
+                  >Текущий статус</label
+                >
+                <select
+                  name="status"
+                  class="form-select bg-dark text-white border-secondary"
+                >
+                  <option value="new">🆕 Новый</option>
+                  <option value="work">🛠 В работе (Замер/Монтаж)</option>
+                  <option value="discuss">💬 Обсуждение</option>
+                  <option value="done">✅ Выполнен (Расчет)</option>
+                  <option value="cancel">❌ Отмена</option>
+                </select>
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label text-muted small"
+                  >Ответственный менеджер</label
+                >
+                <select
+                  name="assignee_id"
+                  class="form-select bg-dark text-white border-secondary"
+                ></select>
+              </div>
+
+              <div class="alert alert-info bg-opacity-10 border-0 fs-small">
+                <i class="bi bi-info-circle me-1"></i> При выборе статуса
+                <b>"Выполнен"</b>, система автоматически рассчитает доли
+                (Бизнес/Оклад) и подготовит финансовый отчет.
+              </div>
+
+              <button type="submit" class="btn btn-primary w-100">
+                Сохранить изменения
+              </button>
             </form>
+          </div>
         </div>
+      </div>
     </div>
 
-    <div id="dashboard" style="display: none;">
-        
-        <nav class="navbar navbar-expand-lg navbar-dark mb-4 px-3">
-            <a class="navbar-brand text-warning fw-bold" href="#"><i class="bi bi-lightning-charge"></i> ProElectro CRM</a>
-            <div class="ms-auto d-flex align-items-center">
-                <span class="badge bg-success me-3" id="statusIndicator">● Online</span>
-                <button class="btn btn-outline-danger btn-sm" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Выход</button>
-            </div>
-        </nav>
-
-        <div class="container-fluid px-4">
-            
-            <div class="row mb-4">
-                <div class="col-md-3">
-                    <div class="card p-3">
-                        <h6 class="text-muted">Всего заказов</h6>
-                        <h2 id="totalOrders">0</h2>
-                    </div>
+    <div class="modal fade" id="manualOrderModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content bg-dark border-secondary text-white">
+          <div class="modal-header border-secondary">
+            <h5 class="modal-title">Новый заказ (Вручную)</h5>
+            <button
+              type="button"
+              class="btn-close btn-close-white"
+              data-bs-dismiss="modal"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <form id="manualOrderForm">
+              <div class="mb-3">
+                <label class="small text-muted">Имя клиента</label>
+                <input
+                  name="clientName"
+                  class="form-control bg-dark text-white border-secondary"
+                  required
+                  placeholder="Например: Аслан"
+                />
+              </div>
+              <div class="mb-3">
+                <label class="small text-muted">Телефон</label>
+                <input
+                  name="clientPhone"
+                  class="form-control bg-dark text-white border-secondary"
+                  placeholder="+7..."
+                />
+              </div>
+              <div class="row g-2 mb-3">
+                <div class="col-6">
+                  <label class="small text-muted">Площадь (м²)</label>
+                  <input
+                    name="area"
+                    type="number"
+                    class="form-control bg-dark text-white border-secondary"
+                    required
+                  />
                 </div>
-                <div class="col-md-3">
-                    <div class="card p-3">
-                        <h6 class="text-muted">В работе</h6>
-                        <h2 id="activeOrders" class="text-warning">0</h2>
-                    </div>
+                <div class="col-6">
+                  <label class="small text-muted">Тип стен</label>
+                  <select
+                    name="wallType"
+                    class="form-select bg-dark text-white border-secondary"
+                  >
+                    <option value="light">Газоблок</option>
+                    <option value="medium">Кирпич</option>
+                    <option value="heavy">Бетон</option>
+                  </select>
                 </div>
-                <div class="col-md-3">
-                    <div class="card p-3">
-                        <h6 class="text-muted">Выполнено</h6>
-                        <h2 id="doneOrders" class="text-success">0</h2>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="card p-3">
-                        <h6 class="text-muted">Оборот (Потенциал)</h6>
-                        <h2 id="totalMoney" class="text-info">0 ₸</h2>
-                    </div>
-                </div>
-            </div>
-
-            <div class="row">
-                <div class="col-lg-8">
-                    <div class="card p-4">
-                        <div class="d-flex justify-content-between mb-3">
-                            <h4>📋 Последние заказы</h4>
-                            <button class="btn btn-sm btn-outline-light" onclick="loadStats()"><i class="bi bi-arrow-clockwise"></i></button>
-                        </div>
-                        <div class="table-responsive">
-                            <table class="table table-dark table-hover">
-                                <thead>
-                                    <tr>
-                                        <th>ID</th>
-                                        <th>Клиент</th>
-                                        <th>Сумма</th>
-                                        <th>Статус</th>
-                                        <th>Дата</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="ordersTableBody">
-                                    </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="col-lg-4">
-                    <div class="card p-4">
-                        <h4>💰 Управление ценами</h4>
-                        <p class="text-muted small">Цены обновляются в боте мгновенно.</p>
-                        <form id="settingsForm">
-                            <div class="mb-3">
-                                <label>💡 Точка (Легкие стены)</label>
-                                <input type="number" name="wall_light" class="form-control bg-dark text-light border-secondary">
-                            </div>
-                            <div class="mb-3">
-                                <label>🧱 Точка (Кирпич)</label>
-                                <input type="number" name="wall_medium" class="form-control bg-dark text-light border-secondary">
-                            </div>
-                            <div class="mb-3">
-                                <label>🏗 Точка (Бетон)</label>
-                                <input type="number" name="wall_heavy" class="form-control bg-dark text-light border-secondary">
-                            </div>
-                            <div class="mb-3">
-                                <label>🔌 Материал (за м²)</label>
-                                <input type="number" name="material_m2" class="form-control bg-dark text-light border-secondary">
-                            </div>
-                            <button type="submit" class="btn btn-success w-100"><i class="bi bi-save"></i> Сохранить цены</button>
-                        </form>
-                    </div>
-                    
-                    <div class="card p-3 mt-3">
-                        <canvas id="ordersChart"></canvas>
-                    </div>
-                </div>
-            </div>
+              </div>
+              <button type="submit" class="btn btn-success w-100">
+                Создать заказ
+              </button>
+            </form>
+          </div>
         </div>
+      </div>
     </div>
 
-    <script>
-        const API = '/api';
-        let chartInstance = null;
+    <div class="modal fade" id="transferModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content bg-dark border-secondary text-white">
+          <div class="modal-header border-secondary">
+            <h5 class="modal-title">💸 Перевод средств</h5>
+            <button
+              type="button"
+              class="btn-close btn-close-white"
+              data-bs-dismiss="modal"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <form id="transferForm">
+              <div class="mb-3">
+                <label class="small text-muted">Откуда списать</label>
+                <select
+                  name="fromId"
+                  id="fromAccount"
+                  class="form-select bg-dark text-white border-secondary"
+                ></select>
+              </div>
+              <div class="mb-3">
+                <label class="small text-muted">Куда зачислить</label>
+                <select
+                  name="toId"
+                  id="toAccount"
+                  class="form-select bg-dark text-white border-secondary"
+                ></select>
+              </div>
+              <div class="mb-3">
+                <label class="small text-muted">Сумма (₸)</label>
+                <input
+                  name="amount"
+                  type="number"
+                  class="form-control bg-dark text-white border-secondary"
+                  required
+                  min="1"
+                />
+              </div>
+              <div class="mb-4">
+                <label class="small text-muted">Комментарий</label>
+                <input
+                  name="comment"
+                  class="form-control bg-dark text-white border-secondary"
+                  placeholder="Назначение платежа..."
+                />
+              </div>
+              <button type="submit" class="btn btn-warning w-100 fw-bold">
+                Выполнить перевод
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
 
-        // 1. Проверка авторизации при загрузке
-        document.addEventListener('DOMContentLoaded', async () => {
-            try {
-                const res = await fetch(`${API}/me`);
-                const data = await res.json();
-                if (data.isAdmin) showDashboard();
-            } catch (e) { console.log('Auth check failed'); }
-        });
-
-        // 2. Логин
-        document.getElementById('loginForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const password = document.getElementById('passwordInput').value;
-            
-            try {
-                const res = await fetch(`${API}/login`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ password })
-                });
-                
-                if (res.ok) {
-                    Swal.fire({ icon: 'success', title: 'Успешно!', timer: 1000, showConfirmButton: false });
-                    showDashboard();
-                } else {
-                    Swal.fire({ icon: 'error', title: 'Ошибка', text: 'Неверный пароль' });
-                }
-            } catch (e) {
-                Swal.fire({ icon: 'error', title: 'Ошибка сети' });
-            }
-        });
-
-        // 3. Выход
-        async function logout() {
-            await fetch(`${API}/logout`, { method: 'POST' });
-            location.reload();
-        }
-
-        // 4. Показать дашборд и загрузить данные
-        function showDashboard() {
-            document.getElementById('loginOverlay').style.display = 'none';
-            document.getElementById('dashboard').style.display = 'block';
-            loadStats();
-            loadSettings();
-        }
-
-        // 5. Загрузка статистики
-        async function loadStats() {
-            try {
-                const res = await fetch(`${API}/stats`);
-                const data = await res.json();
-                
-                // Карточки
-                let total = 0, active = 0, done = 0, money = 0;
-                data.funnel.forEach(item => {
-                    const count = parseInt(item.count);
-                    const sum = parseInt(item.money || 0);
-                    total += count;
-                    if (item.status === 'new' || item.status === 'work') active += count;
-                    if (item.status === 'done') done += count;
-                    if (item.status !== 'cancel') money += sum;
-                });
-
-                document.getElementById('totalOrders').innerText = total;
-                document.getElementById('activeOrders').innerText = active;
-                document.getElementById('doneOrders').innerText = done;
-                document.getElementById('totalMoney').innerText = new Intl.NumberFormat('ru-KZ', { style: 'currency', currency: 'KZT', maximumFractionDigits: 0 }).format(money);
-
-                // Таблица
-                const tbody = document.getElementById('ordersTableBody');
-                tbody.innerHTML = '';
-                data.recent.forEach(order => {
-                    const statusClass = {
-                        'new': 'status-new', 'work': 'status-work', 
-                        'done': 'status-done', 'cancel': 'status-cancel'
-                    }[order.status] || 'bg-secondary';
-                    
-                    const row = `<tr>
-                        <td>#${order.id}</td>
-                        <td>${order.first_name || 'Гость'}</td>
-                        <td>${Math.round(order.total_work_cost).toLocaleString()} ₸</td>
-                        <td><span class="status-badge ${statusClass}">${order.status}</span></td>
-                        <td>${new Date(order.created_at).toLocaleDateString()}</td>
-                    </tr>`;
-                    tbody.innerHTML += row;
-                });
-
-                // График
-                renderChart(data.funnel);
-
-            } catch (e) { console.error(e); }
-        }
-
-        // 6. График Chart.js
-        function renderChart(funnel) {
-            const ctx = document.getElementById('ordersChart').getContext('2d');
-            const labels = funnel.map(f => f.status);
-            const data = funnel.map(f => f.count);
-
-            if (chartInstance) chartInstance.destroy();
-
-            chartInstance = new Chart(ctx, {
-                type: 'doughnut',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        data: data,
-                        backgroundColor: ['#007bff', '#ffc107', '#28a745', '#dc3545', '#6c757d'],
-                        borderWidth: 0
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    plugins: { legend: { position: 'bottom', labels: { color: 'white' } } }
-                }
-            });
-        }
-
-        // 7. Загрузка цен
-        async function loadSettings() {
-            const res = await fetch(`${API}/settings`);
-            const settings = await res.json();
-            const form = document.getElementById('settingsForm');
-            
-            // Заполняем форму, если цены есть. Если нет - ставим дефолт
-            form.wall_light.value = settings.wall_light || 4500;
-            form.wall_medium.value = settings.wall_medium || 5500;
-            form.wall_heavy.value = settings.wall_heavy || 7500;
-            form.material_m2.value = settings.material_m2 || 4000;
-        }
-
-        // 8. Сохранение цен
-        document.getElementById('settingsForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            const data = Object.fromEntries(formData.entries());
-
-            try {
-                const res = await fetch(`${API}/settings`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                });
-                if (res.ok) {
-                    Swal.fire({ icon: 'success', title: 'Цены обновлены!', timer: 1500, showConfirmButton: false });
-                }
-            } catch (e) { Swal.fire('Ошибка', 'Не удалось сохранить', 'error'); }
-        });
-
-        // Авто-обновление каждые 30 сек
-        setInterval(() => {
-            if (document.getElementById('dashboard').style.display === 'block') loadStats();
-        }, 30000);
-
-    </script>
-</body>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="js/api.js"></script>
+    <script src="js/app.js"></script>
+  </body>
 </html>
