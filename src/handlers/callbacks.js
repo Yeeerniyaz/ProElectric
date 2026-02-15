@@ -1,16 +1,16 @@
 /**
  * @file src/handlers/callbacks.js
- * @description Контроллер обработки нажатий.
- * Использует OrderService для логики.
- * @version 6.0.0 (Clean Architecture)
+ * @description Обработчик нажатий на кнопки (Inline Buttons).
+ * Исправлена критическая ошибка sessions.reset -> sessions.delete.
+ * @version 6.2.0 (Final Fix)
  */
 
-import { bot } from "../core.js";
+import { bot } from "../bot.js"; // bot.js-тен импорттаймыз (Polling сол жақта)
 import { OrderService } from "../services/OrderService.js";
 import { STATUS_CONFIG } from "../constants.js";
 import { sessions, notifyAdmin, handleAdminCommand } from "./messages.js";
 
-// Хелпер для форматирования денег (UI only)
+// Ақшаны әдемі көрсету (KZT)
 const formatKZT = (num) =>
   new Intl.NumberFormat("ru-KZ", {
     style: "currency",
@@ -26,7 +26,7 @@ export const setupCallbackHandlers = () => {
 
     try {
       // ====================================================
-      // 1. АДМИНКА
+      // 1. АДМИНКА (Admin Actions)
       // ====================================================
       if (data.startsWith("adm_")) {
         const cmd = data.split("_")[1];
@@ -35,7 +35,7 @@ export const setupCallbackHandlers = () => {
       }
 
       // ====================================================
-      // 2. УПРАВЛЕНИЕ СТАТУСАМИ (STATUS WORKFLOW)
+      // 2. СТАТУС ТАПСЫРЫС (Status Change)
       // ====================================================
       if (data.startsWith("status_")) {
         const [_, newStatus, orderId] = data.split("_");
@@ -43,17 +43,17 @@ export const setupCallbackHandlers = () => {
 
         if (!cfg || !orderId)
           return bot.answerCallbackQuery(callbackQueryId, {
-            text: "❌ Ошибка данных",
+            text: "❌ Қате деректер",
           });
 
-        // Вызываем Сервис (Логика там)
+        // 1. Service арқылы статус өзгерту
         const financeData = await OrderService.updateStatus(
           orderId,
           newStatus,
           userId,
         );
 
-        // Обновляем UI
+        // 2. Хабарламаны жаңарту (UI)
         const time = new Date().toLocaleTimeString("ru-RU", {
           hour: "2-digit",
           minute: "2-digit",
@@ -75,14 +75,14 @@ export const setupCallbackHandlers = () => {
           reply_markup: message.reply_markup,
         });
 
-        // Если вернулись финансовые данные — значит заказ закрыт
+        // 3. Егер статус DONE болса - Қаржылық есепті шығару
         if (financeData) {
           const msg =
-            `💰 <b>ЗАКАЗ #${orderId} ЗАКРЫТ!</b>\n` +
-            `💸 <b>Сумма:</b> ${formatKZT(financeData.total)}\n` +
+            `💰 <b>ЗАКАЗ #${orderId} ЖАБЫЛДЫ!</b>\n` +
+            `💸 <b>Жалпы сома:</b> ${formatKZT(financeData.total)}\n` +
             `🏢 <b>Бизнес (${financeData.percents.business}%):</b> ${formatKZT(financeData.businessShare)}\n` +
             `👷‍♂️ <b>Оклад (${financeData.percents.staff}%):</b> ${formatKZT(financeData.staffShare)}\n\n` +
-            `<i>Переведите средства между счетами в Dashboard.</i>`;
+            `<i>Қаражат автоматты түрде бөлінді.</i>`;
           await bot.sendMessage(chatId, msg, { parse_mode: "HTML" });
         }
 
@@ -92,7 +92,7 @@ export const setupCallbackHandlers = () => {
       }
 
       // ====================================================
-      // 3. ВЗЯТЬ В РАБОТУ (CLAIM)
+      // 3. ЗАКАЗДЫ АЛУ (Take Order)
       // ====================================================
       if (data.startsWith("take_order_")) {
         const orderId = data.split("_")[2];
@@ -109,21 +109,21 @@ export const setupCallbackHandlers = () => {
           });
 
           return bot.answerCallbackQuery(callbackQueryId, {
-            text: "🚀 Успешно!",
+            text: "🚀 Сәтті алынды!",
           });
         } catch (e) {
           if (e.message === "ACCESS_DENIED") {
             return bot.answerCallbackQuery(callbackQueryId, {
-              text: "⛔️ Нет прав",
+              text: "⛔️ Тек менеджерлерге рұқсат",
               show_alert: true,
             });
           }
-          throw e;
+          throw e; // Басқа қате болса логқа жібереміз
         }
       }
 
       // ====================================================
-      // 4. КАЛЬКУЛЯТОР (ESTIMATOR)
+      // 4. КАЛЬКУЛЯТОР (Calculator)
       // ====================================================
       if (data.startsWith("wall_")) {
         const wallType = data.split("_")[1];
@@ -131,28 +131,26 @@ export const setupCallbackHandlers = () => {
 
         if (!session?.data?.area) {
           return bot.answerCallbackQuery(callbackQueryId, {
-            text: "⚠️ Сессия истекла",
+            text: "⚠️ Сессия ескірді. Қайта бастаңыз.",
             show_alert: true,
           });
         }
 
         await bot.answerCallbackQuery(callbackQueryId);
-        await bot.sendChatAction(chatId, "typing");
 
-        // 1. Считаем (через Сервис)
+        // 1. Есептеу
         const estimate = await OrderService.calculateEstimate(
           session.data.area,
           wallType,
         );
-
-        // 2. Сохраняем Лид (через Сервис)
+        // 2. Лид сақтау
         const leadId = await OrderService.createLead(userId, estimate);
 
-        // 3. Рисуем ответ
+        // 3. Нәтижені шығару
         const wallNames = {
           light: "ГКЛ/Газоблок",
           medium: "Кирпич",
-          heavy: "Бетон",
+          heavy: "Бетон/Монолит",
         };
         const txt =
           `⚡️ <b>СМЕТА</b>\n` +
@@ -176,37 +174,39 @@ export const setupCallbackHandlers = () => {
           },
         });
 
+        // 🔥 МАҢЫЗДЫ ТҮЗЕТУ: reset() ЕМЕС, delete()
         sessions.delete(chatId);
         return;
       }
 
       // ====================================================
-      // 5. СОЗДАНИЕ ЗАКАЗА
+      // 5. ЗАКАЗ РАСТАУ (Confirm Order)
       // ====================================================
       if (data.startsWith("order_")) {
-        const [_, type, leadId] = data.split("_");
+        const leadId = data.split("_")[2];
         await bot.answerCallbackQuery(callbackQueryId);
 
         const result = await OrderService.createOrder(userId, leadId);
 
         await bot.sendMessage(
           chatId,
-          "✅ <b>Заявка принята!</b>\nМенеджер свяжется с вами.",
+          "✅ <b>Заявка қабылданды!</b>\nМенеджер сізбен жақын арада хабарласады.",
           { parse_mode: "HTML" },
         );
 
+        // Админдерге хабарлау
         await notifyAdmin(
-          `🔥 <b>НОВЫЙ ЗАКАЗ #${result.orderId}</b>\n` +
-            `👤 Клиент: ${result.user.first_name}\n` +
+          `🔥 <b>ЖАҢА ЗАКАЗ #${result.orderId}</b>\n` +
+            `👤 Клиент: ${result.user.first_name} (@${result.user.username || "- "})\n` +
             `📱 Тел: <code>${result.user.phone || "-"}</code>\n` +
-            `💰 Сумма: ${formatKZT(result.lead.total_work_cost)}`,
+            `💰 Болжам: ${formatKZT(result.lead.total_work_cost)}`,
           result.orderId,
         );
       }
     } catch (error) {
       console.error("💥 [CALLBACK ERROR]", error);
       await bot.answerCallbackQuery(callbackQueryId, {
-        text: "Ошибка сервера",
+        text: "Сервер қатесі. Кейінірек көріңіз.",
       });
     }
   });

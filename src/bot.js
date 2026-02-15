@@ -1,67 +1,46 @@
-import { bot } from "./core.js";
-import { setupMessageHandlers } from "./handlers/messages.js";
-import { setupCallbackHandlers } from "./handlers/callbacks.js";
-import { setupAuthHandlers } from "./handlers/auth.js";
-
 /**
- * Инициализация и запуск логики бота
- * @description Собирает все хендлеры и запускает безопасный Long Polling
+ * @file src/bot.js
+ * @description Инициализация Telegram бота и регистрации обработчиков.
+ * Добавлена поддержка каналов (channel_post).
  */
+
+import TelegramBot from 'node-telegram-bot-api';
+import { config } from './config.js';
+import { setupAuthHandlers } from './handlers/auth.js';
+import { setupMessageHandlers } from './handlers/messages.js';
+import { setupCallbackHandlers } from './handlers/callbacks.js';
+
+// 1. Создаем бота (Polling қосулы)
+export const bot = new TelegramBot(config.bot.token, { polling: true });
+
 export const initBot = async () => {
-  console.log("🤖 [BOT] Инициализация подсистем...");
+    console.log('🤖 [BOT] Инициализация подсистем...');
 
-  // 1. Подключаем слои логики (Controller Layer)
-  // Важен порядок: сначала сообщения, потом колбэки, потом auth
-  setupMessageHandlers();
-  setupCallbackHandlers();
-  setupAuthHandlers();
-
-  // 2. Предварительная очистка (Best Practice)
-  // 🔥 Удаляем вебхук перед запуском поллинга.
-  // Это спасает от ошибки "409 Conflict", если предыдущая сессия зависла.
-  try {
-    await bot.deleteWebHook();
-    console.log("🧹 [BOT] Вебхук успешно очищен.");
-  } catch (e) {
-    console.warn("⚠️ [BOT] Ошибка очистки вебхука (не критично):", e.message);
-  }
-
-  // 3. Запуск Long Polling (Конфигурация для High Load)
-  console.log("🚀 [BOT] Запуск Long Polling...");
-
-  // Мы не используем .then(), так как startPolling возвращает Promise,
-  // но сам процесс идет в фоне. Настройки ниже делают бота отзывчивым.
-  bot.startPolling({
-    restart: true, // Перезапускать при потере соединения
-    polling: {
-      interval: 300, // Проверять обновления каждые 300мс (быстро и без нагрузки)
-      autoStart: true,
-      params: {
-        timeout: 10, // Длинный запрос висит 10 сек (экономия трафика)
-      },
-    },
-  });
-
-  console.log("✅ [BOT] Система активна и принимает команды.");
-
-  // 4. Глобальный перехват ошибок Telegram API (Error Boundary)
-  bot.on("polling_error", (error) => {
-    // Фильтруем шум: ошибки сети (ETIMEDOUT) — это норма, не паникуем
-    if (
-      error.code === "ETIMEDOUT" ||
-      error.code === "EFATAL" ||
-      error.code === "ECONNRESET"
-    ) {
-      // Можно просто игнорировать или писать warn, чтобы не засорять логи
-      // console.warn(`⚠️ [NET] Нестабильная сеть: ${error.code}`);
-      return;
+    // 2. Вебхукты тазалау (Polling дұрыс істеуі үшін)
+    try {
+        await bot.deleteWebhook();
+        console.log('🧹 [BOT] Вебхук успешно очищен.');
+    } catch (e) {
+        console.warn('⚠️ [BOT] Ошибка очистки вебхука:', e.message);
     }
-    console.error(
-      `💥 [TELEGRAM ERROR] Code: ${error.code} | Msg: ${error.message}`,
-    );
-  });
 
-  bot.on("webhook_error", (error) => {
-    console.error(`💥 [WEBHOOK ERROR] ${error.code}: ${error.message}`);
-  });
+    // 3. Хендлерлерді қосу
+    setupAuthHandlers();
+    setupMessageHandlers();
+    setupCallbackHandlers();
+
+    // 4. 🔥 КАНАЛДАРДЫ ҚОЛДАУ (Осы жер жаңа)
+    // Каналға жазған кезде 'channel_post' оқиғасы болады, біз оны 'message' деп қабылдаймыз
+    bot.on('channel_post', (msg) => {
+        bot.emit('message', msg);
+    });
+    
+    // 5. Лог ошибок
+    bot.on('polling_error', (error) => {
+        if (error.code !== 'EFATAL' && error.code !== 'ETIMEDOUT') {
+             console.error(`💥 [BOT ERROR] ${error.code}: ${error.message}`);
+        }
+    });
+
+    console.log('✅ [BOT] Система активна и принимает команды (в т.ч. из каналов).');
 };

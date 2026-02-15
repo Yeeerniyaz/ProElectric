@@ -1,29 +1,23 @@
 /**
  * @file src/handlers/messages.js
- * @description Обработчик текстовых сообщений и команд (/start, /admin).
- * Работает как Контроллер: принимает запрос -> вызывает Service -> отдает ответ.
- * @version 6.2.0 (Manager Panel Added)
+ * @description Обработчик текстовых сообщений.
+ * Исправлена работа в каналах и ошибка с reset().
  */
 
 import { bot } from "../core.js";
-import { db } from "../db.js"; // Базовые операции юзера
+import { db } from "../db.js";
 import { config } from "../config.js";
-import { OrderService } from "../services/OrderService.js"; // Подключаем наш новый Сервис
+import { OrderService } from "../services/OrderService.js";
 
 // Хранилище сессий (RAM)
 export const sessions = new Map();
 
-// ====================================================
-// 🔘 UI CONFIGURATION (КЛАВИАТУРЫ)
-// ====================================================
-
-// Функция для динамического меню (зависит от роли)
+// Мәзір (Динамикалық)
 const getMainMenu = (role) => {
   const buttons = [
     [{ text: "🧮 Рассчитать стоимость" }, { text: "📂 Мои заказы" }],
     [{ text: "💰 Прайс-лист" }, { text: "📞 Контакты" }],
   ];
-  // Если Админ или Менеджер — добавляем спец. кнопку
   if (["admin", "manager"].includes(role)) {
     buttons.unshift([{ text: "👷‍♂️ Мои объекты (Активные)" }]);
   }
@@ -39,50 +33,40 @@ export const KB = {
     resize_keyboard: true,
   },
   ADMIN: {
-    inline_keyboard: [
-      [{ text: "📊 Воронка (Stats)", callback_data: "adm_stats" }],
-      [{ text: "📢 Рассылка", callback_data: "adm_spam" }],
-    ],
+    inline_keyboard: [[{ text: "📊 Воронка", callback_data: "adm_stats" }]],
   },
 };
 
-// ====================================================
-// 🛠 UTILS
-// ====================================================
 const formatKZT = (num) =>
   new Intl.NumberFormat("ru-KZ", {
     style: "currency",
     currency: "KZT",
     maximumFractionDigits: 0,
   }).format(num);
-
-const getStatusLabel = (status) => {
-  const map = {
+const getStatusLabel = (s) =>
+  ({
     new: "🆕 Новый",
     work: "🛠 В работе",
     done: "✅ Выполнен",
     cancel: "❌ Отменен",
-  };
-  return map[status] || status;
-};
+  })[s] || s;
 
-// ====================================================
-// 🚀 MAIN HANDLERS
-// ====================================================
 export const setupMessageHandlers = () => {
-  // 1. /start & Регистрация
+  // 1. /start
   bot.onText(/\/start/, async (msg) => {
     try {
-      // Обновляем/создаем юзера и получаем его актуальную роль
-      const user = await db.upsertUser(
-        msg.from.id,
-        msg.from.first_name,
-        msg.from.username,
-      );
+      // Каналда 'from' болмауы мүмкін, сондықтан тексереміз
+      const userId = msg.from ? msg.from.id : msg.chat.id;
+      const userName = msg.from
+        ? msg.from.first_name
+        : msg.chat.title || "Гость";
+      const userLogin = msg.from ? msg.from.username : "channel";
+
+      const user = await db.upsertUser(userId, userName, userLogin);
 
       await bot.sendMessage(
         msg.chat.id,
-        `Салам, <b>${msg.from.first_name}</b>! 👋\nЯ бот <b>ProElectro</b>. Готов к работе!\nВаш статус: <b>${user.role}</b>`,
+        `Салам, <b>${userName}</b>! 👋\nЯ бот <b>ProElectro</b>. Готов к работе!\nВаш статус: <b>${user.role}</b>`,
         { parse_mode: "HTML", reply_markup: getMainMenu(user.role) },
       );
     } catch (e) {
@@ -90,11 +74,14 @@ export const setupMessageHandlers = () => {
     }
   });
 
-  // 2. Админ-панель (команда /admin)
+  // 2. Admin
   bot.onText(/\/admin/, async (msg) => {
+    const userId = msg.from ? msg.from.id : msg.chat.id;
+    // Канал болса немесе Админ болса рұқсат береміз
     const isAdmin =
-      String(msg.from.id) === String(config.bot.bossUsername) ||
-      String(msg.chat.id) === String(config.bot.workGroupId);
+      String(userId) === String(config.bot.bossUsername) ||
+      String(msg.chat.id) === String(config.bot.workGroupId) ||
+      msg.chat.type === "channel"; // Каналға рұқсат
 
     if (!isAdmin) return bot.sendMessage(msg.chat.id, "⛔️ Доступ запрещен.");
 
@@ -104,10 +91,9 @@ export const setupMessageHandlers = () => {
     });
   });
 
-  // 3. Контакты
+  // 3. Contact
   bot.on("contact", async (msg) => {
-    if (msg.contact.user_id !== msg.from.id) return;
-    // Обновляем телефон и сразу получаем роль для перерисовки меню
+    if (!msg.from || msg.contact.user_id !== msg.from.id) return;
     const user = await db.upsertUser(
       msg.from.id,
       msg.from.first_name,
@@ -119,81 +105,32 @@ export const setupMessageHandlers = () => {
     });
   });
 
-  // 4. Текстовое меню
+  // 4. Messages
   bot.on("message", async (msg) => {
     if (!msg.text || msg.text.startsWith("/")) return;
     const chatId = msg.chat.id;
     const text = msg.text;
+    const userId = msg.from ? msg.from.id : chatId; // Канал үшін ID
 
     try {
-      // --- 👷‍♂️ МЕНЕДЖЕР: МОИ ОБЪЕКТЫ ---
+      // --- МЕНЕДЖЕР ---
       if (text === "👷‍♂️ Мои объекты (Активные)") {
-        // Запрашиваем через Сервис активные заказы этого менеджера
-        const orders = await OrderService.getManagerActiveOrders(msg.from.id);
-
+        const orders = await OrderService.getManagerActiveOrders(userId);
         if (orders.length === 0)
-          return bot.sendMessage(
-            chatId,
-            "📭 У вас нет активных объектов в работе.",
-          );
+          return bot.sendMessage(chatId, "📭 Активті объектілер жоқ.");
 
-        let response = "<b>👷‍♂️ СІЗДІҢ ЖҰМЫСТАҒЫ ОБЪЕКТІЛЕР:</b>\n\n";
+        let response = "<b>👷‍♂️ ЖҰМЫСТАҒЫ ОБЪЕКТІЛЕР:</b>\n\n";
         orders.forEach((o) => {
           const date = new Date(o.created_at).toLocaleDateString();
-          const link = o.client_user ? `@${o.client_user}` : "LS";
-
-          response += `🔌 <b>Заказ #${o.id}</b> (${date})\n`;
-          response += `👤 Клиент: ${o.client_name} (${link})\n`;
-          response += `📱 Тел: <code>${o.client_phone || "жоқ"}</code>\n`;
-          response += `📐 Объект: ${o.area} м² (${o.wall_type})\n`;
-          response += `💰 Смета: ${formatKZT(o.total_work_cost)}\n`;
-          response += `➖➖➖➖➖➖➖➖\n`;
-        });
-
-        return bot.sendMessage(chatId, response, { parse_mode: "HTML" });
-      }
-
-      // --- 📂 МОИ ЗАКАЗЫ (Для Клиента) ---
-      if (text === "📂 Мои заказы") {
-        const orders = await OrderService.getUserOrders(msg.from.id);
-
-        if (orders.length === 0)
-          return bot.sendMessage(chatId, "📭 История заказов пуста.");
-
-        let response = "<b>📂 ВАШИ ЗАКАЗЫ:</b>\n\n";
-        orders.forEach((o) => {
-          const date = new Date(o.created_at).toLocaleDateString();
-          response += `🔹 <b>#${o.id}</b> (${date}) — ${formatKZT(o.total_work_cost)}\n`;
-          response += `   Статус: ${getStatusLabel(o.status)}\n`;
-          if (o.manager_name) response += `   Мастер: ${o.manager_name}\n`;
-          response += `➖➖➖➖➖➖➖\n`;
+          response += `🔌 <b>#${o.id}</b> | ${o.client_name}\n💰 ${formatKZT(o.total_work_cost)}\n➖➖➖➖➖\n`;
         });
         return bot.sendMessage(chatId, response, { parse_mode: "HTML" });
       }
 
-      // --- 💰 ПРАЙС-ЛИСТ ---
-      if (text === "💰 Прайс-лист") {
-        const p = await OrderService.getPublicPriceList();
-        const msgText =
-          `📋 <b>ПРАЙС-ЛИСТ (Работа):</b>\n\n` +
-          `🧱 Газоблок: ${p.wall_light} ₸/т\n` +
-          `🧱 Кирпич: ${p.wall_medium} ₸/т\n` +
-          `🏗 Бетон: ${p.wall_heavy} ₸/т\n\n` +
-          `🔌 Черновой материал: ~${p.material_m2} ₸/м²`;
-        return bot.sendMessage(chatId, msgText, { parse_mode: "HTML" });
-      }
-
-      // --- 📞 КОНТАКТЫ ---
-      if (text === "📞 Контакты") {
-        return bot.sendMessage(
-          chatId,
-          `📞 <b>Связь:</b>\n👤 Ернияз: +7 (706) 606-63-23\n👇 Оставьте заявку кнопкой ниже:`,
-          { parse_mode: "HTML", reply_markup: KB.CONTACT },
-        );
-      }
-
-      // --- 🧮 КАЛЬКУЛЯТОР ---
+      // --- КАЛЬКУЛЯТОР ---
       if (text === "🧮 Рассчитать стоимость") {
+        // 🔥 ТҮЗЕТІЛДІ: Ескі сессияны өшіру (delete)
+        sessions.delete(chatId);
         sessions.set(chatId, { step: "WALLS", data: {} });
         return bot.sendMessage(chatId, "Введите <b>площадь (м²)</b> цифрами:", {
           parse_mode: "HTML",
@@ -201,13 +138,12 @@ export const setupMessageHandlers = () => {
         });
       }
 
-      // Обработка цифр калькулятора
+      // Калькулятор логикасы
       const session = sessions.get(chatId);
       if (session && session.step === "WALLS") {
         const area = parseInt(text);
-        if (isNaN(area) || area < 5 || area > 5000) {
+        if (isNaN(area) || area < 5 || area > 5000)
           return bot.sendMessage(chatId, "⚠️ Введите число от 5 до 5000.");
-        }
 
         session.data.area = area;
         session.step = "TYPE";
@@ -227,51 +163,55 @@ export const setupMessageHandlers = () => {
           },
         );
       }
+
+      // --- БАСҚАЛАРЫ ---
+      if (text === "📂 Мои заказы") {
+        const orders = await OrderService.getUserOrders(userId);
+        if (!orders.length)
+          return bot.sendMessage(chatId, "📭 Тапсырыстар жоқ.");
+
+        let response = "<b>📂 ВАШИ ЗАКАЗЫ:</b>\n\n";
+        orders.forEach((o) => {
+          response += `🔹 <b>#${o.id}</b> (${new Date(o.created_at).toLocaleDateString()}) — ${formatKZT(o.total_work_cost)}\nСтатус: ${getStatusLabel(o.status)}\n➖➖➖➖➖\n`;
+        });
+        return bot.sendMessage(chatId, response, { parse_mode: "HTML" });
+      }
+
+      // Прайс
+      if (text === "💰 Прайс-лист") {
+        const p = await OrderService.getPublicPriceList();
+        return bot.sendMessage(
+          chatId,
+          `📋 <b>ПРАЙС:</b>\n🧱 Газоблок: ${p.wall_light} ₸\n🧱 Кирпич: ${p.wall_medium} ₸\n🏗 Бетон: ${p.wall_heavy} ₸`,
+          { parse_mode: "HTML" },
+        );
+      }
+
+      if (text === "📞 Контакты") {
+        return bot.sendMessage(
+          chatId,
+          `📞 <b>Связь:</b>\n👤 Ернияз: +7 (706) 606-63-23`,
+          { parse_mode: "HTML", reply_markup: KB.CONTACT },
+        );
+      }
     } catch (e) {
-      console.error("Handler Error:", e);
-      bot.sendMessage(chatId, "❌ Произошла ошибка. Попробуйте /start");
+      console.error("Msg Error:", e);
     }
   });
 };
 
-// ====================================================
-// 👮‍♂️ ADMIN LOGIC
-// ====================================================
 export const handleAdminCommand = async (msg, match) => {
   const chatId = msg.chat.id;
-  const cmd = match[1];
-
-  try {
-    if (cmd === "stats") {
-      const stats = await OrderService.getGlobalStats();
-
-      let report = `📊 <b>ВОРОНКА ПРОДАЖ:</b>\n\n`;
-      if (stats.funnel.length) {
-        stats.funnel.forEach((row) => {
-          report += `${getStatusLabel(row.status)}: ${row.count} шт. (${formatKZT(row.money)})\n`;
-        });
-      } else {
-        report += "📭 Пусто.\n";
-      }
-
-      report += `\n🆕 <b>Последние заказы:</b>\n`;
-      stats.recent.forEach((o) => {
-        report += `#${o.id} ${o.first_name} — ${getStatusLabel(o.status)}\n`;
-      });
-
-      await bot.sendMessage(chatId, report, { parse_mode: "HTML" });
-    }
-
-    if (cmd === "spam") {
-      await bot.sendMessage(chatId, "Функция рассылки в разработке 🚧");
-    }
-  } catch (e) {
-    console.error("Admin Cmd Error:", e);
-    await bot.sendMessage(chatId, "❌ Ошибка при выполнении команды.");
+  if (match[1] === "stats") {
+    const stats = await OrderService.getGlobalStats();
+    let report = `📊 <b>ВОРОНКА:</b>\n`;
+    stats.funnel.forEach(
+      (row) => (report += `${getStatusLabel(row.status)}: ${row.count} шт.\n`),
+    );
+    await bot.sendMessage(chatId, report, { parse_mode: "HTML" });
   }
 };
 
-// Уведомлялка (UI only)
 export const notifyAdmin = async (text, orderId = null) => {
   if (!config.bot.workGroupId) return;
   const opts = {
