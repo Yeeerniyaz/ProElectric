@@ -1,58 +1,301 @@
-import { initDB } from './src/db.js';
-import { initBot } from './src/bot.js';
-import { startServer } from './src/server.js';
+<!DOCTYPE html>
+<html lang="ru" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>⚡️ ProElectro Admin</title>
+    
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-// --- Глобальные перехватчики ошибок (Safety Net) ---
-// Если где-то в коде забыли try-catch, это спасет логи от молчания
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('🔥 [FATAL] Необработанная ошибка (Promise):', reason);
-    // В продакшене лучше перезагрузить процесс, чем работать в сломанном состоянии
-    // process.exit(1);
-});
+    <style>
+        body { background-color: #121212; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; }
+        .card { background-color: #1e1e1e; border: 1px solid #333; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .navbar { background-color: #1e1e1e; border-bottom: 1px solid #333; }
+        .btn-primary { background-color: #ff9800; border: none; color: #000; font-weight: bold; }
+        .btn-primary:hover { background-color: #e68900; }
+        .status-badge { font-size: 0.8em; padding: 5px 10px; border-radius: 12px; }
+        .status-new { background: #007bff; color: white; }
+        .status-work { background: #ffc107; color: black; }
+        .status-done { background: #28a745; color: white; }
+        .status-cancel { background: #dc3545; color: white; }
+        #loginOverlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #121212; z-index: 9999; display: flex; align-items: center; justify-content: center; }
+    </style>
+</head>
+<body>
 
-process.on('uncaughtException', (error) => {
-    console.error('🔥 [FATAL] Критическая ошибка процесса:', error);
-    process.exit(1);
-});
+    <div id="loginOverlay">
+        <div class="card p-5" style="width: 400px; max-width: 90%;">
+            <div class="text-center mb-4">
+                <h2 class="text-warning"><i class="bi bi-lightning-charge-fill"></i> ProElectro</h2>
+                <p class="text-muted">Admin Panel v2.0</p>
+            </div>
+            <form id="loginForm">
+                <div class="mb-3">
+                    <input type="password" id="passwordInput" class="form-control form-control-lg bg-dark text-light border-secondary" placeholder="Введите пароль..." required>
+                </div>
+                <button type="submit" class="btn btn-primary w-100 btn-lg">ВОЙТИ</button>
+            </form>
+        </div>
+    </div>
 
-/**
- * Главная функция запуска системы
- */
-async function bootstrap() {
-    console.log('🔌 ProElectro System: Запуск систем...');
+    <div id="dashboard" style="display: none;">
+        
+        <nav class="navbar navbar-expand-lg navbar-dark mb-4 px-3">
+            <a class="navbar-brand text-warning fw-bold" href="#"><i class="bi bi-lightning-charge"></i> ProElectro CRM</a>
+            <div class="ms-auto d-flex align-items-center">
+                <span class="badge bg-success me-3" id="statusIndicator">● Online</span>
+                <button class="btn btn-outline-danger btn-sm" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Выход</button>
+            </div>
+        </nav>
 
-    try {
-        // ЭТАП 1: Подключение к Базе Данных
-        // Критически важно: ждем подключения перед стартом всего остального
-        await initDB();
+        <div class="container-fluid px-4">
+            
+            <div class="row mb-4">
+                <div class="col-md-3">
+                    <div class="card p-3">
+                        <h6 class="text-muted">Всего заказов</h6>
+                        <h2 id="totalOrders">0</h2>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card p-3">
+                        <h6 class="text-muted">В работе</h6>
+                        <h2 id="activeOrders" class="text-warning">0</h2>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card p-3">
+                        <h6 class="text-muted">Выполнено</h6>
+                        <h2 id="doneOrders" class="text-success">0</h2>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card p-3">
+                        <h6 class="text-muted">Оборот (Потенциал)</h6>
+                        <h2 id="totalMoney" class="text-info">0 ₸</h2>
+                    </div>
+                </div>
+            </div>
 
-        // ЭТАП 2: Инициализация Бота
-        // Запускаем слушателя Telegram (Polling)
-        initBot();
+            <div class="row">
+                <div class="col-lg-8">
+                    <div class="card p-4">
+                        <div class="d-flex justify-content-between mb-3">
+                            <h4>📋 Последние заказы</h4>
+                            <button class="btn btn-sm btn-outline-light" onclick="loadStats()"><i class="bi bi-arrow-clockwise"></i></button>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-dark table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Клиент</th>
+                                        <th>Сумма</th>
+                                        <th>Статус</th>
+                                        <th>Дата</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ordersTableBody">
+                                    </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
 
-        // ЭТАП 3: Запуск Веб-сервера
-        // Чтобы Docker/Portainer видели, что мы живы (Healthcheck)
-        startServer();
+                <div class="col-lg-4">
+                    <div class="card p-4">
+                        <h4>💰 Управление ценами</h4>
+                        <p class="text-muted small">Цены обновляются в боте мгновенно.</p>
+                        <form id="settingsForm">
+                            <div class="mb-3">
+                                <label>💡 Точка (Легкие стены)</label>
+                                <input type="number" name="wall_light" class="form-control bg-dark text-light border-secondary">
+                            </div>
+                            <div class="mb-3">
+                                <label>🧱 Точка (Кирпич)</label>
+                                <input type="number" name="wall_medium" class="form-control bg-dark text-light border-secondary">
+                            </div>
+                            <div class="mb-3">
+                                <label>🏗 Точка (Бетон)</label>
+                                <input type="number" name="wall_heavy" class="form-control bg-dark text-light border-secondary">
+                            </div>
+                            <div class="mb-3">
+                                <label>🔌 Материал (за м²)</label>
+                                <input type="number" name="material_m2" class="form-control bg-dark text-light border-secondary">
+                            </div>
+                            <button type="submit" class="btn btn-success w-100"><i class="bi bi-save"></i> Сохранить цены</button>
+                        </form>
+                    </div>
+                    
+                    <div class="card p-3 mt-3">
+                        <canvas id="ordersChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
-        console.log('✅ [SYSTEM] Все модули загружены. Система готова к работе.');
+    <script>
+        const API = '/api';
+        let chartInstance = null;
 
-    } catch (error) {
-        console.error('💥 [SYSTEM FATAL] Ошибка при запуске:', error);
-        process.exit(1); // Выход с кодом ошибки, чтобы Docker перезапустил контейнер
-    }
-}
+        // 1. Проверка авторизации при загрузке
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const res = await fetch(`${API}/me`);
+                const data = await res.json();
+                if (data.isAdmin) showDashboard();
+            } catch (e) { console.log('Auth check failed'); }
+        });
 
-// Запускаем
-bootstrap();
+        // 2. Логин
+        document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const password = document.getElementById('passwordInput').value;
+            
+            try {
+                const res = await fetch(`${API}/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password })
+                });
+                
+                if (res.ok) {
+                    Swal.fire({ icon: 'success', title: 'Успешно!', timer: 1000, showConfirmButton: false });
+                    showDashboard();
+                } else {
+                    Swal.fire({ icon: 'error', title: 'Ошибка', text: 'Неверный пароль' });
+                }
+            } catch (e) {
+                Swal.fire({ icon: 'error', title: 'Ошибка сети' });
+            }
+        });
 
-// --- Graceful Shutdown (Мягкое завершение) ---
-// Обработка сигналов остановки от Docker или Ctrl+C
-const shutdown = (signal) => {
-    console.log(`\n🛑 Получен сигнал ${signal}. Завершаем работу...`);
-    // Здесь можно добавить закрытие пула БД: await db.end();
-    console.log('👋 До свидания!');
-    process.exit(0);
-};
+        // 3. Выход
+        async function logout() {
+            await fetch(`${API}/logout`, { method: 'POST' });
+            location.reload();
+        }
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+        // 4. Показать дашборд и загрузить данные
+        function showDashboard() {
+            document.getElementById('loginOverlay').style.display = 'none';
+            document.getElementById('dashboard').style.display = 'block';
+            loadStats();
+            loadSettings();
+        }
+
+        // 5. Загрузка статистики
+        async function loadStats() {
+            try {
+                const res = await fetch(`${API}/stats`);
+                const data = await res.json();
+                
+                // Карточки
+                let total = 0, active = 0, done = 0, money = 0;
+                data.funnel.forEach(item => {
+                    const count = parseInt(item.count);
+                    const sum = parseInt(item.money || 0);
+                    total += count;
+                    if (item.status === 'new' || item.status === 'work') active += count;
+                    if (item.status === 'done') done += count;
+                    if (item.status !== 'cancel') money += sum;
+                });
+
+                document.getElementById('totalOrders').innerText = total;
+                document.getElementById('activeOrders').innerText = active;
+                document.getElementById('doneOrders').innerText = done;
+                document.getElementById('totalMoney').innerText = new Intl.NumberFormat('ru-KZ', { style: 'currency', currency: 'KZT', maximumFractionDigits: 0 }).format(money);
+
+                // Таблица
+                const tbody = document.getElementById('ordersTableBody');
+                tbody.innerHTML = '';
+                data.recent.forEach(order => {
+                    const statusClass = {
+                        'new': 'status-new', 'work': 'status-work', 
+                        'done': 'status-done', 'cancel': 'status-cancel'
+                    }[order.status] || 'bg-secondary';
+                    
+                    const row = `<tr>
+                        <td>#${order.id}</td>
+                        <td>${order.first_name || 'Гость'}</td>
+                        <td>${Math.round(order.total_work_cost).toLocaleString()} ₸</td>
+                        <td><span class="status-badge ${statusClass}">${order.status}</span></td>
+                        <td>${new Date(order.created_at).toLocaleDateString()}</td>
+                    </tr>`;
+                    tbody.innerHTML += row;
+                });
+
+                // График
+                renderChart(data.funnel);
+
+            } catch (e) { console.error(e); }
+        }
+
+        // 6. График Chart.js
+        function renderChart(funnel) {
+            const ctx = document.getElementById('ordersChart').getContext('2d');
+            const labels = funnel.map(f => f.status);
+            const data = funnel.map(f => f.count);
+
+            if (chartInstance) chartInstance.destroy();
+
+            chartInstance = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: data,
+                        backgroundColor: ['#007bff', '#ffc107', '#28a745', '#dc3545', '#6c757d'],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { position: 'bottom', labels: { color: 'white' } } }
+                }
+            });
+        }
+
+        // 7. Загрузка цен
+        async function loadSettings() {
+            const res = await fetch(`${API}/settings`);
+            const settings = await res.json();
+            const form = document.getElementById('settingsForm');
+            
+            // Заполняем форму, если цены есть. Если нет - ставим дефолт
+            form.wall_light.value = settings.wall_light || 4500;
+            form.wall_medium.value = settings.wall_medium || 5500;
+            form.wall_heavy.value = settings.wall_heavy || 7500;
+            form.material_m2.value = settings.material_m2 || 4000;
+        }
+
+        // 8. Сохранение цен
+        document.getElementById('settingsForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const data = Object.fromEntries(formData.entries());
+
+            try {
+                const res = await fetch(`${API}/settings`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                if (res.ok) {
+                    Swal.fire({ icon: 'success', title: 'Цены обновлены!', timer: 1500, showConfirmButton: false });
+                }
+            } catch (e) { Swal.fire('Ошибка', 'Не удалось сохранить', 'error'); }
+        });
+
+        // Авто-обновление каждые 30 сек
+        setInterval(() => {
+            if (document.getElementById('dashboard').style.display === 'block') loadStats();
+        }, 30000);
+
+    </script>
+</body>
+</html>

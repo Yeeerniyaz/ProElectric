@@ -1,52 +1,88 @@
-import "dotenv/config";
+import 'dotenv/config';
 
-// Функция для жесткой проверки наличия переменных
+// ------------------------------------------------------------------
+// 🛠 УТИЛИТЫ ВАЛИДАЦИИ (Validation Utils)
+// ------------------------------------------------------------------
+
+/**
+ * Получает обязательную переменную окружения.
+ * Бросает фатальную ошибку, если переменной нет.
+ */
 const requireEnv = (name) => {
-  if (!process.env[name]) {
-    throw new Error(
-      `❌ [CONFIG FATAL] Забыл добавить переменную "${name}" в файл .env`,
-    );
-  }
-  return process.env[name];
+    if (!process.env[name]) {
+        throw new Error(`❌ [CONFIG FATAL] Missing required env variable: "${name}"`);
+    }
+    return process.env[name];
 };
+
+/**
+ * Получает числовую переменную.
+ * Если переменной нет — возвращает defaultValue.
+ * Если есть, но не число — бросает ошибку.
+ */
+const getInt = (name, defaultValue) => {
+    const val = process.env[name];
+    if (!val) return defaultValue;
+    
+    const parsed = parseInt(val, 10);
+    if (isNaN(parsed)) {
+        throw new Error(`❌ [CONFIG FATAL] Env variable "${name}" must be a number, got "${val}"`);
+    }
+    return parsed;
+};
+
+// ------------------------------------------------------------------
+// ⚙️ КОНФИГУРАЦИЯ (Configuration Object)
+// ------------------------------------------------------------------
 
 export const config = {
-  // --- Настройки Telegram ---
-  bot: {
-    token: requireEnv("BOT_TOKEN"),
-    // Превращаем ID группы в число (Telegram API любит числа)
-    groupId: parseInt(process.env.GROUP_ID, 10) || null,
-    bossUsername: process.env.BOSS_USERNAME,
+    // --- Настройки Telegram ---
+    bot: {
+        token: requireEnv('BOT_TOKEN'),
+        
+        // ID основной группы админов (куда падают лиды)
+        groupId: getInt('GROUP_ID', null),
+        
+        // ID рабочей группы сотрудников (для авторизации)
+        workGroupId: getInt('WORK_GROUP_ID', null),
+        
+        bossUsername: process.env.BOSS_USERNAME || '@yeeerniyaz',
+        
+        // 🔥 Убираем '@' если случайно добавили в .env, чтобы ссылки t.me/Bot работали
+        username: (process.env.BOT_USERNAME || 'ProElectroBot').replace('@', ''), 
+    },
 
-    // 🔥 ВАЖНО: Имя бота (без @) для генерации ссылок (Deep Linking)
-    // Если не укажешь в .env, будет 'ProElectroBot'
-    username: process.env.BOT_USERNAME,
-    // ID рабочей группы для сотрудников (опционально, на будущее)
-    workGroupId: parseInt(process.env.WORK_GROUP_ID, 10) || null,
-  },
+    // --- Настройки Базы Данных (PostgreSQL) ---
+    db: {
+        user: requireEnv('DB_USER'),
+        password: requireEnv('DB_PASSWORD'),
+        host: process.env.DB_HOST || 'proelectro-db', // Имя сервиса в docker-compose
+        database: requireEnv('DB_NAME'),
+        port: getInt('DB_PORT', 5432),
+        
+        // Настройки пула (для High Load)
+        max: 20, 
+        idleTimeoutMillis: 30000, 
+        connectionTimeoutMillis: 5000, // Увеличил до 5 сек для надежности
+    },
 
-  // --- Настройки Базы Данных ---
-  db: {
-    user: requireEnv("DB_USER"),
-    password: requireEnv("DB_PASSWORD"),
-    host: process.env.DB_HOST || "proelectro-db", // Дефолт для Docker
-    database: requireEnv("DB_NAME"),
-    port: parseInt(process.env.DB_PORT, 10) || 5432,
-    max: 20, // Максимум 20 параллельных клиентов
-    idleTimeoutMillis: 30000, // Закрывать простой через 30 сек
-    connectionTimeoutMillis: 2000, // Если база не отвечает 2 сек — ошибка
-  },
+    // --- Настройки Веб-сервера (Dashboard) ---
+    server: {
+        port: getInt('WEB_PORT', 3000),
+        env: process.env.NODE_ENV || 'development',
+    },
 
-  // --- Настройки Веб-сервера ---
-  server: {
-    port: parseInt(process.env.WEB_PORT, 10) || 3000,
-    env: process.env.NODE_ENV || "development",
-  },
-
-  // --- Безопасность и Админка ---
-  security: {
-    sessionSecret: requireEnv("SESSION_SECRET"),
-    adminLogin: process.env.ADMIN_LOGIN || "admin",
-    adminPassHash: process.env.ADMIN_PASS_HASH || "yeehash",
-  },
+    // --- Безопасность и Админка ---
+    security: {
+        sessionSecret: requireEnv('SESSION_SECRET'),
+        adminLogin: process.env.ADMIN_LOGIN || 'admin',
+        adminPassHash: process.env.ADMIN_PASS_HASH || 'yeehash'
+    }
 };
+
+// ------------------------------------------------------------------
+// 🚀 SELF-CHECK ПРИ СТАРТЕ
+// ------------------------------------------------------------------
+console.log(`✅ [CONFIG] Loaded. Env: ${config.server.env} | Bot: @${config.bot.username}`);
+if (!config.bot.groupId) console.warn('⚠️ [CONFIG] GROUP_ID not set! Admin notifications disabled.');
+if (!config.bot.workGroupId) console.warn('⚠️ [CONFIG] WORK_GROUP_ID not set! Gatekeeper disabled (open access).');

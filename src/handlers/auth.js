@@ -1,185 +1,193 @@
-import { bot } from '../core.js';
-import { db } from '../db.js';
-import { config } from '../config.js'; // 🔥 Обязательно для ID группы
-import crypto from 'crypto';
+import { bot } from "../core.js";
+import { db } from "../db.js";
+import { config } from "../config.js";
+import crypto from "crypto";
 
 // ============================================================
-// 🔐 ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (Crypto Utils)
+// 🔐 UTILS
 // ============================================================
 
-/**
- * Хеширование пароля (SHA256)
- * В продакшене лучше использовать bcrypt, но для MVP сойдет
- */
-const hashPassword = (password) => {
-    return crypto.createHash('sha256').update(password).digest('hex');
-};
+const hashPassword = (pw) =>
+  crypto.createHash("sha256").update(pw).digest("hex");
+const generateRandomPassword = () => crypto.randomBytes(4).toString("hex");
 
 /**
- * Генерация случайного пароля (8 символов hex)
- */
-const generateRandomPassword = () => {
-    return crypto.randomBytes(4).toString('hex'); // Например: a1b2c3d4
-};
-
-/**
- * Проверка прав доступа к боту (Gatekeeper)
- * Проверяет, состоит ли пользователь в рабочей группе
+ * Проверка прав доступа (Gatekeeper)
  */
 const checkGroupMembership = async (userId) => {
-    const targetGroupId = config.bot.workGroupId || config.bot.groupId;
-    
-    // Если группа не задана, считаем что доступ открыт (или наоборот, зависит от политики)
-    if (!targetGroupId) return true; 
+  const targetGroupId = config.bot.workGroupId || config.bot.groupId;
 
-    try {
-        const member = await bot.getChatMember(targetGroupId, userId);
-        const allowedStatuses = ['creator', 'administrator', 'member', 'restricted'];
-        return allowedStatuses.includes(member.status);
-    } catch (e) {
-        console.error(`[AUTH] Group Check Failed for ${userId}: ${e.message}`);
-        return false; // По умолчанию запрещаем, если ошибка
-    }
+  // Если группа не задана - считаем, что доступ открыт (Dev mode)
+  if (!targetGroupId) return true;
+
+  try {
+    const member = await bot.getChatMember(targetGroupId, userId);
+    return ["creator", "administrator", "member", "restricted"].includes(
+      member.status,
+    );
+  } catch (e) {
+    console.warn(
+      `⚠️ [AUTH] Не удалось проверить статус в группе ${targetGroupId} для ${userId}:`,
+      e.message,
+    );
+    // Если бот не админ в группе или юзера там нет — возвращаем false
+    return false;
+  }
 };
 
 // ============================================================
-// 🚀 ГЛАВНАЯ ЛОГИКА АВТОРИЗАЦИИ
+// 🚀 LOGIC
 // ============================================================
 
 /**
- * Основной флоу входа в систему
- * Вызывается из команды /login или по кнопке в канале
+ * Основной флоу входа/регистрации
  */
 export const handleLoginFlow = async (msg, isNewRegistration = false) => {
-    const chatId = msg.chat.id;
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  try {
+    // 1. GATEKEEPER: Проверка группы
+    const isMember = await checkGroupMembership(userId);
+    if (!isMember) {
+      console.warn(`⛔️ [AUTH] Access Denied for ${userId}`);
+      return bot.sendMessage(
+        chatId,
+        `⛔️ <b>ДОСТУП ЗАПРЕЩЕН</b>\n\n` +
+          `Этот бот только для сотрудников <b>ProElectro</b>.\n` +
+          `Вы должны состоять в рабочей группе.`,
+        { parse_mode: "HTML" },
+      );
+    }
+
+    // 2. Получаем свежие данные из БД
+    // 🔥 Делаем это ВСЕГДА, чтобы убедиться, что телефон на месте
+    const userRes = await db.query(
+      "SELECT id, role, phone, username FROM users WHERE telegram_id = $1",
+      [userId],
+    );
+    const user = userRes.rows[0];
+
+    // --- СЦЕНАРИЙ 1: ЮЗЕРА НЕТ В БАЗЕ ---
+    if (!user) {
+      return bot.sendMessage(
+        chatId,
+        `👋 <b>Добро пожаловать!</b>\n\n` +
+          `Вас нет в системе. Нажмите кнопку ниже для регистрации.`,
+        {
+          parse_mode: "HTML",
+          reply_markup: {
+            keyboard: [
+              [{ text: "📱 Отправить свой контакт", request_contact: true }],
+            ],
+            resize_keyboard: true,
+            one_time_keyboard: true,
+          },
+        },
+      );
+    }
+
+    // --- СЦЕНАРИЙ 2: ЮЗЕР ЕСТЬ, НО НЕТ ТЕЛЕФОНА ---
+    if (!user.phone) {
+      console.log(`⚠️ [AUTH] У юзера ${userId} нет телефона. Просим снова.`);
+      return bot.sendMessage(
+        chatId,
+        "⚠️ Нам нужен ваш номер телефона для создания учетной записи.\nПожалуйста, нажмите кнопку ниже:",
+        {
+          reply_markup: {
+            keyboard: [
+              [{ text: "📱 Отправить контакт", request_contact: true }],
+            ],
+            resize_keyboard: true,
+            one_time_keyboard: true,
+          },
+        },
+      );
+    }
+
+    // 3. ГЕНЕРАЦИЯ ПАРОЛЯ
+    const tempPassword = generateRandomPassword();
+    const hashedPassword = hashPassword(tempPassword);
+
+    // Обновляем хеш в базе
+    await db.query("UPDATE users SET password_hash = $1 WHERE id = $2", [
+      hashedPassword,
+      user.id,
+    ]);
+
+    // 4. ГЕНЕРАЦИЯ КАРТОЧКИ
+    // Логин = чистый телефон. Если вдруг телефона нет (хотя проверка выше не пустит), берем username.
+    const login = user.phone
+      ? user.phone.replace(/[^0-9]/g, "")
+      : user.username || `id${user.id}`;
+    const dashboardUrl = "https://crm.proelectro.kz";
+
+    let text = `🔐 <b>КАРТОЧКА ДОСТУПА</b>\n`;
+    text += `➖➖➖➖➖➖➖➖➖➖\n`;
+    text += `👤 <b>Логин:</b> <code>${login}</code>\n`;
+    text += `🔑 <b>Пароль:</b> <code>${tempPassword}</code>\n`;
+    text += `➖➖➖➖➖➖➖➖➖➖\n\n`;
+    text += `🌍 <b>CRM:</b> ${dashboardUrl}\n\n`;
+
+    text += isNewRegistration
+      ? `👋 <b>Аккаунт создан!</b> Теперь у вас есть доступ к заказам.`
+      : `⚠️ <i>Пароль обновлен. Используйте его для входа.</i>`;
+
+    await bot.sendMessage(chatId, text, {
+      parse_mode: "HTML",
+      reply_markup: { remove_keyboard: true }, // Убираем клавиатуру контактов
+    });
+  } catch (e) {
+    console.error("💥 [AUTH ERROR]:", e);
+    bot.sendMessage(
+      chatId,
+      "❌ Произошла ошибка при авторизации. Попробуйте позже.",
+    );
+  }
+};
+
+// ============================================================
+// 🎮 HANDLERS
+// ============================================================
+export const setupAuthHandlers = () => {
+  // Команда /login
+  bot.onText(/\/login/, async (msg) => {
+    handleLoginFlow(msg);
+  });
+
+  // Команда /assign (для ручного назначения)
+  bot.onText(/\/assign (\d+)/, async (msg, match) => {
+    const orderId = match[1];
     const userId = msg.from.id;
 
     try {
-        // 1. ПРОВЕРКА БЕЗОПАСНОСТИ (GATEKEEPER)
-        const isMember = await checkGroupMembership(userId);
-        
-        if (!isMember) {
-            console.warn(`⛔️ [AUTH] Access Denied: User ${userId} is not in the work group.`);
-            return bot.sendMessage(chatId, 
-                `⛔️ <b>ДОСТУП ЗАПРЕЩЕН</b>\n\n` +
-                `Этот бот только для сотрудников <b>ProElectro</b>.\n` +
-                `Для получения доступа вы должны состоять в рабочей группе.`, 
-                { parse_mode: 'HTML' }
-            );
-        }
+      const userRes = await db.query(
+        "SELECT id, role, first_name FROM users WHERE telegram_id = $1",
+        [userId],
+      );
+      const user = userRes.rows[0];
 
-        // 2. ПОИСК ПОЛЬЗОВАТЕЛЯ В БАЗЕ (Делаем свежий запрос, чтобы избежать undefined)
-        const userRes = await db.query('SELECT id, role, phone FROM users WHERE telegram_id = $1', [userId]);
-        const user = userRes.rows[0]; // Берем первую строку
-        
-        // --- СЦЕНАРИЙ А: ЮЗЕР ВООБЩЕ НЕ НАЙДЕН ---
-        if (!user) {
-            return bot.sendMessage(chatId, 
-                `👋 <b>Добро пожаловать в команду!</b>\n\n` +
-                `Для регистрации подтвердите свой номер телефона кнопкой ниже.`, 
-                { 
-                    parse_mode: 'HTML',
-                    reply_markup: {
-                        keyboard: [[{ text: '📱 Подтвердить номер телефона', request_contact: true }]],
-                        resize_keyboard: true,
-                        one_time_keyboard: true
-                    }
-                }
-            );
-        }
+      if (!user || !["admin", "manager"].includes(user.role)) {
+        return bot.sendMessage(msg.chat.id, "⛔️ У вас нет прав менеджера.");
+      }
 
-        // --- СЦЕНАРИЙ Б: ЮЗЕР ЕСТЬ, НО НЕТ ТЕЛЕФОНА (важно для фикса undefined) ---
-        if (!user.phone) {
-             console.log(`⚠️ [AUTH] Phone missing for user ${userId}`);
-             return bot.sendMessage(chatId, '⚠️ Нам нужен ваш номер телефона для генерации доступа. Нажмите кнопку ниже:', {
-                reply_markup: {
-                    keyboard: [[{ text: '📱 Отправить контакт', request_contact: true }]],
-                    resize_keyboard: true,
-                    one_time_keyboard: true
-                }
-             });
-        }
+      // Обновляем заказ (используем метод из db.js если есть, или сырой SQL)
+      const updateRes = await db.query(
+        `UPDATE orders SET assignee_id = $1, status = 'work', updated_at = NOW() WHERE id = $2 RETURNING id`,
+        [user.id, orderId],
+      );
 
-        // 3. ГЕНЕРАЦИЯ И СОХРАНЕНИЕ ПАРОЛЯ
-        const tempPassword = generateRandomPassword();
-        const hashedPassword = hashPassword(tempPassword);
+      if (updateRes.rowCount === 0) {
+        return bot.sendMessage(msg.chat.id, "❌ Заказ не найден.");
+      }
 
-        // Обновляем пароль по внутреннему ID (это надежнее)
-        await db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hashedPassword, user.id]);
-
-        // 4. ФОРМИРОВАНИЕ ЛОГИНА (Безопасный метод)
-        // Если телефон есть — берем цифры, если нет (что странно) — берем username или ID
-        const login = user.phone ? user.phone.replace(/[^0-9]/g, '') : (msg.from.username || `id${userId}`);
-        const dashboardUrl = "https://crm.proelectro.kz"; 
-
-        let text = `🔐 <b>КАРТОЧКА ДОСТУПА</b>\n`;
-        text += `➖➖➖➖➖➖➖➖➖➖\n`;
-        text += `👤 <b>Логин:</b> <code>${login}</code>\n`;
-        text += `🔑 <b>Пароль:</b> <code>${tempPassword}</code>\n`;
-        text += `➖➖➖➖➖➖➖➖➖➖\n\n`;
-        text += `🌍 <b>CRM:</b> ${dashboardUrl}\n\n`;
-        
-        if (isNewRegistration) {
-            text += `👋 <b>Аккаунт создан!</b> Теперь вы можете управлять заказами.`;
-        } else {
-            text += `⚠️ <i>Пароль обновлен. Используйте его для входа.</i>`;
-        }
-
-        await bot.sendMessage(chatId, text, { 
-            parse_mode: 'HTML',
-            reply_markup: { remove_keyboard: true } // Убираем кнопки регистрации, они больше не нужны
-        });
-        
+      bot.sendMessage(
+        msg.chat.id,
+        `👷‍♂️ <b>ЗАКАЗ #${orderId} ПРИНЯТ!</b>\nОтветственный: ${user.first_name}`,
+        { parse_mode: "HTML" },
+      );
     } catch (e) {
-        console.error('💥 [AUTH ERROR]:', e);
-        bot.sendMessage(chatId, '❌ Ошибка авторизации. Попробуйте ввести /login еще раз.');
+      console.error("💥 [ASSIGN ERROR]:", e);
     }
-};
-
-
-// ============================================================
-// 🎮 НАСТРОЙКА ОБРАБОТЧИКОВ
-// ============================================================
-export const setupAuthHandlers = () => {
-    
-    // Ручной логин (тоже проходит через Gatekeeper)
-    bot.onText(/\/login/, async (msg) => {
-        handleLoginFlow(msg);
-    });
-
-    // Назначение ответственного вручную (/assign 123)
-    bot.onText(/\/assign (\d+)/, async (msg, match) => {
-        const orderId = match[1];
-        const userId = msg.from.id;
-
-        try {
-            // Проверка прав
-            const userRes = await db.query('SELECT id, role, first_name FROM users WHERE telegram_id = $1', [userId]);
-            if (userRes.rows.length === 0) return;
-            
-            const user = userRes.rows[0];
-
-            if (user.role !== 'admin' && user.role !== 'manager') {
-                return bot.sendMessage(msg.chat.id, '⛔️ У вас нет прав на это действие.');
-            }
-
-            // Назначение
-            const updateRes = await db.query(
-                `UPDATE orders SET assignee_id = $1, status = 'work', updated_at = NOW() WHERE id = $2 RETURNING id`, 
-                [user.id, orderId]
-            );
-
-            if (updateRes.rowCount === 0) {
-                return bot.sendMessage(msg.chat.id, '❌ Заказ не найден.');
-            }
-
-            bot.sendMessage(msg.chat.id, 
-                `👷‍♂️ <b>ЗАКАЗ #${orderId} ПРИНЯТ!</b>\nОтв: ${user.first_name}`, 
-                { parse_mode: 'HTML' }
-            );
-
-        } catch (e) {
-            console.error('💥 [ASSIGN ERROR]:', e);
-        }
-    });
+  });
 };

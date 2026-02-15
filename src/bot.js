@@ -1,40 +1,67 @@
-import { bot } from './core.js';
-import { setupMessageHandlers } from './handlers/messages.js';
-import { setupCallbackHandlers } from './handlers/callbacks.js';
-import { setupAuthHandlers } from './handlers/auth.js'; // 🔥 ИМПОРТ АВТОРИЗАЦИИ
+import { bot } from "./core.js";
+import { setupMessageHandlers } from "./handlers/messages.js";
+import { setupCallbackHandlers } from "./handlers/callbacks.js";
+import { setupAuthHandlers } from "./handlers/auth.js";
 
 /**
- * Функция инициализации и запуска бота
- * Вызывается из главного index.js только после подключения к БД
+ * Инициализация и запуск логики бота
+ * @description Собирает все хендлеры и запускает безопасный Long Polling
  */
-export const initBot = () => {
-    console.log('🔄 [BOT] Подключение обработчиков событий...');
+export const initBot = async () => {
+  console.log("🤖 [BOT] Инициализация подсистем...");
 
-    // 1. Подключаем логику текстовых сообщений (/start, контакты, меню, админ-команды)
-    setupMessageHandlers();
-    
-    // 2. Подключаем логику кнопок (калькулятор, заявки, пульт управления)
-    setupCallbackHandlers();
+  // 1. Подключаем слои логики (Controller Layer)
+  // Важен порядок: сначала сообщения, потом колбэки, потом auth
+  setupMessageHandlers();
+  setupCallbackHandlers();
+  setupAuthHandlers();
 
-    // 3. Подключаем систему безопасности (Логин в дашборд, назначение ответственных)
-    setupAuthHandlers(); // 🔥 ЗАПУСК МОДУЛЯ
+  // 2. Предварительная очистка (Best Practice)
+  // 🔥 Удаляем вебхук перед запуском поллинга.
+  // Это спасает от ошибки "409 Conflict", если предыдущая сессия зависла.
+  try {
+    await bot.deleteWebHook();
+    console.log("🧹 [BOT] Вебхук успешно очищен.");
+  } catch (e) {
+    console.warn("⚠️ [BOT] Ошибка очистки вебхука (не критично):", e.message);
+  }
 
-    // 4. Запускаем получение обновлений от Telegram (Long Polling)
-    bot.startPolling({ restart: true })
-        .then(() => {
-            console.log('🚀 [BOT] Система запущена и готова к работе!');
-        })
-        .catch((err) => {
-            console.error('💥 [BOT FATAL] Не удалось запустить Polling:', err);
-        });
+  // 3. Запуск Long Polling (Конфигурация для High Load)
+  console.log("🚀 [BOT] Запуск Long Polling...");
 
-    // 5. Глобальный перехват ошибок Telegram API
-    bot.on('polling_error', (error) => {
-        // Игнорируем ошибки соединения, они случаются. Логируем только код.
-        console.error(`⚠️ [TELEGRAM ERROR] Code: ${error.code} | Msg: ${error.message}`);
-    });
-    
-    bot.on('webhook_error', (error) => {
-        console.error(`⚠️ [WEBHOOK ERROR] ${error.code}: ${error.message}`);
-    });
+  // Мы не используем .then(), так как startPolling возвращает Promise,
+  // но сам процесс идет в фоне. Настройки ниже делают бота отзывчивым.
+  bot.startPolling({
+    restart: true, // Перезапускать при потере соединения
+    polling: {
+      interval: 300, // Проверять обновления каждые 300мс (быстро и без нагрузки)
+      autoStart: true,
+      params: {
+        timeout: 10, // Длинный запрос висит 10 сек (экономия трафика)
+      },
+    },
+  });
+
+  console.log("✅ [BOT] Система активна и принимает команды.");
+
+  // 4. Глобальный перехват ошибок Telegram API (Error Boundary)
+  bot.on("polling_error", (error) => {
+    // Фильтруем шум: ошибки сети (ETIMEDOUT) — это норма, не паникуем
+    if (
+      error.code === "ETIMEDOUT" ||
+      error.code === "EFATAL" ||
+      error.code === "ECONNRESET"
+    ) {
+      // Можно просто игнорировать или писать warn, чтобы не засорять логи
+      // console.warn(`⚠️ [NET] Нестабильная сеть: ${error.code}`);
+      return;
+    }
+    console.error(
+      `💥 [TELEGRAM ERROR] Code: ${error.code} | Msg: ${error.message}`,
+    );
+  });
+
+  bot.on("webhook_error", (error) => {
+    console.error(`💥 [WEBHOOK ERROR] ${error.code}: ${error.message}`);
+  });
 };

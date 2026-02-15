@@ -1,45 +1,66 @@
-import { initDB, db } from './src/db.js';
-// В твоем коде используется либо src/bot.js, либо src/core.js. 
-// Согласно последней структуре, мы используем initBot.
-import { initBot } from './src/bot.js'; 
-import { startServer } from './src/server.js';
+import { initDB } from "./src/db.js";
+import { initBot } from "./src/bot.js";
+import { startServer } from "./src/server.js";
+import { config } from "./src/config.js";
 
 /**
- * Главная точка входа в систему ProElectro
+ * 🔥 ГЛАВНАЯ ТОЧКА ВХОДА PROELECTRO
  */
 async function bootstrap() {
-    try {
-        console.log('🔌 [SYSTEM] Подключаем питание к системе...');
-        
-        // 1. Инициализация базы данных (Ждем, пока "прогреется")
-        await initDB();
-        
-        // 2. Запуск логики Telegram-бота
-        initBot();
-        
-        // 3. Запуск веб-сервера для Portainer Healthcheck
-        startServer();
-        
-        console.log('⚡️ [SYSTEM] Система в сети. Напряжение в норме, ждем лиды!');
+  console.clear();
+  console.log("========================================");
+  console.log("🔌  P R O E L E C T R O   S Y S T E M  ");
+  console.log("========================================");
+  console.log(`🌍 Environment: ${config.server.env}`);
+  console.log("⏳ Запуск систем...");
 
-        // --- Graceful Shutdown (Мягкое завершение) ---
-        const shutdown = async (signal) => {
-            console.log(`\n🛑 [${signal}] Получен сигнал на отключение. Гасим систему...`);
-            
-            // Здесь можно добавить логику уведомления админа перед выключением
-            // await bot.sendMessage(config.bot.bossUsername, "⚠️ Сервер ProElectro уходит на перезагрузку.");
-            
-            process.exit(0);
-        };
+  try {
+    // 1. БАЗА ДАННЫХ
+    // Сначала подключаем БД, так как без нее бот бесполезен
+    await initDB();
 
-        process.on('SIGTERM', () => shutdown('SIGTERM'));
-        process.on('SIGINT', () => shutdown('SIGINT'));
+    // 2. WEB DASHBOARD (Админка)
+    // Запускаем сервер для Portainer Healthcheck и админов
+    startServer();
 
-    } catch (error) {
-        console.error('💥 [SYSTEM FATAL] Фатальное замыкание при старте:', error.message);
-        process.exit(1);
-    }
+    // 3. TELEGRAM BOT
+    // Запускаем логику и полинг
+    await initBot();
+
+    console.log("\n✅ [SYSTEM] ВСЕ СИСТЕМЫ В НОРМЕ. ГОТОВ К РАБОТЕ!");
+    console.log("========================================\n");
+
+    // --- Graceful Shutdown (Мягкое завершение) ---
+    // Это нужно, чтобы Docker корректно останавливал бота при обновлении
+    const shutdown = (signal) => {
+      console.log(`\n🛑 [${signal}] Получен сигнал остановки.`);
+      console.log("💤 Завершаем процессы...");
+      // Тут можно добавить закрытие пула БД: await pool.end();
+      console.log("👋 До свидания!");
+      process.exit(0);
+    };
+
+    process.on("SIGTERM", () => shutdown("SIGTERM"));
+    process.on("SIGINT", () => shutdown("SIGINT"));
+  } catch (error) {
+    console.error("\n💥 [SYSTEM FATAL] КРИТИЧЕСКИЙ СБОЙ ПРИ ЗАПУСКЕ:");
+    console.error(error);
+    process.exit(1);
+  }
 }
+
+// Глобальный перехват необработанных ошибок (чтобы контейнер не падал молча)
+process.on("uncaughtException", (err) => {
+  console.error("🔥 [FATAL] Uncaught Exception:", err);
+});
+process.on("unhandledRejection", (reason, promise) => {
+  console.error(
+    "🔥 [FATAL] Unhandled Rejection at:",
+    promise,
+    "reason:",
+    reason,
+  );
+});
 
 // Поехали!
 bootstrap();
