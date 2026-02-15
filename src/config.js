@@ -49,7 +49,7 @@ export const config = {
         bossUsername: process.env.BOSS_USERNAME || '@yeeerniyaz',
         
         // 🔥 Убираем '@' если случайно добавили в .env, чтобы ссылки t.me/Bot работали
-        username: (process.env.BOT_USERNAME || 'ProElectroBot').replace('@', ''), 
+        username: (process.env.BOT_USERNAME || 'proelectric3_bot').replace('@', ''), 
     },
 
     // --- Настройки Базы Данных (PostgreSQL) ---
