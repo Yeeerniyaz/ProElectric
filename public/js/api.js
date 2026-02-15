@@ -1,185 +1,136 @@
 /**
- * =============================================================================
- * 🔌 PROELECTRO API CLIENT
- * =============================================================================
  * @file public/js/api.js
- * @description Слой работы с данными (Data Layer).
- * Отвечает за HTTP-запросы к серверу, обработку ошибок и авторизацию.
- * Никакой UI-логики здесь нет, только чистые данные.
+ * @description API Client for ProElectro ERP.
+ * Handles HTTP requests, Authentication & Error Management.
  */
 
-const API_BASE = "/api";
+const API_URL = '/api';
 
-class ApiClient {
-  /**
-   * Универсальный метод запроса
-   * @private
-   */
-  static async request(endpoint, options = {}) {
-    const config = {
-      headers: {
-        "Content-Type": "application/json",
-        ...options.headers,
-      },
-      ...options,
-    };
-
-    try {
-      const response = await fetch(`${API_BASE}${endpoint}`, config);
-
-      // 1. Обработка потери сессии (401 Unauthorized)
-      if (response.status === 401) {
-        console.warn("⚠️ Session expired. Redirecting to login...");
-        // Если мы не на экране логина, перезагружаем страницу
-        if (document.getElementById("app").style.display !== "none") {
-          window.location.reload();
-        }
-        throw new Error("Требуется авторизация");
-      }
-
-      // 2. Парсинг ответа
-      const data = await response.json();
-
-      // 3. Обработка ошибок API (например, "Недостаточно средств")
-      if (!response.ok) {
-        throw new Error(data.error || `Ошибка сервера: ${response.status}`);
-      }
-
-      return data;
-    } catch (error) {
-      console.error(`💥 API Error [${endpoint}]:`, error.message);
-      throw error;
+class API {
+    // Токенді LocalStorage-дан аламыз
+    static get token() {
+        return localStorage.getItem('erp_token');
     }
-  }
 
-  // =========================================================================
-  // 🔐 AUTH (Авторизация)
-  // =========================================================================
+    // Негізгі сұраныс жіберу функциясы
+    static async request(endpoint, method = 'GET', body = null) {
+        const headers = { 'Content-Type': 'application/json' };
+        
+        // Егер токен бар болса, header-ге қосамыз
+        if (this.token) {
+            headers['Authorization'] = `Bearer ${this.token}`;
+        }
 
-  static async checkAuth() {
-    return this.request("/me");
-  }
+        try {
+            const response = await fetch(API_URL + endpoint, {
+                method,
+                headers,
+                body: body ? JSON.stringify(body) : null
+            });
 
-  static async login(password) {
-    return this.request("/login", {
-      method: "POST",
-      body: JSON.stringify({ password }),
-    });
-  }
+            // Егер авторизация қатесі болса (401) -> Шығарып жібереміз
+            if (response.status === 401) {
+                this.logout();
+                location.reload();
+                throw new Error('Сессия аяқталды. Қайта кіріңіз.');
+            }
 
-  static async logout() {
-    return this.request("/logout", { method: "POST" });
-  }
+            const data = await response.json();
 
-  // =========================================================================
-  // 📊 ANALYTICS (Аналитика)
-  // =========================================================================
+            // Егер сервер қате қайтарса
+            if (!response.ok) {
+                throw new Error(data.error || 'Server Error');
+            }
 
-  static async getKPI() {
-    return this.request("/analytics/kpi");
-  }
+            return data;
+        } catch (error) {
+            console.error(`API Error [${endpoint}]:`, error);
+            throw error;
+        }
+    }
 
-  static async getRevenueChart() {
-    return this.request("/analytics/revenue-chart");
-  }
+    // ============================================================
+    // 🔐 AUTHENTICATION
+    // ============================================================
+    
+    static async login(password) {
+        // Бұл жерде сервер сессия (cookie) қолданады, бірақ болашақ үшін токен логикасын да қалдырдық
+        const res = await this.request('/login', 'POST', { password });
+        if (res.success) {
+            // Қазіргі сервер сессиямен істейді, сондықтан токен міндетті емес, 
+            // бірақ UI логикасы үшін сақтап қоямыз
+            localStorage.setItem('erp_token', 'session_active'); 
+        }
+        return res;
+    }
 
-  static async getFinanceStats() {
-    return this.request("/analytics/finance");
-  }
+    static async checkAuth() {
+        return this.request('/me');
+    }
 
-  // =========================================================================
-  // 📦 ORDERS (Заказы)
-  // =========================================================================
+    static async logout() {
+        try {
+            await this.request('/logout', 'POST');
+        } finally {
+            localStorage.removeItem('erp_token');
+        }
+    }
 
-  /**
-   * Получить список заказов с фильтрацией
-   * @param {Object} params { page, limit, status, search }
-   */
-  static async getOrders(params = {}) {
-    const query = new URLSearchParams(params).toString();
-    return this.request(`/orders?${query}`);
-  }
+    // ============================================================
+    // 🏗 ORDER MANAGEMENT
+    // ============================================================
 
-  /**
-   * Создать заказ вручную
-   */
-  static async createOrder(data) {
-    return this.request("/orders", {
-      method: "POST",
-      body: JSON.stringify(data),
-    });
-  }
+    static async getOrders(params = {}) {
+        // Параметрлерді URL-ге қосамыз (status=new&limit=20...)
+        const searchParams = new URLSearchParams(params);
+        return this.request(`/orders?${searchParams.toString()}`);
+    }
 
-  /**
-   * Обновить заказ (Статус, Менеджер)
-   * Это ключевой метод для изменения заказа после замера!
-   */
-  static async updateOrder(id, data) {
-    return this.request(`/orders/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(data),
-    });
-  }
+    static async createOrder(data) {
+        return this.request('/orders', 'POST', data);
+    }
 
-  /**
-   * Удалить заказ (Архивация)
-   */
-  static async deleteOrder(id) {
-    return this.request(`/orders/${id}`, { method: "DELETE" });
-  }
+    static async updateOrder(id, data) {
+        return this.request(`/orders/${id}`, 'PATCH', data);
+    }
 
-  // =========================================================================
-  // 💰 ACCOUNTS & FINANCE (Счета и переводы)
-  // =========================================================================
+    // ============================================================
+    // 💰 FINANCE
+    // ============================================================
 
-  static async getAccounts() {
-    return this.request("/accounts");
-  }
+    static async getAccounts() {
+        return this.request('/accounts');
+    }
 
-  static async transfer(fromId, toId, amount, comment) {
-    return this.request("/accounts/transfer", {
-      method: "POST",
-      body: JSON.stringify({ fromId, toId, amount, comment }),
-    });
-  }
+    static async transfer(fromId, toId, amount, comment) {
+        return this.request('/accounts/transfer', 'POST', { fromId, toId, amount, comment });
+    }
 
-  static async addTransaction(data) {
-    return this.request("/transactions", {
-      method: "POST",
-      body: JSON.stringify(data),
-    });
-  }
+    // ============================================================
+    // 📊 ANALYTICS
+    // ============================================================
 
-  // =========================================================================
-  // 👥 USERS (CRM)
-  // =========================================================================
+    static async getKPI() {
+        return this.request('/analytics/kpi');
+    }
 
-  static async getUsers() {
-    return this.request("/users");
-  }
+    // ============================================================
+    // 👥 CRM & SETTINGS
+    // ============================================================
 
-  static async updateUserRole(id, role) {
-    return this.request(`/users/${id}/role`, {
-      method: "POST",
-      body: JSON.stringify({ role }),
-    });
-  }
+    static async getUsers() {
+        return this.request('/users');
+    }
 
-  // =========================================================================
-  // ⚙️ SETTINGS (Настройки цен)
-  // =========================================================================
+    static async updateUserRole(id, role) {
+        return this.request(`/users/${id}/role`, 'POST', { role });
+    }
 
-  static async getSettings() {
-    return this.request("/settings");
-  }
+    static async getSettings() {
+        return this.request('/settings');
+    }
 
-  static async updateSettings(data) {
-    return this.request("/settings", {
-      method: "POST",
-      body: JSON.stringify(data),
-    });
-  }
+    static async updateSettings(data) {
+        return this.request('/settings', 'POST', data);
+    }
 }
-
-// Экспортируем в глобальную область видимости (для браузера)
-window.API = ApiClient;
