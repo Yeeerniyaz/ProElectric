@@ -1,240 +1,474 @@
 /**
  * @file src/handlers/AdminHandler.js
- * @description Обработчик административных функций.
- * Реализует логику управления бизнесом, персоналом и настройками.
- * Полностью отделен от текстового контента (использует constants.js).
+ * @description Контроллер панели администратора (Presentation Layer).
+ * Реализует полный набор инструментов для управления бизнесом через Telegram.
  * @module AdminHandler
- * @version 4.5.0 (Senior Production Ready)
+ * @version 5.0.0 (Senior Edition)
  */
 
 import { UserService } from "../services/UserService.js";
 import { OrderService } from "../services/OrderService.js";
-import * as db from "../database/repository.js";
-import { MESSAGES, KEYBOARDS, ROLES, DB_KEYS } from "../constants.js";
+import * as db from "../database/index.js"; // Прямой доступ для бэкапов и настроек
+import { MESSAGES, KEYBOARDS, BUTTONS, ROLES, DB_KEYS } from "../constants.js";
+
+// =============================================================================
+// 🛠 ВСПОМОГАТЕЛЬНЫЕ УТИЛИТЫ (HELPERS)
+// =============================================================================
+
+/**
+ * Асинхронная пауза.
+ * Используется в рассылках, чтобы не превысить лимиты Telegram API (30 msg/sec).
+ * @param {number} ms - Миллисекунды
+ */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Форматирование даты.
+ * @returns {string} Пример: "16.02.2026 14:30"
+ */
+const nowStr = () => new Date().toLocaleString("ru-RU");
+
+// =============================================================================
+// 🎮 ГЛАВНЫЙ КОНТРОЛЛЕР (ADMIN HANDLER)
+// =============================================================================
 
 export const AdminHandler = {
   /**
-   * 🚪 Вход в панель администратора.
-   * Проверяет права доступа (RBAC) перед отображением меню.
+   * 🚦 Главный маршрутизатор (Router).
+   * Перехватывает сообщения от UserHandler, если они относятся к админке.
+   *
    * @param {Object} ctx - Контекст Telegraf
    */
-  async enterAdminPanel(ctx) {
+  async handleMessage(ctx) {
+    const text = ctx.message.text;
     const userId = ctx.from.id;
 
-    // 1. Строгая проверка прав доступа
+    // 1. SECURITY CHECK (Middleware Pattern)
+    // Проверяем права при каждом действии. Даже если кнопка осталась в чате,
+    // разжалованный админ не сможет ей воспользоваться.
     const isAdmin = await UserService.isAdmin(userId);
-
     if (!isAdmin) {
-      return ctx.replyWithMarkdown(MESSAGES.ADMIN.ACCESS_DENIED);
+      console.warn(`[Security] Unauthorized admin access attempt by ${userId}`);
+      return ctx.reply("⛔ <b>Доступ запрещен.</b>\nУ вас недостаточно прав.", {
+        parse_mode: "HTML",
+      });
     }
 
-    // 2. Отображаем меню управления
-    await ctx.replyWithMarkdown(
-      MESSAGES.ADMIN.PANEL_WELCOME,
-      KEYBOARDS.ADMIN_MENU,
-    );
+    try {
+      // Показываем статус "печатает...", чтобы админ видел реакцию бота
+      await ctx.sendChatAction("typing");
+
+      // 2. ОБРАБОТКА КНОПОК МЕНЮ (Menu Handlers)
+      switch (text) {
+        case BUTTONS.ADMIN_PANEL:
+          return this.showAdminMenu(ctx);
+
+        case BUTTONS.ADMIN_STATS:
+          return this.showDashboard(ctx);
+
+        case BUTTONS.ADMIN_SETTINGS:
+          return this.showSettingsInstruction(ctx);
+
+        case BUTTONS.ADMIN_STAFF:
+          return this.showStaffInstruction(ctx);
+
+        case BUTTONS.BACK:
+          // Возврат в пользовательское меню (обрабатывается в UserHandler,
+          // но здесь можно добавить логику выхода из админки)
+          return ctx.reply(
+            "Вы вышли из панели администратора.",
+            KEYBOARDS.MAIN_MENU("admin"), // Возвращаем меню с правами админа
+          );
+      }
+
+      // 3. ОБРАБОТКА КОМАНД (Command Handlers)
+      if (text.startsWith("/setprice")) return this.processSetPrice(ctx);
+      if (text.startsWith("/setrole")) return this.processSetRole(ctx);
+      if (text.startsWith("/broadcast")) return this.processBroadcast(ctx);
+      if (text.startsWith("/backup")) return this.processBackup(ctx);
+      if (text.startsWith("/finduser")) return this.processFindUser(ctx);
+      if (text.startsWith("/findorder")) return this.processFindOrder(ctx);
+
+      // 4. FALLBACK (Если команда не распознана, но мы в админке)
+      await ctx.reply(
+        "⚙️ <b>Панель Администратора</b>\nВыберите действие в меню или введите команду.",
+        KEYBOARDS.ADMIN_MENU,
+      );
+    } catch (error) {
+      console.error("[AdminHandler] Critical Error:", error);
+      await ctx.reply(
+        "⚠️ <b>Внутренняя ошибка сервера.</b>\nМы уже записали лог и работаем над испровлением.",
+        { parse_mode: "HTML" },
+      );
+    }
+  },
+
+  // ===========================================================================
+  // 📊 БЛОК: СТАТИСТИКА И ДАШБОРД
+  // ===========================================================================
+
+  /**
+   * 🏠 Отображение главного меню админа.
+   */
+  async showAdminMenu(ctx) {
+    await ctx.reply(MESSAGES.ADMIN.PANEL_WELCOME, KEYBOARDS.ADMIN_MENU);
   },
 
   /**
-   * 📊 Генерация и отображение статистики бизнеса.
-   * Агрегирует данные из базы (OrderService) и показывает отчет.
+   * 📈 Генерация и показ бизнес-дашборда.
+   * Собирает агрегированные данные из UserService.
    */
-  async showStatistics(ctx) {
-    // Повторная верификация прав (Security Layer)
-    if (!(await UserService.isAdmin(ctx.from.id))) return;
-
-    // Уведомление о начале долгой операции
-    await ctx.replyWithMarkdown(MESSAGES.ADMIN.STATS_LOADING);
+  async showDashboard(ctx) {
+    const loadingMsg = await ctx.reply("⏳ <i>Собираю данные...</i>", {
+      parse_mode: "HTML",
+    });
 
     try {
-      // Parallel Execution: Запускаем независимые запросы параллельно для ускорения
-      const [stats, allUsers] = await Promise.all([
-        OrderService.getAdminStats(),
-        UserService.getAllUsers(1, 0), // Оптимизация: получаем список, чтобы узнать длину
-      ]);
+      const stats = await UserService.getDashboardStats();
 
-      const usersCount = allUsers.length;
+      // Формирование отчета
+      const report =
+        `📊 <b>БИЗНЕС-ДАШБОРД</b>\n` +
+        `➖➖➖➖➖➖➖➖➖\n` +
+        `👥 <b>Аудитория:</b>\n` +
+        `• Всего пользователей: <b>${stats.totalUsers}</b>\n` +
+        `• Активных (24ч): <b>${stats.activeUsers24h}</b>\n\n` +
+        `💰 <b>Финансы (Выполненные):</b>\n` +
+        `• Общая выручка: <b>${stats.totalRevenue.toLocaleString()} ₸</b>\n\n` +
+        `<i>Для детального отчета по заказам используйте CRM.</i>\n` +
+        `➖➖➖➖➖➖➖➖➖\n` +
+        `🕒 Обновлено: ${nowStr()}`;
 
-      // Формируем отчет, используя шаблон из констант
-      const reportText = MESSAGES.ADMIN.statsReport(
-        usersCount,
-        stats.newOrdersCount,
-        stats.potentialRevenue.toLocaleString(),
-        stats.totalOrdersChecked,
+      // Удаляем сообщение "Загрузка" и отправляем отчет
+      await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
+      await ctx.replyWithHTML(report);
+    } catch (error) {
+      console.error("Dashboard Error:", error);
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        loadingMsg.message_id,
+        null,
+        "❌ Не удалось загрузить статистику.",
+      );
+    }
+  },
+
+  // ===========================================================================
+  // 🛠 БЛОК: НАСТРОЙКИ СИСТЕМЫ (SETTINGS)
+  // ===========================================================================
+
+  /**
+   * ℹ️ Инструкция по изменению цен.
+   * Динамически генерирует список доступных ключей из DB_KEYS.
+   */
+  async showSettingsInstruction(ctx) {
+    // Превращаем объект ключей в список для копирования
+    const keysList = Object.values(DB_KEYS)
+      .map((k) => `<code>${k}</code>`)
+      .join("\n");
+
+    const msg =
+      `🛠 <b>Управление тарифами (Live Config)</b>\n\n` +
+      `Позволяет менять цены "на лету" без перезагрузки бота.\n\n` +
+      `<b>Синтаксис:</b>\n` +
+      `<code>/setprice КЛЮЧ ЦЕНА</code>\n\n` +
+      `<b>Пример:</b>\n` +
+      `<code>/setprice price_cable 450</code>\n\n` +
+      `🔑 <b>Доступные ключи:</b>\n${keysList}\n\n` +
+      `💾 <i>Для создания резервной копии настроек введите /backup</i>`;
+
+    await ctx.replyWithHTML(msg);
+  },
+
+  /**
+   * 💵 Команда: Изменение настройки (/setprice).
+   */
+  async processSetPrice(ctx) {
+    const parts = ctx.message.text.split(" ");
+
+    // Валидация аргументов
+    if (parts.length !== 3) {
+      return ctx.reply(
+        "⚠️ <b>Ошибка формата!</b>\nИспользуйте: <code>/setprice key value</code>",
+        { parse_mode: "HTML" },
+      );
+    }
+
+    const key = parts[1];
+    const value = parseInt(parts[2]);
+
+    // Валидация ключа (защита от опечаток и мусора в БД)
+    if (!Object.values(DB_KEYS).includes(key)) {
+      return ctx.reply(
+        `❌ <b>Неверный ключ.</b>\nКлюч <code>${key}</code> не найден в системе.`,
+        { parse_mode: "HTML" },
+      );
+    }
+
+    // Валидация значения
+    if (isNaN(value)) {
+      return ctx.reply("❌ <b>Ошибка значения.</b>\nЦена должна быть числом.", {
+        parse_mode: "HTML",
+      });
+    }
+
+    try {
+      // UPSERT запрос (Вставка или Обновление)
+      await db.query(
+        "INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()",
+        [key, value.toString()],
       );
 
-      await ctx.replyWithMarkdown(reportText);
+      await ctx.reply(
+        `✅ <b>Настройка обновлена!</b>\n\n` +
+          `🔑 Параметр: <code>${key}</code>\n` +
+          `💰 Новое значение: <b>${value}</b>\n\n` +
+          `<i>Изменения вступили в силу моментально.</i>`,
+        { parse_mode: "HTML" },
+      );
     } catch (error) {
-      console.error("[AdminHandler] Stats Error:", error);
-      await ctx.replyWithMarkdown(MESSAGES.ADMIN.STATS_ERROR);
+      await ctx.reply(`❌ Ошибка базы данных: ${error.message}`);
     }
   },
 
   /**
-   * 👥 Повышение прав пользователя (Promote User).
-   * Позволяет назначать администраторов и менеджеров.
-   * Команда: /setrole <ID> <ROLE>
+   * 💾 Команда: Создание и скачивание бэкапа (/backup).
+   * Выгружает таблицу settings в JSON файл.
    */
-  async promoteUser(ctx) {
-    // Получаем профиль инициатора запроса
-    const initiatorUser = await db.getUserByTelegramId(ctx.from.id);
-
-    // Валидация: Только Владелец (Owner) может менять роли
-    if (initiatorUser.role !== ROLES.OWNER) {
-      return ctx.replyWithMarkdown(MESSAGES.ADMIN.ONLY_OWNER_ACCESS);
-    }
-
-    const args = ctx.message.text.split(" ");
-
-    // Валидация формата команды
-    if (args.length !== 3) {
-      return ctx.replyWithMarkdown(MESSAGES.ADMIN.ROLE_FORMAT_ERROR);
-    }
-
-    const targetId = parseInt(args[1]);
-    const newRole = args[2].toLowerCase();
+  async processBackup(ctx) {
+    await ctx.sendChatAction("upload_document");
 
     try {
-      // Вызываем сервис для обновления роли в БД
-      const updatedUser = await UserService.changeUserRole(
+      const res = await db.query("SELECT * FROM settings ORDER BY key ASC");
+      const jsonData = JSON.stringify(res.rows, null, 2);
+      const filename = `proelectric_config_${new Date().toISOString().split("T")[0]}.json`;
+
+      await ctx.replyWithDocument(
+        {
+          source: Buffer.from(jsonData, "utf-8"),
+          filename: filename,
+        },
+        {
+          caption: `🔒 <b>Резервная копия настроек</b>\n📅 Дата: ${nowStr()}\n📦 Параметров: ${res.rowCount}`,
+          parse_mode: "HTML",
+        },
+      );
+    } catch (error) {
+      await ctx.reply("❌ Не удалось создать резервную копию.");
+    }
+  },
+
+  // ===========================================================================
+  // 👥 БЛОК: УПРАВЛЕНИЕ ПЕРСОНАЛОМ (HR)
+  // ===========================================================================
+
+  /**
+   * ℹ️ Инструкция по ролям.
+   */
+  async showStaffInstruction(ctx) {
+    const msg =
+      `👮‍♂️ <b>Управление персоналом (RBAC)</b>\n\n` +
+      `<b>Синтаксис:</b>\n` +
+      `<code>/setrole ID РОЛЬ</code>\n\n` +
+      `<b>Доступные роли:</b>\n` +
+      `👑 <code>admin</code> — Администратор (Управление заказами и персоналом)\n` +
+      `👷 <code>manager</code> — Менеджер (Только свои заказы)\n` +
+      `👤 <code>user</code> — Клиент (Доступ к калькулятору)\n\n` +
+      `<b>Пример:</b>\n` +
+      `<code>/setrole 123456789 manager</code>\n\n` +
+      `🔍 <i>Найти пользователя: /finduser имя</i>`;
+
+    await ctx.replyWithHTML(msg);
+  },
+
+  /**
+   * 👑 Команда: Назначение роли (/setrole).
+   */
+  async processSetRole(ctx) {
+    const parts = ctx.message.text.split(" ");
+
+    if (parts.length !== 3) {
+      return ctx.reply(
+        "⚠️ <b>Ошибка формата.</b>\nПример: <code>/setrole 123456789 manager</code>",
+        { parse_mode: "HTML" },
+      );
+    }
+
+    const targetId = parseInt(parts[1]);
+    const newRole = parts[2].toLowerCase();
+
+    if (isNaN(targetId)) {
+      return ctx.reply("❌ ID пользователя должен быть числом.");
+    }
+
+    try {
+      // Вызываем Service Layer для выполнения бизнес-логики (с проверками прав)
+      const result = await UserService.changeUserRole(
         ctx.from.id,
         targetId,
         newRole,
       );
 
-      // 1. Уведомляем админа об успехе
-      await ctx.replyWithMarkdown(
-        MESSAGES.ADMIN.roleUpdateSuccess(
-          updatedUser.first_name,
-          targetId,
-          newRole,
-        ),
+      await ctx.reply(
+        `✅ <b>Права доступа изменены!</b>\n\n` +
+          `👤 Пользователь ID: <code>${targetId}</code>\n` +
+          `🔰 Старая роль: <s>${result.oldRole?.toUpperCase() || "N/A"}</s>\n` +
+          `🔑 Новая роль: <b>${result.newRole.toUpperCase()}</b>`,
+        { parse_mode: "HTML" },
       );
 
-      // 2. Уведомляем целевого пользователя (если возможно)
+      // Уведомляем пользователя (Friendly UI)
       try {
         await ctx.telegram.sendMessage(
           targetId,
-          MESSAGES.ADMIN.roleNotificationUser(newRole),
+          `🎉 <b>Обновление прав доступа!</b>\n\nВам назначена роль: <b>${newRole.toUpperCase()}</b>.\nДля обновления интерфейса введите /start`,
+          { parse_mode: "HTML" },
         );
       } catch (e) {
-        // Игнорируем ошибку доставки (пользователь мог заблокировать бота)
-        console.warn(`[AdminHandler] Не удалось уведомить user ${targetId}`);
+        /* Игнорируем, если бот заблокирован пользователем */
       }
     } catch (error) {
-      await ctx.replyWithMarkdown(
-        MESSAGES.ADMIN.roleUpdateError(error.message),
-      );
+      // UserService выбросит читаемую ошибку (например, "Нельзя разжаловать Владельца")
+      await ctx.reply(`❌ <b>Ошибка:</b> ${error.message}`, {
+        parse_mode: "HTML",
+      });
     }
   },
 
   /**
-   * 🏷️ Динамическое обновление цен (Hot Config Update).
-   * Позволяет менять бизнес-параметры без деплоя.
-   * Команда: /setprice <KEY> <VALUE>
+   * 🔍 Команда: Поиск пользователя (/finduser).
    */
-  async updatePriceSetting(ctx) {
-    if (!(await UserService.isAdmin(ctx.from.id))) return;
-
-    const args = ctx.message.text.split(" ");
-
-    // Если аргументов недостаточно, показываем справку
-    if (args.length !== 3) {
-      // Динамически формируем список ключей для подсказки
-      const keysList = Object.values(DB_KEYS)
-        .map((k) => `\`${k}\``)
-        .join(", ");
-
-      return ctx.replyWithMarkdown(MESSAGES.ADMIN.PRICE_HELP(keysList));
+  async processFindUser(ctx) {
+    const query = ctx.message.text.replace("/finduser", "").trim();
+    if (!query || query.length < 2) {
+      return ctx.reply("⚠️ Введите имя, логин или телефон (мин. 2 символа).");
     }
 
-    const key = args[1];
-    const value = args[2];
+    const users = await UserService.findUsers(query);
 
-    try {
-      // Сохраняем настройку в БД
-      await db.saveSetting(key, value);
-
-      await ctx.replyWithMarkdown(
-        MESSAGES.ADMIN.priceUpdateSuccess(key, value),
-      );
-    } catch (error) {
-      console.error("[AdminHandler] Price Update Error:", error);
-      await ctx.replyWithMarkdown(MESSAGES.ADMIN.priceUpdateError);
+    if (users.length === 0) {
+      return ctx.reply("🤷‍♂️ Пользователи не найдены.");
     }
+
+    let msg = `🔍 <b>Результаты поиска (${users.length}):</b>\n\n`;
+    users.forEach((u) => {
+      msg += `👤 <b>${u.first_name}</b> (@${u.username || "нет"})\n`;
+      msg += `🆔 <code>${u.telegram_id}</code> | 🔰 ${u.role}\n`;
+      msg += `📱 ${u.phone || "Нет телефона"}\n`;
+      msg += `➖➖➖➖➖➖➖➖\n`;
+    });
+
+    await ctx.replyWithHTML(msg);
   },
 
+  // ===========================================================================
+  // 📢 БЛОК: КОММУНИКАЦИЯ (BROADCAST)
+  // ===========================================================================
+
   /**
-   * 📢 Система массовой рассылки (Broadcast).
-   * Отправляет сообщение всем пользователям из базы.
-   * Команда: /broadcast <TEXT>
+   * 📢 Команда: Массовая рассылка (/broadcast).
    */
-  async broadcastMessage(ctx) {
-    if (!(await UserService.isAdmin(ctx.from.id))) return;
+  async processBroadcast(ctx) {
+    const text = ctx.message.text.replace("/broadcast", "").trim();
 
-    const messageParts = ctx.message.text.split(" ");
-
-    // Проверка на пустой текст
-    if (messageParts.length < 2) {
-      return ctx.replyWithMarkdown(MESSAGES.ADMIN.BROADCAST_HELP);
+    if (!text) {
+      return ctx.reply(
+        "⚠️ <b>Ошибка.</b> Введите текст сообщения.\nПример: <code>/broadcast Скидки сегодня!</code>",
+        { parse_mode: "HTML" },
+      );
     }
 
-    // Собираем текст сообщения (убираем команду)
-    const textToSend = messageParts.slice(1).join(" ");
+    const confirmMsg = await ctx.reply("⏳ <i>Подготовка к рассылке...</i>", {
+      parse_mode: "HTML",
+    });
 
-    await ctx.replyWithMarkdown(MESSAGES.ADMIN.BROADCAST_START);
+    // Получаем всех пользователей
+    // (В будущем можно добавить аргумент для фильтра: /broadcast admins Text)
+    const targetIds = await UserService.getUsersForBroadcast("all");
 
-    // Получаем список всех пользователей (Batch Processing)
-    // При большом количестве (>10к) здесь следует использовать курсор БД
-    const allUsers = await UserService.getAllUsers(2000, 0);
+    let success = 0;
+    let blocked = 0;
+    let failed = 0;
 
-    let successCount = 0;
-    let failCount = 0;
-
-    const formattedMessage = MESSAGES.ADMIN.broadcastHeader(textToSend);
-
-    // Итерация по пользователям
-    for (const user of allUsers) {
+    // Итеративная отправка с задержкой (Rate Limiting)
+    for (const userId of targetIds) {
       try {
-        await ctx.telegram.sendMessage(user.telegram_id, formattedMessage, {
-          parse_mode: "Markdown",
-        });
-        successCount++;
-
-        // Anti-Flood защита (пауза 30мс)
-        await new Promise((resolve) => setTimeout(resolve, 30));
+        await ctx.telegram.sendMessage(
+          userId,
+          `📢 <b>Новости ProElectric</b>\n\n${text}`,
+          { parse_mode: "HTML" },
+        );
+        success++;
       } catch (e) {
-        failCount++; // Ошибка доставки (юзер заблокировал бота)
+        if (e.code === 403) {
+          blocked++; // Пользователь заблокировал бота
+        } else {
+          failed++; // Другая ошибка
+        }
       }
+      // Пауза 35мс (~28 сообщений в секунду), чтобы быть вежливым к API Telegram
+      await sleep(35);
     }
 
-    // Финальный отчет администратору
-    await ctx.replyWithMarkdown(
-      MESSAGES.ADMIN.broadcastReport(successCount, failCount),
+    // Финальный отчет
+    const report =
+      `✅ <b>Рассылка завершена!</b>\n\n` +
+      `📨 Отправлено успешно: <b>${success}</b>\n` +
+      `🚫 Бот заблокирован: <b>${blocked}</b>\n` +
+      `⚠️ Ошибки доставки: <b>${failed}</b>\n` +
+      `👥 Всего получателей: <b>${targetIds.length}</b>`;
+
+    await ctx.telegram.editMessageText(
+      ctx.chat.id,
+      confirmMsg.message_id,
+      null,
+      report,
+      { parse_mode: "HTML" },
     );
   },
 
+  // ===========================================================================
+  // 📦 БЛОК: ЗАКАЗЫ (ORDERS)
+  // ===========================================================================
+
   /**
-   * 💾 Резервное копирование настроек (Backup).
-   * Выгружает текущие настройки БД в JSON-файл.
+   * 🔍 Команда: Поиск заказа (/findorder ID).
    */
-  async downloadDatabase(ctx) {
-    if (!(await UserService.isAdmin(ctx.from.id))) return;
+  async processFindOrder(ctx) {
+    const parts = ctx.message.text.split(" ");
+    const orderId = parseInt(parts[1]);
+
+    if (!orderId || isNaN(orderId)) {
+      return ctx.reply(
+        "⚠️ введите ID заказа.\nПример: <code>/findorder 5</code>",
+        {
+          parse_mode: "HTML",
+        },
+      );
+    }
 
     try {
-      const settings = await db.getSettings();
-      const jsonString = JSON.stringify(settings, null, 2);
+      const order = await OrderService.getOrderById(orderId);
+      if (!order) {
+        return ctx.reply("❌ Заказ не найден.");
+      }
 
-      const dateStr = new Date().toISOString().split("T")[0];
-      const fileName = MESSAGES.ADMIN.BACKUP_FILENAME(dateStr);
+      // Получаем инфо о клиенте
+      const user = await UserService.getUserProfile(order.user_id);
+      const userName = user ? user.first_name : "Неизвестный";
+      const userPhone = user ? user.phone : "Нет";
 
-      await ctx.replyWithDocument({
-        source: Buffer.from(jsonString),
-        filename: fileName,
-      });
-    } catch (error) {
-      console.error("[AdminHandler] Backup Error:", error);
-      await ctx.replyWithMarkdown(MESSAGES.ADMIN.BACKUP_ERROR);
+      const msg =
+        `📦 <b>Заказ #${order.id}</b>\n` +
+        `👤 Клиент: ${userName} (${userPhone})\n` +
+        `💰 Сумма: <b>${parseInt(order.total_price).toLocaleString()} ₸</b>\n` +
+        `📅 Дата: ${new Date(order.created_at).toLocaleString()}\n` +
+        `📊 Статус: <code>${order.status}</code>\n\n` +
+        `<i>Для изменения статуса используйте Web-админку.</i>`;
+
+      await ctx.replyWithHTML(msg);
+    } catch (e) {
+      ctx.reply("Ошибка поиска заказа.");
     }
   },
 };
