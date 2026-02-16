@@ -66,6 +66,12 @@ const printSystemBanner = () => {
   console.log(`📦 Версия Node.js:           ${nodeVersion}`);
   console.log(`📅 Время запуска:            ${currentDate}`);
   console.log("--------------------------------------------------");
+  console.log("--- DEBUG ---");
+  console.log(
+    "Token length:",
+    process.env.BOT_TOKEN ? process.env.BOT_TOKEN.length : "MISSING",
+  );
+  console.log("--- DEBUG ---");
 };
 
 // =============================================================================
