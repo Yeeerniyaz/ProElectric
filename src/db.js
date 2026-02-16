@@ -1,8 +1,10 @@
 /**
  * @file src/db.js
- * @description Ядро Базы Данных (PostgreSQL).
- * Enterprise-level архитектура для финансового учета, управления заказами и мульти-касс.
- * @version 8.1.0 (Detailed Pricing Support)
+ * @description Data Access Layer (DAL) уровня Enterprise.
+ * Реализует паттерн Repository, управляет пулом соединений, транзакциями,
+ * миграциями схемы и кэшированием конфигурации.
+ * * @module DB
+ * @version 2.0.0
  */
 
 import pg from "pg";
@@ -10,32 +12,61 @@ import { config } from "./config.js";
 
 const { Pool } = pg;
 
-// Настройка пула с агрессивным восстановлением соединений
+// =============================================================================
+// 🔌 POOL CONFIGURATION
+// =============================================================================
+
+// Парсинг BigInt: PostgreSQL возвращает bigint как строку, конвертируем в число (если влезает) или оставляем строкой
+pg.types.setTypeParser(20, (val) => parseInt(val, 10));
+
 const pool = new Pool({
-  ...config.db,
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+  connectionString: config.db.connectionString,
+  ssl: config.db.ssl,
+  max: config.db.max,
+  idleTimeoutMillis: config.db.idleTimeoutMillis,
+  connectionTimeoutMillis: config.db.connectionTimeoutMillis,
 });
 
-// Кэш настроек (цен) для снижения нагрузки на БД
-let settingsCache = null;
-let settingsCacheTime = 0;
-const CACHE_TTL = 60 * 1000; // 1 минута
+// Глобальные обработчики событий пула
+pool.on("connect", () => {
+  // Можно добавить метрики
+});
 
-pool.on("error", (err) =>
-  console.error("💥 [DB CRITICAL] Unexpected error on idle client", err),
-);
+pool.on("error", (err) => {
+  console.error("💥 [DB CRITICAL] Unexpected error on idle client", err);
+  // В продакшене здесь может быть отправка алерта в Sentry/Prometheus
+});
 
 // =============================================================================
-// 🛠 LOW-LEVEL UTILS
+// 🛠 CORE UTILITIES (Transaction & Query Wrappers)
 // =============================================================================
-
-const query = async (text, params) => pool.query(text, params);
 
 /**
- * Выполняет callback внутри SQL-транзакции.
- * Если ошибка -> ROLLBACK. Если успех -> COMMIT.
+ * Выполняет SQL запрос.
+ * @param {string} text - SQL запрос
+ * @param {Array} [params] - Параметры
+ * @returns {Promise<pg.QueryResult>}
+ */
+const query = async (text, params) => {
+  const start = Date.now();
+  try {
+    const res = await pool.query(text, params);
+    const duration = Date.now() - start;
+    if (duration > 1000) {
+      console.warn(`⚠️ [DB SLOW QUERY] ${duration}ms: ${text}`);
+    }
+    return res;
+  } catch (err) {
+    console.error(`❌ [DB ERROR] Query: ${text} | Error: ${err.message}`);
+    throw err;
+  }
+};
+
+/**
+ * Выполняет функцию внутри транзакции.
+ * Автоматически делает BEGIN, COMMIT или ROLLBACK.
+ * @param {Function} callback - Функция, принимающая pg-клиент (client)
+ * @returns {Promise<any>} Результат выполнения callback
  */
 const transaction = async (callback) => {
   const client = await pool.connect();
@@ -46,6 +77,7 @@ const transaction = async (callback) => {
     return result;
   } catch (e) {
     await client.query("ROLLBACK");
+    console.error("⚠️ [DB TRANSACTION ROLLBACK]", e.message);
     throw e;
   } finally {
     client.release();
@@ -53,42 +85,67 @@ const transaction = async (callback) => {
 };
 
 // =============================================================================
-// 🚀 DATA ACCESS LAYER (DAL)
+// 🧠 SETTINGS CACHE (In-Memory Optimization)
+// =============================================================================
+
+const SettingsCache = {
+  data: null,
+  lastFetch: 0,
+  TTL: 60 * 1000, // 1 минута
+
+  async get() {
+    const now = Date.now();
+    if (this.data && now - this.lastFetch < this.TTL) {
+      return this.data;
+    }
+
+    try {
+      const res = await query("SELECT key, value FROM settings");
+      const settings = {};
+      res.rows.forEach((row) => {
+        // Конвертируем numeric/text в число
+        settings[row.key] = parseFloat(row.value);
+      });
+
+      this.data = settings;
+      this.lastFetch = now;
+      return settings;
+    } catch (e) {
+      console.error("Failed to load settings", e);
+      return this.data || {}; // Возвращаем старый кэш или пустоту, чтобы не крашить бота
+    }
+  },
+
+  invalidate() {
+    this.data = null;
+  },
+};
+
+// =============================================================================
+// 🏛 REPOSITORIES
 // =============================================================================
 
 export const db = {
   query,
   transaction,
+  pool, // Экспортируем для Graceful Shutdown
 
-  /**
-   * Получить настройки (Цены) с кэшированием
-   */
-  getSettings: async () => {
-    if (settingsCache && Date.now() - settingsCacheTime < CACHE_TTL)
-      return settingsCache;
-    try {
-      const res = await query("SELECT key, value FROM settings");
-      const settings = {};
-      res.rows.forEach(
-        (row) => (settings[row.key] = parseFloat(row.value) || row.value),
-      );
-      settingsCache = settings;
-      settingsCacheTime = Date.now();
-      return settings;
-    } catch (e) {
-      console.error("⚠️ [DB] Failed to fetch settings", e);
-      return {};
-    }
+  // --- Настройки ---
+  getSettings: () => SettingsCache.get(),
+
+  updateSetting: async (key, value) => {
+    await query(
+      "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()",
+      [key, value],
+    );
+    SettingsCache.invalidate(); // Сброс кэша
   },
 
-  /**
-   * Создать или Обновить пользователя (Upsert)
-   * Автоматически выдает админку владельцу.
-   */
+  // --- Пользователи ---
   upsertUser: async (telegramId, firstName, username, phone = null) => {
-    // Если это Владелец, роль всегда admin
-    let role = 'client';
-    if (telegramId === config.bot.ownerId) role = 'admin';
+    let role = "client";
+    // Если ID совпадает с владельцем из конфига - даем права админа сразу
+    if (telegramId === config.bot.ownerId) role = "admin";
 
     const sql = `
             INSERT INTO users (telegram_id, first_name, username, phone, role, created_at, updated_at)
@@ -96,111 +153,95 @@ export const db = {
             ON CONFLICT (telegram_id) DO UPDATE SET 
                 first_name = EXCLUDED.first_name,
                 username = EXCLUDED.username,
-                phone = COALESCE(EXCLUDED.phone, users.phone), 
+                phone = COALESCE(EXCLUDED.phone, users.phone),
+                role = CASE WHEN users.role = 'client' AND $5 = 'admin' THEN 'admin' ELSE users.role END, -- Не понижаем права случайно
                 updated_at = NOW()
             RETURNING telegram_id, role, first_name, username, phone;
         `;
-    const res = await query(sql, [telegramId, firstName, username, phone, role]);
-    return res.rows[0];
-  },
-
-  /**
-   * Назначить роль пользователю + Создать личную кассу
-   */
-  promoteUser: async (targetId, newRole, name) => {
-      // 1. Обновляем роль
-      await query("UPDATE users SET role = $1 WHERE telegram_id = $2", [newRole, targetId]);
-      
-      // 2. Если роль admin/manager — создаем личную кассу (если нет)
-      if (['admin', 'manager'].includes(newRole)) {
-          const accRes = await query("SELECT id FROM accounts WHERE owner_id = $1", [targetId]);
-          if (accRes.rows.length === 0) {
-              await query(
-                  "INSERT INTO accounts (name, type, balance, owner_id) VALUES ($1, 'cash', 0, $2)",
-                  [`Касса: ${name}`, targetId]
-              );
-          }
-      }
-  },
-
-  /**
-   * Получить список сотрудников
-   */
-  getEmployees: async () => {
-      const res = await query("SELECT * FROM users WHERE role IN ('admin', 'manager') ORDER BY role");
-      return res.rows;
-  },
-
-  /**
-   * Создать новый ЗАКАЗ (Лид + Объект)
-   */
-  createOrder: async (userId, orderData) => {
-    const { area, rooms, wallType, estimatedPrice } = orderData;
-    const sql = `
-        INSERT INTO orders (
-            user_id, status, area, rooms, wall_type, 
-            total_price, created_at, updated_at
-        ) VALUES ($1, 'new', $2, $3, $4, $5, NOW(), NOW())
-        RETURNING id;
-    `;
     const res = await query(sql, [
-      userId,
-      area,
-      rooms,
-      wallType,
-      estimatedPrice,
+      telegramId,
+      firstName,
+      username,
+      phone,
+      role,
     ]);
     return res.rows[0];
   },
 
-  /**
-   * Добавить расход ПО ОБЪЕКТУ (Материал, Такси)
-   */
-  addObjectExpense: async (orderId, amount, category, comment) => {
-    const sql = `
-        INSERT INTO object_expenses (order_id, amount, category, comment, created_at)
-        VALUES ($1, $2, $3, $4, NOW())
-        RETURNING id;
-    `;
-    return query(sql, [orderId, amount, category, comment]);
+  getEmployees: async () => {
+    const res = await query(
+      "SELECT * FROM users WHERE role IN ('admin', 'manager') ORDER BY role, first_name",
+    );
+    return res.rows;
   },
 
+  // --- Заказы ---
   /**
-   * Получить список кошельков (Кассы)
-   * Админ видит всё, Менеджер — только свои.
+   * Создает заказ.
+   * @param {object} orderData - Данные заказа
+   * @param {object} detailsSnapshot - JSON объект с детальным расчетом (чтобы цена не менялась при смене тарифов)
    */
-  getAccounts: async (userId = null, role = 'admin') => {
+  createOrder: async (userId, orderData, detailsSnapshot) => {
+    const sql = `
+            INSERT INTO orders (
+                user_id, status, 
+                city, service_type, 
+                details, -- JSONB snapshot
+                total_price, 
+                created_at, updated_at
+            ) VALUES ($1, 'new', $2, $3, $4, $5, NOW(), NOW())
+            RETURNING id;
+        `;
+
+    // detailsSnapshot содержит { breakdown, params }
+    const res = await query(sql, [
+      userId,
+      orderData.city || "Не указан",
+      orderData.serviceType || "electric",
+      JSON.stringify(detailsSnapshot),
+      detailsSnapshot.totals.grandTotal, // Итоговая сумма
+    ]);
+    return res.rows[0];
+  },
+
+  getOrders: async (limit = 50) => {
+    const sql = `
+            SELECT o.*, u.username, u.first_name, u.phone 
+            FROM orders o
+            LEFT JOIN users u ON o.user_id = u.telegram_id
+            ORDER BY o.created_at DESC 
+            LIMIT $1
+        `;
+    const res = await query(sql, [limit]);
+    return res.rows;
+  },
+
+  updateOrderStatus: async (id, status) => {
+    await query(
+      "UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2",
+      [status, id],
+    );
+  },
+
+  // --- Финансы (Кассы и Транзакции) ---
+  getAccounts: async (ownerId = null) => {
     let sql = "SELECT * FROM accounts";
     let params = [];
 
-    if (role !== 'admin' && userId) {
-        sql += " WHERE owner_id = $1"; // Личная касса
-        params.push(userId);
+    // Если передан ownerId, показываем только его кассы + общие
+    // Но для админа показываем все. Логику фильтрации лучше вынести в Service, здесь DAL отдает данные.
+    // Сейчас реализуем базовый фильтр:
+    if (ownerId) {
+      sql += " WHERE owner_id = $1 OR owner_id IS NULL";
+      params.push(ownerId);
     }
-    
     sql += " ORDER BY id ASC";
+
     const res = await query(sql, params);
     return res.rows;
   },
 
-  /**
-   * Получить KPI (для админки)
-   */
-  getKPI: async () => {
-    const rev = await query("SELECT SUM(final_price) as val FROM orders WHERE status='done'");
-    const prof = await query("SELECT SUM(final_profit) as val FROM orders WHERE status='done'");
-    const active = await query("SELECT COUNT(*) as val FROM orders WHERE status IN ('work','discuss')");
-    return {
-        revenue: parseFloat(rev.rows[0].val || 0),
-        profit: parseFloat(prof.rows[0].val || 0),
-        active: parseInt(active.rows[0].val || 0)
-    };
-  },
-
-  /**
-   * 💰 ГЛАВНАЯ ФИНАНСОВАЯ ОПЕРАЦИЯ
-   */
-  updateBalance: async ({
+  createTransaction: async ({
     accountId,
     amount,
     type,
@@ -211,7 +252,7 @@ export const db = {
     return transaction(async (client) => {
       const op = type === "income" ? "+" : "-";
 
-      // 1. Обновляем баланс
+      // 1. Атомарное обновление баланса
       const updateRes = await client.query(
         `UPDATE accounts SET balance = balance ${op} $1, updated_at = NOW() WHERE id = $2 RETURNING balance`,
         [amount, accountId],
@@ -219,10 +260,11 @@ export const db = {
 
       if (updateRes.rowCount === 0) throw new Error("Account not found");
 
-      // 2. Пишем в историю
+      // 2. Лог транзакции
       await client.query(
-        `INSERT INTO transactions (account_id, user_id, amount, type, category, comment, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+        `INSERT INTO transactions 
+                (account_id, user_id, amount, type, category, comment, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
         [accountId, userId || null, amount, type, category, comment],
       );
 
@@ -232,125 +274,116 @@ export const db = {
 };
 
 // =============================================================================
-// 🔥 INITIALIZATION & MIGRATIONS
+// 🔥 MIGRATION SYSTEM
 // =============================================================================
 
 export const initDB = async () => {
-  console.log("⏳ [DB] Verifying Schema Integrity...");
+  console.log("⏳ [DB] Starting Schema Synchronization...");
+
   try {
     await transaction(async (client) => {
       // 1. Users
       await client.query(`
-        CREATE TABLE IF NOT EXISTS users (
-            telegram_id BIGINT PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            phone TEXT,
-            role TEXT DEFAULT 'client', -- client, admin, manager
-            created_at TIMESTAMP DEFAULT NOW(),
-            updated_at TIMESTAMP DEFAULT NOW()
-        );
-      `);
+                CREATE TABLE IF NOT EXISTS users (
+                    telegram_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    phone TEXT,
+                    role TEXT DEFAULT 'client', -- client, admin, manager
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            `);
 
-      // 2. Orders
+      // 2. Orders (Updated structure for Granular Pricing)
       await client.query(`
-        CREATE TABLE IF NOT EXISTS orders (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT REFERENCES users(telegram_id),
-            assignee_id BIGINT, 
-            status TEXT DEFAULT 'new',
-            area NUMERIC,
-            rooms INTEGER,
-            wall_type TEXT, 
-            total_price NUMERIC DEFAULT 0,
-            final_price NUMERIC DEFAULT 0,
-            final_profit NUMERIC DEFAULT 0,
-            created_at TIMESTAMP DEFAULT NOW(),
-            updated_at TIMESTAMP DEFAULT NOW()
-        );
-      `);
+                CREATE TABLE IF NOT EXISTS orders (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(telegram_id),
+                    city TEXT,
+                    service_type TEXT,
+                    details JSONB, -- Хранит breakdown, points, meters
+                    status TEXT DEFAULT 'new', -- new, in_progress, completed, canceled
+                    total_price NUMERIC DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            `);
 
-      // 3. Expenses
+      // 3. Accounts (Кассы)
       await client.query(`
-        CREATE TABLE IF NOT EXISTS object_expenses (
-            id SERIAL PRIMARY KEY,
-            order_id INTEGER REFERENCES orders(id) ON DELETE CASCADE,
-            amount NUMERIC NOT NULL,
-            category TEXT,
-            comment TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-      `);
+                CREATE TABLE IF NOT EXISTS accounts (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    balance NUMERIC DEFAULT 0,
+                    type TEXT DEFAULT 'cash',
+                    owner_id BIGINT,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            `);
 
-      // 4. Accounts (С полем owner_id!)
+      // 4. Transactions
       await client.query(`
-        CREATE TABLE IF NOT EXISTS accounts (
-            id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL,
-            balance NUMERIC DEFAULT 0,
-            type TEXT DEFAULT 'cash',
-            owner_id BIGINT, -- Привязка к сотруднику
-            updated_at TIMESTAMP DEFAULT NOW()
-        );
-      `);
+                CREATE TABLE IF NOT EXISTS transactions (
+                    id SERIAL PRIMARY KEY,
+                    account_id INTEGER REFERENCES accounts(id),
+                    user_id BIGINT,
+                    amount NUMERIC NOT NULL,
+                    type TEXT NOT NULL, -- income, expense
+                    category TEXT,
+                    comment TEXT,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+            `);
 
-      // 5. Transactions
+      // 5. Settings (Dynamic Pricing)
       await client.query(`
-        CREATE TABLE IF NOT EXISTS transactions (
-            id SERIAL PRIMARY KEY,
-            account_id INTEGER REFERENCES accounts(id),
-            user_id BIGINT,
-            amount NUMERIC NOT NULL,
-            type TEXT NOT NULL, 
-            category TEXT,
-            comment TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-      `);
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value NUMERIC NOT NULL,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            `);
 
-      // 6. Settings
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value NUMERIC NOT NULL,
-            updated_at TIMESTAMP DEFAULT NOW()
-        );
-      `);
-
-      // --- SEEDING (Начальное заполнение цен) ---
-      // Здесь добавлены все новые пункты из вашего прайса
-      const prices = [
+      // --- SEEDING (Дефолтные цены) ---
+      const defaultPrices = {
         // Черновые
-        ["price_strobe_concrete", 1750], 
-        ["price_strobe_brick", 1100], 
-        ["price_cable_laying", 400],         // Прокладка кабеля
-        ["price_drill_hole_concrete", 1500], // Сверление лунки (Бетон)
-        ["price_drill_hole_brick", 1000],    // Сверление лунки (Кирпич)
-        ["price_socket_box_install", 600],   // Вмазка подрозетника
-        ["price_junction_box_assembly", 3000], // Сборка распредкоробки
-        
+        price_strobe_concrete: 1750,
+        price_strobe_brick: 1100,
+        price_cable_laying: 400,
+        price_drill_hole_concrete: 1500,
+        price_drill_hole_brick: 1000,
+        price_socket_box_install: 600,
+        price_junction_box_assembly: 3000,
         // Чистовые
-        ["price_socket_install", 1000],      // Розетка/выкл
-        ["price_shield_module", 1750],       // Модуль щита
-        ["price_lamp_install", 5000],        // Люстра
-        ["price_led_strip", 2000],           // Лента
-        
+        price_socket_install: 1000,
+        price_shield_module: 1750,
+        price_lamp_install: 5000,
+        price_led_strip: 2000,
         // Система
-        ["material_factor", 0.45],           // Материалы 45%
-        ["percent_business", 20]             // Доля бизнеса 20%
-      ];
+        material_factor: 0.45,
+      };
 
-      for (const [k, v] of prices) {
+      for (const [key, value] of Object.entries(defaultPrices)) {
         await client.query(
-          `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`,
-          [k, v],
+          "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING",
+          [key, value],
         );
       }
     });
 
-    console.log("✅ [DB] System Ready & Migrated.");
+    console.log("✅ [DB] Schema Synced & Ready.");
   } catch (e) {
     console.error("💥 [DB FATAL] Migration Failed:", e);
     process.exit(1);
   }
 };
+
+// =============================================================================
+// 🛑 GRACEFUL SHUTDOWN
+// =============================================================================
+
+process.on("SIGTERM", async () => {
+  console.log("🛑 [DB] Closing connection pool...");
+  await pool.end();
+});

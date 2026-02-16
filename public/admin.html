@@ -1,34 +1,68 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="ru" class="antialiased">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#2563eb">
+    <meta name="description" content="ProElectro CRM - Система управления заказами и финансами">
     <title>ProElectro | Enterprise CRM</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/style.css">
     <script src="https://unpkg.com/feather-icons"></script>
+    
+    <link rel="stylesheet" href="css/style.css">
+    <style>
+        /* Inline Critical CSS for Loading State */
+        .cloak { opacity: 0; pointer-events: none; transition: opacity 0.3s; }
+        .visible { opacity: 1; pointer-events: auto; }
+        dialog::backdrop { background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(2px); }
+    </style>
 </head>
 <body>
 
-    <div id="login-screen" class="login-container">
-        <div class="login-box">
-            <h2>🔐 Вход в систему</h2>
-            <form id="login-form">
-                <input type="password" id="password" placeholder="Пароль администратора" required>
-                <button type="submit" class="btn primary full">Войти</button>
+    <main id="login-screen" class="login-container" role="main">
+        <div class="login-box card-elevation">
+            <header class="text-center mb-6">
+                <div class="brand-logo mb-4">⚡️</div>
+                <h2>ProElectro CRM</h2>
+                <p class="text-secondary">Вход в систему управления</p>
+            </header>
+            
+            <form id="login-form" novalidate>
+                <div class="form-group">
+                    <label for="password" class="sr-only">Пароль</label>
+                    <div class="input-wrapper">
+                        <i data-feather="lock" class="input-icon"></i>
+                        <input type="password" id="password" name="password" 
+                               placeholder="Введите код доступа" 
+                               autocomplete="current-password" 
+                               required>
+                    </div>
+                </div>
+                <button type="submit" class="btn primary full" data-loading-text="Вход...">
+                    <span>Войти</span>
+                    <i data-feather="arrow-right"></i>
+                </button>
             </form>
-            <p id="login-error" class="error-msg"></p>
+            <div id="login-error" class="error-msg" role="alert" aria-live="polite"></div>
         </div>
-    </div>
+    </main>
 
-    <div id="app" class="app-container hidden">
+    <div id="app" class="app-container cloak" aria-hidden="true">
         
         <aside class="sidebar">
             <div class="brand">
-                ⚡️ <span>ProElectro</span>
+                <div class="logo-circle">⚡️</div>
+                <div class="brand-text">
+                    <span class="brand-name">ProElectro</span>
+                    <span class="brand-desc">Enterprise</span>
+                </div>
             </div>
-            <nav class="menu">
-                <button class="menu-item active" data-tab="dashboard">
+            
+            <nav class="menu" role="navigation">
+                <button class="menu-item active" data-tab="dashboard" aria-current="page">
                     <i data-feather="pie-chart"></i> <span>Дашборд</span>
                 </button>
                 <button class="menu-item" data-tab="orders">
@@ -41,8 +75,9 @@
                     <i data-feather="sliders"></i> <span>Настройки</span>
                 </button>
             </nav>
+            
             <div class="sidebar-footer">
-                <button id="logout-btn" class="btn-text-danger">
+                <button id="logout-btn" class="btn-text-danger" data-action="logout">
                     <i data-feather="log-out"></i> Выйти
                 </button>
             </div>
@@ -51,69 +86,75 @@
         <main class="main-content">
             
             <header class="top-bar">
-                <h1 id="page-title">Обзор</h1>
+                <h1 id="page-title" class="page-title">Обзор</h1>
                 <div class="user-info">
-                    <div id="loading-indicator" class="loader hidden"></div>
-                    <span class="badge admin">Admin</span>
-                    <span id="date-display" class="date-text"></span>
+                    <div id="loading-indicator" class="loader-spinner" aria-label="Загрузка..."></div>
+                    <div class="user-meta">
+                        <span class="badge admin">Admin</span>
+                        <time id="date-display" class="date-text"></time>
+                    </div>
                 </div>
             </header>
 
-            <section id="tab-dashboard" class="tab-content active">
+            <section id="tab-dashboard" class="tab-content active" role="tabpanel">
+                
                 <div class="kpi-grid">
-                    <div class="card kpi-card">
+                    <article class="card kpi-card">
                         <div class="kpi-icon blue"><i data-feather="activity"></i></div>
                         <div class="kpi-info">
                             <h3>Активные</h3>
-                            <p id="kpi-active">-</p>
+                            <p id="kpi-active" class="kpi-value skeleton-box">0</p>
                         </div>
-                    </div>
-                    <div class="card kpi-card">
+                    </article>
+                    <article class="card kpi-card">
                         <div class="kpi-icon green"><i data-feather="check-circle"></i></div>
                         <div class="kpi-info">
                             <h3>Завершено</h3>
-                            <p id="kpi-done">-</p>
+                            <p id="kpi-done" class="kpi-value skeleton-box">0</p>
                         </div>
-                    </div>
-                    <div class="card kpi-card">
+                    </article>
+                    <article class="card kpi-card">
                         <div class="kpi-icon orange"><i data-feather="briefcase"></i></div>
                         <div class="kpi-info">
                             <h3>Оборот</h3>
-                            <p id="kpi-revenue">-</p>
+                            <p id="kpi-revenue" class="kpi-value skeleton-box">0</p>
                         </div>
-                    </div>
-                    <div class="card kpi-card">
+                    </article>
+                    <article class="card kpi-card">
                         <div class="kpi-icon purple"><i data-feather="trending-up"></i></div>
                         <div class="kpi-info">
                             <h3>Прибыль</h3>
-                            <p id="kpi-profit">-</p>
+                            <p id="kpi-profit" class="kpi-value skeleton-box">0</p>
                         </div>
-                    </div>
+                    </article>
                 </div>
 
-                <div class="section-header">
+                <div class="section-header mt-8">
                     <h2>🔥 Быстрые действия</h2>
                 </div>
                 <div class="actions-grid">
-                    <button class="btn primary" onclick="openModal('modal-create-order')">
-                        <i data-feather="plus-circle"></i> Новый заказ
+                    <button class="btn primary action-card" data-action="open-modal" data-target="modal-create-order">
+                        <div class="icon-bg"><i data-feather="plus-circle"></i></div>
+                        <span>Новый заказ</span>
                     </button>
-                    <button class="btn secondary" onclick="app.refreshData()">
-                        <i data-feather="refresh-cw"></i> Обновить
+                    <button class="btn secondary action-card" data-action="refresh">
+                        <div class="icon-bg"><i data-feather="refresh-cw"></i></div>
+                        <span>Обновить данные</span>
                     </button>
                 </div>
             </section>
 
-            <section id="tab-orders" class="tab-content">
+            <section id="tab-orders" class="tab-content" role="tabpanel" hidden>
                 <div class="filters-bar">
-                    <div class="filters">
-                        <button class="filter-btn active" onclick="app.loadOrders('all')">Все</button>
-                        <button class="filter-btn" onclick="app.loadOrders('new')">Новые</button>
-                        <button class="filter-btn" onclick="app.loadOrders('work')">В работе</button>
-                        <button class="filter-btn" onclick="app.loadOrders('done')">Архив</button>
+                    <div class="filters" role="group" aria-label="Фильтр заказов">
+                        <button class="filter-btn active" data-filter="all">Все</button>
+                        <button class="filter-btn" data-filter="new">Новые</button>
+                        <button class="filter-btn" data-filter="work">В работе</button>
+                        <button class="filter-btn" data-filter="done">Архив</button>
                     </div>
-                    <button class="btn primary small" onclick="openModal('modal-create-order')">
+                    <button class="btn primary small" data-action="open-modal" data-target="modal-create-order" aria-label="Создать заказ">
                         <i data-feather="plus"></i>
+                        <span class="desktop-only">Создать</span>
                     </button>
                 </div>
                 
@@ -127,25 +168,32 @@
                                 <th width="15%">Мастер</th>
                                 <th width="15%">Финансы</th>
                                 <th width="15%">Профит</th>
-                                <th width="15%" style="text-align: right;">Действия</th>
+                                <th width="15%" class="text-right">Действия</th>
                             </tr>
                         </thead>
-                        <tbody id="orders-table-body"></tbody>
+                        <tbody id="orders-table-body">
+                            </tbody>
                     </table>
+                    <div id="orders-empty" class="empty-state hidden">
+                        <i data-feather="inbox"></i>
+                        <p>Заказов не найдено</p>
+                    </div>
                 </div>
             </section>
 
-            <section id="tab-finance" class="tab-content">
+            <section id="tab-finance" class="tab-content" role="tabpanel" hidden>
                 <div class="finance-grid">
-                    <div class="card">
+                    <article class="card">
                         <div class="card-header">
-                            <h3>💰 Кассы</h3>
-                            <button class="btn-icon small" onclick="app.loadFinance()"><i data-feather="refresh-cw"></i></button>
+                            <h3>💰 Кассы и Счета</h3>
+                            <button class="btn-icon small" data-action="refresh-finance"><i data-feather="refresh-cw"></i></button>
                         </div>
-                        <div id="accounts-list" class="accounts-list"></div>
-                    </div>
-                    <div class="card">
-                        <h3>📊 История операций</h3>
+                        <div id="accounts-list" class="accounts-list">
+                            </div>
+                    </article>
+                    
+                    <article class="card">
+                        <h3>📊 История транзакций</h3>
                         <div class="table-scroll">
                             <table class="data-table small">
                                 <thead>
@@ -157,78 +205,98 @@
                                         <th>Инфо</th>
                                     </tr>
                                 </thead>
-                                <tbody id="transactions-body"></tbody>
+                                <tbody id="transactions-body">
+                                    </tbody>
                             </table>
                         </div>
-                    </div>
+                    </article>
                 </div>
             </section>
 
-            <section id="tab-settings" class="tab-content">
-                <div class="card">
-                    <h3>🛠 Настройки цен</h3>
-                    <p class="hint">Изменения сохраняются автоматически при нажатии Enter.</p>
-                    <div id="settings-grid" class="settings-grid"></div>
+            <section id="tab-settings" class="tab-content" role="tabpanel" hidden>
+                <div class="card max-w-4xl">
+                    <div class="card-header">
+                        <h3>🛠 Настройки ценообразования</h3>
+                        <span class="badge warning">Auto-Save</span>
+                    </div>
+                    <p class="hint mb-4">Изменения применяются мгновенно для всех новых расчетов в боте.</p>
+                    <div id="settings-grid" class="settings-grid">
+                        </div>
                 </div>
             </section>
 
         </main>
     </div>
 
-    <div id="modal-create-order" class="modal hidden">
-        <div class="modal-content">
+    <dialog id="modal-create-order" class="modal-native">
+        <form id="create-order-form" method="dialog">
             <div class="modal-header">
                 <h2>Новый заказ</h2>
-                <button class="close-btn" onclick="closeModal('modal-create-order')"><i data-feather="x"></i></button>
+                <button type="button" class="close-btn" data-action="close-modal" data-target="modal-create-order">
+                    <i data-feather="x"></i>
+                </button>
             </div>
-            <form id="create-order-form">
-                <div class="form-group">
-                    <label>Имя клиента</label>
-                    <input type="text" name="clientName" placeholder="Иван Иванов" required>
+            
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Имя клиента</label>
+                        <input type="text" name="clientName" placeholder="Иван Иванов" autocomplete="name" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Телефон</label>
+                        <input type="tel" name="clientPhone" placeholder="+7 700 000 00 00" autocomplete="tel" required>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label>Телефон</label>
-                    <input type="text" name="clientPhone" placeholder="+7 700 000 00 00" required>
-                </div>
-                <div class="row">
+                
+                <div class="form-grid three-cols">
                     <div class="form-group">
                         <label>Площадь (м²)</label>
-                        <input type="number" name="area" placeholder="50" required>
+                        <input type="number" name="area" placeholder="50" min="1" required>
                     </div>
                     <div class="form-group">
                         <label>Комнат</label>
-                        <input type="number" name="rooms" value="1" required>
+                        <input type="number" name="rooms" value="1" min="1" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Стены</label>
+                        <select name="wallType">
+                            <option value="light">🧱 Газоблок</option>
+                            <option value="brick">🧱 Кирпич</option>
+                            <option value="concrete">🏗 Бетон</option>
+                        </select>
                     </div>
                 </div>
-                <div class="form-group">
-                    <label>Тип стен</label>
-                    <select name="wallType">
-                        <option value="light">🧱 Газоблок / ГКЛ</option>
-                        <option value="brick">🧱 Кирпич</option>
-                        <option value="concrete">🏗 Бетон / Монолит</option>
-                    </select>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn secondary" onclick="closeModal('modal-create-order')">Отмена</button>
-                    <button type="submit" class="btn primary">Создать заказ</button>
-                </div>
-            </form>
-        </div>
-    </div>
+            </div>
 
-    <div id="modal-add-expense" class="modal hidden">
-        <div class="modal-content">
+            <div class="modal-footer">
+                <button type="button" class="btn secondary" data-action="close-modal" data-target="modal-create-order">Отмена</button>
+                <button type="submit" class="btn primary">Создать заказ</button>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="modal-add-expense" class="modal-native">
+        <form id="add-expense-form" method="dialog">
             <div class="modal-header">
                 <h2>Добавить расход</h2>
-                <button class="close-btn" onclick="closeModal('modal-add-expense')"><i data-feather="x"></i></button>
+                <button type="button" class="close-btn" data-action="close-modal" data-target="modal-add-expense">
+                    <i data-feather="x"></i>
+                </button>
             </div>
-            <p id="expense-order-info" class="hint-box"></p>
-            <form id="add-expense-form">
+            
+            <div class="modal-body">
+                <div class="info-box mb-4">
+                    <i data-feather="info"></i>
+                    <span id="expense-order-info">Заказ #...</span>
+                </div>
                 <input type="hidden" id="expense-order-id" name="orderId">
+                
                 <div class="form-group">
                     <label>Сумма (₸)</label>
-                    <input type="number" name="amount" placeholder="0" required>
+                    <input type="number" name="amount" placeholder="0" min="0" inputmode="numeric" required>
                 </div>
+                
                 <div class="form-group">
                     <label>Категория</label>
                     <select name="category">
@@ -239,20 +307,64 @@
                         <option value="other">📦 Прочее</option>
                     </select>
                 </div>
+                
                 <div class="form-group">
                     <label>Комментарий</label>
-                    <input type="text" name="comment" placeholder="Например: кабель 3х2.5">
+                    <input type="text" name="comment" placeholder="Детали расхода...">
                 </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn secondary" onclick="closeModal('modal-add-expense')">Отмена</button>
-                    <button type="submit" class="btn danger">Списать средства</button>
-                </div>
-            </form>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn secondary" data-action="close-modal" data-target="modal-add-expense">Отмена</button>
+                <button type="submit" class="btn danger">Списать средства</button>
+            </div>
+        </form>
+    </dialog>
+
+    <template id="tpl-order-row">
+        <tr>
+            <td class="font-mono text-sm order-id"></td>
+            <td>
+                <div class="client-name font-bold"></div>
+                <div class="client-phone text-xs text-muted"></div>
+            </td>
+            <td><span class="badge status-badge"></span></td>
+            <td class="master-info text-sm"></td>
+            <td class="finance-info font-mono"></td>
+            <td class="profit-info font-mono text-green"></td>
+            <td class="text-right actions-cell">
+                <button class="btn-icon small action-expense" title="Расход">
+                    <i data-feather="minus-circle"></i>
+                </button>
+            </td>
+        </tr>
+    </template>
+
+    <template id="tpl-account-card">
+        <div class="account-item">
+            <div class="acc-icon-wrapper"></div>
+            <div class="acc-details">
+                <div class="acc-name"></div>
+                <div class="acc-balance"></div>
+            </div>
         </div>
-    </div>
+    </template>
+
+    <template id="tpl-setting-item">
+        <div class="setting-item">
+            <label class="setting-label"></label>
+            <div class="input-suffix-wrapper">
+                <input type="number" class="setting-input" inputmode="numeric">
+                <span class="suffix">₸</span>
+            </div>
+        </div>
+    </template>
 
     <script src="js/api.js"></script>
     <script src="js/app.js"></script>
-    <script>feather.replace();</script>
+    <script>
+        // Init Icons
+        feather.replace();
+    </script>
 </body>
 </html>

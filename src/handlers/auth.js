@@ -1,10 +1,9 @@
 /**
  * @file src/handlers/auth.js
- * @description Модуль аутентификации и авторизации сотрудников.
- * Отвечает за проверку прав доступа, генерацию временных паролей для CRM
- * и управление ролями пользователей.
- * * @author Erniyaz & Gemini Senior Architect
- * @version 3.1.0 (Enterprise Security)
+ * @description Модуль Identity & Access Management (IAM).
+ * Реализует аутентификацию сотрудников, RBAC (Role-Based Access Control)
+ * и безопасное управление учетными данными с использованием PBKDF2.
+ * @version 4.0.0 (Enterprise Security Architecture)
  */
 
 import crypto from 'crypto';
@@ -13,221 +12,244 @@ import { db } from '../db.js';
 import { config } from '../config.js';
 
 // =============================================================================
-// 1. КОНСТАНТЫ И ТЕКСТЫ (CONSTANTS)
+// 1. CONFIGURATION & CONSTANTS
 // =============================================================================
 
-const AUTH_CONFIG = {
-    PASSWORD_LENGTH: 8,
-    HASH_ALGO: 'sha256',
-    ALLOWED_STATUSES: ['creator', 'administrator', 'member', 'restricted']
+const SECURITY_POLICY = {
+    PWD_LENGTH: 10,
+    HASH_ITERATIONS: 10000,
+    KEY_LENGTH: 64,
+    DIGEST: 'sha512',
+    ALLOWED_TELEGRAM_STATUSES: ['creator', 'administrator', 'member']
 };
 
-const TEXTS = {
+const MESSAGES = {
     ACCESS_DENIED_GROUP: 
         `⛔️ <b>ДОСТУП ЗАПРЕЩЕН</b>\n\n` +
-        `Этот бот предназначен только для авторизованных сотрудников <b>ProElectro</b>.\n` +
-        `Система не обнаружила вас в рабочей группе.`,
+        `Система безопасности не обнаружила вас в корпоративной группе <b>ProElectric</b>.\n` +
+        `Обратитесь к администратору для добавления в рабочий чат.`,
     
     ACCESS_DENIED_ROLE:
         `⛔️ <b>НЕДОСТАТОЧНО ПРАВ</b>\n\n` +
-        `Для выполнения этой команды необходима роль <b>Manager</b> или <b>Admin</b>.`,
+        `Операция доступна только сотрудникам с ролью <b>Manager</b> или выше.`,
 
-    PHONE_REQUIRED:
-        `⚠️ <b>Требуется верификация</b>\n\n` +
-        `Для создания учетной записи сотрудника нам нужно подтвердить ваш номер телефона.\n` +
-        `Пожалуйста, нажмите кнопку ниже:`,
+    PHONE_VERIFICATION:
+        `🛡 <b>Двухфакторная верификация</b>\n\n` +
+        `Для создания служебного аккаунта необходимо подтвердить личность через номер телефона.`,
     
-    LOGIN_SUCCESS_NEW: 
-        `👋 <b>Добро пожаловать в команду!</b>\n` +
-        `Ваш профиль сотрудника успешно создан.`,
-        
-    LOGIN_SUCCESS_EXISTING:
-        `✅ <b>Пароль обновлен</b>\n` +
-        `Используйте новые данные для входа в систему.`,
-    
-    ASSIGN_SUCCESS: (orderId, name) =>
-        `👷‍♂️ <b>ЗАКАЗ #${orderId} ПРИНЯТ!</b>\n` +
-        `Ответственный: <b>${name}</b>\n` +
-        `Статус изменен на "В работе".`,
-    
-    ASSIGN_ERROR_NOT_FOUND: "❌ Заказ не найден или ID указан неверно.",
-    
-    ERROR_GENERIC: "❌ Произошла ошибка сервера. Обратитесь к системному администратору."
-};
+    CREDENTIALS_ISSUED: (login, pwd, url, isNew) => 
+        `${isNew ? '🎉 <b>Аккаунт создан!</b>' : '🔄 <b>Данные обновлены</b>'}\n` +
+        `➖➖➖➖➖➖➖➖➖➖\n` +
+        `👤 <b>Логин:</b> <code>${login}</code>\n` +
+        `🔑 <b>Пароль:</b> <code>${pwd}</code>\n` +
+        `➖➖➖➖➖➖➖➖➖➖\n` +
+        `🌍 <a href="${url}">Вход в CRM систему</a>\n\n` +
+        `<i>⚠️ Сообщение исчезнет из соображений безопасности.</i>`,
 
-const KB = {
-    REQUEST_PHONE: {
-        keyboard: [[{ text: '📱 Подтвердить номер телефона', request_contact: true }]],
-        resize_keyboard: true,
-        one_time_keyboard: true
-    },
-    REMOVE: {
-        remove_keyboard: true
-    }
+    ASSIGN_SUCCESS: (orderId) =>
+        `👷‍♂️ <b>Заказ #${orderId} принят в работу.</b>\nСтатус обновлен.`,
+    
+    ASSIGN_FAIL: `❌ Не удалось назначить заказ. Проверьте ID или статус заказа.`,
+    
+    SYSTEM_ERROR: `⚠️ Внутренняя ошибка сервиса авторизации.`
 };
 
 // =============================================================================
-// 2. УТИЛИТЫ БЕЗОПАСНОСТИ (SECURITY UTILS)
+// 2. DOMAIN SERVICES
 // =============================================================================
 
-class SecurityUtils {
+/**
+ * Сервис криптографии и безопасности.
+ * Реализует стандарты NIST для хранения паролей.
+ */
+class SecurityService {
     /**
-     * Создание SHA-256 хеша пароля.
-     * Никогда не храните пароли в открытом виде!
+     * Генерирует хеш пароля с использованием PBKDF2 и случайной соли.
+     * Формат хранения: salt:hash
      * @param {string} password 
-     * @returns {string} Hex string
-     */
-    static hashPassword(password) {
-        return crypto.createHash(AUTH_CONFIG.HASH_ALGO).update(password).digest('hex');
-    }
-
-    /**
-     * Генерация криптографически стойкого случайного пароля.
-     * @param {number} length 
      * @returns {string}
      */
-    static generateRandomPassword(length = AUTH_CONFIG.PASSWORD_LENGTH) {
-        return crypto.randomBytes(Math.ceil(length / 2)).toString('hex').slice(0, length);
+    static hashPassword(password) {
+        const salt = crypto.randomBytes(16).toString('hex');
+        const hash = crypto.pbkdf2Sync(
+            password, 
+            salt, 
+            SECURITY_POLICY.HASH_ITERATIONS, 
+            SECURITY_POLICY.KEY_LENGTH, 
+            SECURITY_POLICY.DIGEST
+        ).toString('hex');
+        return `${salt}:${hash}`;
     }
 
     /**
-     * GATEKEEPER: Проверка членства пользователя в рабочей группе.
-     * Это первый эшелон защиты.
+     * Генерирует криптографически стойкий временный пароль.
+     */
+    static generateTemporaryPassword() {
+        // Используем символы, которые легко читать (без I, l, 1, O, 0)
+        const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+        const bytes = crypto.randomBytes(SECURITY_POLICY.PWD_LENGTH);
+        let result = '';
+        for (let i = 0; i < SECURITY_POLICY.PWD_LENGTH; i++) {
+            result += chars[bytes[i] % chars.length];
+        }
+        return result;
+    }
+}
+
+/**
+ * Сервис контроля доступа и бизнес-логики пользователей.
+ */
+class AccessControlService {
+    /**
+     * Проверяет членство пользователя в рабочем чате Telegram.
      * @param {number} userId 
      * @returns {Promise<boolean>}
      */
-    static async checkGroupMembership(userId) {
-        const targetGroupId = config.bot.workGroupId;
-        const bossId = String(config.bot.bossUsername);
+    static async verifyGroupMembership(userId) {
+        // 1. SuperAdmin Bypass
+        if (config.bot.ownerId && userId === config.bot.ownerId) return true;
 
-        // Backdoor для Главного Админа (всегда пускать)
-        if (String(userId) === bossId) return true;
+        const workGroupId = config.bot.workGroupId || config.bot.groupId;
 
-        // Если группа не настроена, считаем режим "Open Dev" (но лучше предупредить)
-        if (!targetGroupId) {
-            console.warn('⚠️ [Auth] WORK_GROUP_ID not set. Skipping group check.');
-            return true;
+        // 2. Security Fail-Safe: Если группа не настроена, запрещаем доступ всем, кроме владельца
+        if (!workGroupId) {
+            console.warn(`⚠️ [IAM] WorkGroupID not configured. Denying access to ${userId}.`);
+            return false;
         }
 
         try {
-            const member = await bot.getChatMember(targetGroupId, userId);
-            const isMember = AUTH_CONFIG.ALLOWED_STATUSES.includes(member.status);
+            const member = await bot.getChatMember(workGroupId, userId);
+            const hasAccess = SECURITY_POLICY.ALLOWED_TELEGRAM_STATUSES.includes(member.status);
             
-            if (!isMember) {
-                console.warn(`⛔️ [Auth] User ${userId} is not in group (Status: ${member.status})`);
+            if (!hasAccess) {
+                console.warn(`⛔️ [IAM] Access denied for ${userId}. Status: ${member.status}`);
             }
-            return isMember;
-        } catch (e) {
-            console.error(`⚠️ [Auth] Group check failed for ${userId}:`, e.message);
-            // Fail-safe: Если не можем проверить, лучше запретить
+            return hasAccess;
+        } catch (error) {
+            console.error(`💥 [IAM] Telegram API Error for ${userId}:`, error.message);
             return false;
         }
+    }
+
+    /**
+     * Выдает или обновляет учетные данные сотрудника.
+     * @param {Object} telegramUser 
+     */
+    static async provisionEmployeeCredentials(telegramUser) {
+        // 1. Upsert пользователя в БД
+        const user = await db.upsertUser(
+            telegramUser.id, 
+            telegramUser.first_name, 
+            telegramUser.username
+        );
+
+        // 2. Проверка наличия телефона (Mandatory KYC)
+        if (!user.phone) {
+            return { status: 'REQUIRE_PHONE' };
+        }
+
+        // 3. Генерация секретов
+        const rawPassword = SecurityService.generateTemporaryPassword();
+        const secureHash = SecurityService.hashPassword(rawPassword);
+
+        // 4. Повышение привилегий и сохранение хеша
+        // Если роль была 'client', повышаем до 'manager' при успешной валидации группы
+        await db.query(
+            `UPDATE users 
+             SET password_hash = $1, 
+                 role = CASE WHEN role = 'client' THEN 'manager' ELSE role END,
+                 updated_at = NOW()
+             WHERE telegram_id = $2`,
+            [secureHash, telegramUser.id]
+        );
+
+        return { 
+            status: 'SUCCESS', 
+            credentials: {
+                login: user.phone.replace(/\D/g, ''), // Логин = чистый номер телефона
+                password: rawPassword,
+                isNew: user.created_at.getTime() === user.updated_at.getTime()
+            }
+        };
     }
 }
 
 // =============================================================================
-// 3. СЕРВИС АВТОРИЗАЦИИ (AUTH SERVICE)
+// 3. CONTROLLER (TELEGRAM HANDLERS)
 // =============================================================================
 
-class AuthService {
+class AuthController {
     /**
-     * Обработка полного цикла входа/регистрации.
-     * @param {Object} msg - Telegram message object
+     * Обработчик команды /login.
      */
-    static async login(msg) {
+    static async handleLogin(msg) {
         const chatId = msg.chat.id;
         const userId = msg.from.id;
-        const { first_name, username } = msg.from;
 
         try {
-            console.log(`🔐 [Auth] Login attempt by ${userId} (${first_name})`);
-
-            // 1. Проверка доступа к группе
-            const hasAccess = await SecurityUtils.checkGroupMembership(userId);
-            if (!hasAccess) {
-                return bot.sendMessage(chatId, TEXTS.ACCESS_DENIED_GROUP, { parse_mode: 'HTML' });
+            // 1. Проверка прав доступа (Gatekeeper)
+            const isAuthorized = await AccessControlService.verifyGroupMembership(userId);
+            if (!isAuthorized) {
+                return bot.sendMessage(chatId, MESSAGES.ACCESS_DENIED_GROUP, { parse_mode: 'HTML' });
             }
 
-            // 2. Поиск или создание пользователя в БД
-            // Используем Upsert, чтобы сразу обновить данные, если юзер сменил ник
-            let user = await db.upsertUser(userId, first_name, username);
+            // 2. Выпуск учетных данных
+            const result = await AccessControlService.provisionEmployeeCredentials(msg.from);
 
-            // 3. Проверка наличия телефона
-            if (!user.phone) {
-                console.log(`⚠️ [Auth] Phone missing for ${userId}`);
-                return bot.sendMessage(chatId, TEXTS.PHONE_REQUIRED, {
+            // 3. Обработка результата
+            if (result.status === 'REQUIRE_PHONE') {
+                return bot.sendMessage(chatId, MESSAGES.PHONE_VERIFICATION, {
                     parse_mode: 'HTML',
-                    reply_markup: KB.REQUEST_PHONE
+                    reply_markup: {
+                        keyboard: [[{ text: '📱 Отправить номер', request_contact: true }]],
+                        resize_keyboard: true,
+                        one_time_keyboard: true
+                    }
                 });
             }
 
-            // 4. Генерация Credentials
-            const tempPassword = SecurityUtils.generateRandomPassword();
-            const hashedPassword = SecurityUtils.hashPassword(tempPassword);
+            if (result.status === 'SUCCESS') {
+                const { login, password, isNew } = result.credentials;
+                const dashboardUrl = config.serverUrl || 'http://localhost:3000'; // Лучше брать из env
 
-            // 5. Обновление БД (Пароль + Роль)
-            // Если роль была 'user', повышаем до 'manager', так как он прошел проверку группы
-            await db.query(
-                `UPDATE users 
-                 SET password_hash = $1, 
-                     role = CASE WHEN role = 'user' THEN 'manager' ELSE role END,
-                     updated_at = NOW()
-                 WHERE telegram_id = $2`,
-                [hashedPassword, userId]
-            );
-
-            // 6. Формирование ответа (Карточка доступа)
-            const login = user.phone.replace(/[^0-9]/g, ''); // Логин = чистый номер
-            const dashboardUrl = config.serverUrl || 'http://localhost:3000'; // Fallback URL
-
-            // Определяем, это новая регистрация или сброс пароля
-            const isNew = user.created_at === user.updated_at; 
-            const footer = isNew ? TEXTS.LOGIN_SUCCESS_NEW : TEXTS.LOGIN_SUCCESS_EXISTING;
-
-            const card = 
-                `🔐 <b>ДОСТУП К CRM-СИСТЕМЕ</b>\n` +
-                `➖➖➖➖➖➖➖➖➖➖\n` +
-                `👤 <b>Логин:</b> <code>${login}</code>\n` +
-                `🔑 <b>Пароль:</b> <code>${tempPassword}</code>\n` +
-                `➖➖➖➖➖➖➖➖➖➖\n\n` +
-                `🌍 <b>Панель управления:</b>\n${dashboardUrl}\n\n` +
-                `${footer}`;
-
-            await bot.sendMessage(chatId, card, { 
-                parse_mode: 'HTML',
-                reply_markup: KB.REMOVE 
-            });
-
-            console.log(`✅ [Auth] Success for ${userId}. Role set/verified.`);
+                await bot.sendMessage(
+                    chatId, 
+                    MESSAGES.CREDENTIALS_ISSUED(login, password, dashboardUrl, isNew), 
+                    { parse_mode: 'HTML', reply_markup: { remove_keyboard: true } }
+                );
+                
+                // Security Log
+                console.info(`🔐 [IAM] Credentials issued for user ${userId} (${msg.from.username})`);
+            }
 
         } catch (e) {
-            console.error(`💥 [Auth Fatal] Error for ${userId}:`, e);
-            await bot.sendMessage(chatId, TEXTS.ERROR_GENERIC);
+            console.error(`💥 [IAM Fatal] Login failed for ${userId}:`, e);
+            bot.sendMessage(chatId, MESSAGES.SYSTEM_ERROR);
         }
     }
 
     /**
-     * Ручное назначение заказа на себя (или перехват).
-     * @param {Object} msg 
-     * @param {string} orderIdStr 
+     * Обработчик команды /assign (Быстрое взятие заказа).
      */
-    static async assignOrder(msg, orderIdStr) {
+    static async handleAssign(msg, match) {
         const chatId = msg.chat.id;
         const userId = msg.from.id;
-        const orderId = parseInt(orderIdStr);
+        const orderId = parseInt(match[1]);
 
         if (isNaN(orderId)) return;
 
         try {
-            // 1. Проверка прав менеджера
-            const res = await db.query('SELECT role, first_name FROM users WHERE telegram_id = $1', [userId]);
-            const user = res.rows[0];
+            // 1. Проверка роли (RBAC)
+            // Здесь мы доверяем локальной БД, так как роль выдается только после проверки группы
+            const res = await db.query('SELECT role FROM users WHERE telegram_id = $1', [userId]);
+            const userRole = res.rows[0]?.role;
 
-            if (!user || !['admin', 'manager'].includes(user.role)) {
-                return bot.sendMessage(chatId, TEXTS.ACCESS_DENIED_ROLE, { parse_mode: 'HTML' });
+            if (!userRole || !['admin', 'manager'].includes(userRole)) {
+                return bot.sendMessage(chatId, MESSAGES.ACCESS_DENIED_ROLE, { parse_mode: 'HTML' });
             }
 
             // 2. Атомарное обновление заказа
+            // Используем условие assignee_id IS NULL для предотвращения Race Condition
             const updateRes = await db.query(
                 `UPDATE orders 
                  SET assignee_id = $1, status = 'work', updated_at = NOW() 
@@ -236,46 +258,27 @@ class AuthService {
                 [userId, orderId]
             );
 
-            if (updateRes.rowCount === 0) {
-                return bot.sendMessage(chatId, TEXTS.ASSIGN_ERROR_NOT_FOUND);
+            if (updateRes.rowCount > 0) {
+                bot.sendMessage(chatId, MESSAGES.ASSIGN_SUCCESS(orderId), { parse_mode: 'HTML' });
+            } else {
+                bot.sendMessage(chatId, MESSAGES.ASSIGN_FAIL);
             }
 
-            // 3. Успех
-            await bot.sendMessage(chatId, TEXTS.ASSIGN_SUCCESS(orderId, user.first_name), { parse_mode: 'HTML' });
-            
-            // Опционально: Можно уведомить админ-чат, что заказ взят
-            // notifyAdmin(...) 
-
         } catch (e) {
-            console.error(`💥 [Assign Error] Order ${orderId}:`, e);
-            await bot.sendMessage(chatId, TEXTS.ERROR_GENERIC);
+            console.error(`💥 [IAM] Assign failed for order ${orderId}:`, e);
+            bot.sendMessage(chatId, MESSAGES.SYSTEM_ERROR);
         }
     }
 }
 
 // =============================================================================
-// 4. ИНИЦИАЛИЗАЦИЯ ХЕНДЛЕРОВ (HANDLERS SETUP)
+// 4. EXPORT & SETUP
 // =============================================================================
 
-/**
- * Регистрация обработчиков команд авторизации.
- * Должна вызываться в index.js или bot.js
- */
 export const setupAuthHandlers = () => {
-    
-    // Команда /login
-    // Генерирует пароль для веб-интерфейса
-    bot.onText(/\/login/, async (msg) => {
-        // Anti-spam / Rate-limit можно добавить здесь
-        await AuthService.login(msg);
-    });
+    // Регистрация команд
+    bot.onText(/\/login/, AuthController.handleLogin);
+    bot.onText(/\/assign (\d+)/, AuthController.handleAssign);
 
-    // Команда /assign <id>
-    // Позволяет менеджеру быстро забрать заказ через команду (например, если нет кнопки)
-    bot.onText(/\/assign (\d+)/, async (msg, match) => {
-        const orderId = match[1];
-        await AuthService.assignOrder(msg, orderId);
-    });
-    
-    console.log('✅ [Auth] Handlers registered successfully');
+    console.log('✅ [IAM] Auth handlers initialized.');
 };
