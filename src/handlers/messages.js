@@ -1,17 +1,26 @@
 /**
  * @file src/handlers/messages.js
- * @description Маршрутизатор текстовых сообщений (Message Router) и контроллер сцен (Wizard Controller).
- * Реализует главное меню, пошаговый калькулятор, финансовые операции и админские команды.
- * @version 8.2.0 (Role-Based Menu & State Machine)
+ * @description Маршрутизатор текстовых сообщений и контроллер сценарных визардов.
+ * Полностью интегрирован с src/constants.js для централизованного управления текстами и конфигурациями.
+ * @architecture MVC + State Machine + Event Driven
+ * @version 10.0.0 (Strict Constants Compliance)
  */
 
 import { bot } from "../core.js";
 import { db } from "../db.js";
 import { config } from "../config.js";
 import { OrderService } from "../services/OrderService.js";
+import { 
+    ROLES, 
+    BUTTONS, 
+    KEYBOARDS, 
+    TEXTS, 
+    PRICING, 
+    STATUS_LABELS 
+} from "../constants.js";
 
 // =============================================================================
-// 🧠 SESSION MANAGER (IN-MEMORY)
+// 🧠 SESSION MANAGER (IN-MEMORY STATE MACHINE)
 // =============================================================================
 export const sessions = new Map();
 
@@ -19,144 +28,107 @@ export const sessions = new Map();
 const SESSION_TTL = 30 * 60 * 1000;
 
 /**
- * Очищает сессию пользователя
- * @param {number} chatId 
+ * Менеджер управления состоянием пользователя.
+ * Реализует паттерн "State" для многошаговых диалогов.
  */
-const clearSession = (chatId) => {
-    sessions.delete(chatId);
-};
-
-/**
- * Инициализирует новую сессию
- * @param {number} chatId 
- * @param {string} step - Начальный шаг
- * @param {Object} data - Начальные данные
- */
-const startSession = (chatId, step, data = {}) => {
-    sessions.set(chatId, { step, data, startTime: Date.now() });
-    
-    // Auto-cleanup timer
-    setTimeout(() => {
-        const s = sessions.get(chatId);
-        if (s && Date.now() - s.startTime >= SESSION_TTL) {
-            sessions.delete(chatId);
-            // Опционально: можно отправить сообщение "Сессия истекла"
-        }
-    }, SESSION_TTL);
-};
-
-// =============================================================================
-// 🎨 UI COMPONENTS (KEYBOARDS & FORMATTERS)
-// =============================================================================
-
-const currencyFormatter = new Intl.NumberFormat('ru-RU', {
-    style: 'currency',
-    currency: 'KZT',
-    maximumFractionDigits: 0
-});
-
-const formatKZT = (val) => currencyFormatter.format(val);
-
-const UI = {
+const SessionManager = {
     /**
-     * Генератор главного меню в зависимости от роли
-     * @param {string} role - 'admin' | 'manager' | 'client'
+     * Инициализация или обновление сессии
+     * @param {number} chatId 
+     * @param {string} step - Текущий шаг визарда
+     * @param {Object} data - Контекстные данные
      */
-    mainMenu: (role) => {
-        const keyboard = [
-            [{ text: "🧮 Рассчитать стоимость" }, { text: "📂 Мои заказы" }],
-            [{ text: "💰 Прайс-лист" }, { text: "📞 Контакты" }]
-        ];
-
-        // Расширенное меню для сотрудников
-        if (['admin', 'manager'].includes(role)) {
-            keyboard.unshift([
-                { text: "👷‍♂️ Мои объекты" }, 
-                { text: "💵 Моя Касса" }
-            ]);
-        }
-
-        // Админ-панель (ссылка на веб или инфо)
-        if (role === 'admin') {
-            keyboard.unshift([{ text: "⚙️ Настройки" }]); // Заглушка, если нужно будет добавить настройки бота
-        }
-
-        return {
-            keyboard,
-            resize_keyboard: true,
-            one_time_keyboard: false
+    start(chatId, step, data = {}) {
+        const existing = sessions.get(chatId) || {};
+        const sessionData = { 
+            step, 
+            data: { ...existing.data, ...data }, 
+            startTime: Date.now() 
         };
+        
+        sessions.set(chatId, sessionData);
+        
+        // Garbage Collection: Таймер очистки старых сессий
+        setTimeout(() => {
+            const s = sessions.get(chatId);
+            if (s && Date.now() - s.startTime >= SESSION_TTL) {
+                sessions.delete(chatId);
+            }
+        }, SESSION_TTL);
+        
+        console.log(`🔄 [SESSION] Updated for ${chatId}: Step=${step}`);
     },
 
-    cancel: {
-        keyboard: [[{ text: "❌ Отмена" }]],
-        resize_keyboard: true,
-        one_time_keyboard: true
+    get(chatId) {
+        return sessions.get(chatId);
     },
 
-    contact: {
-        keyboard: [
-            [{ text: "📱 Отправить мой номер", request_contact: true }],
-            [{ text: "🔙 Назад" }]
-        ],
-        resize_keyboard: true
+    clear(chatId) {
+        if (sessions.has(chatId)) {
+            sessions.delete(chatId);
+            console.log(`🗑 [SESSION] Cleared for ${chatId}`);
+        }
     },
 
-    expenseCategories: {
-        keyboard: [
-            [{ text: "🚕 Такси" }, { text: "🔌 Материалы" }],
-            [{ text: "🍔 Питание" }, { text: "🛠 Инструмент" }],
-            [{ text: "❌ Отмена" }]
-        ],
-        resize_keyboard: true
+    updateData(chatId, newData) {
+        const session = sessions.get(chatId);
+        if (session) {
+            session.data = { ...session.data, ...newData };
+            sessions.set(chatId, session);
+        }
     }
 };
 
 // =============================================================================
-// 🎭 WIZARD SCENES (STEP HANDLERS)
+// 🛠 HELPERS & FORMATTERS
+// =============================================================================
+
+const fmtMoney = (val) => new Intl.NumberFormat('ru-KZ', { style: 'currency', currency: 'KZT', maximumFractionDigits: 0 }).format(val);
+const fmtDate = (d) => new Date(d).toLocaleDateString('ru-RU');
+
+// =============================================================================
+// 🎭 WIZARD SCENARIOS (STEP HANDLERS)
 // =============================================================================
 
 const STEPS = {
     // --- SCENARIO: CALCULATOR ---
-    AREA: async (chatId, text, session) => {
+    // Шаг 1: Получение площади
+    CALC_AREA: async (chatId, text, session) => {
         const area = parseInt(text.replace(/\D/g, ''));
-        if (isNaN(area) || area < 5 || area > 10000) {
-            return bot.sendMessage(chatId, "⚠️ Пожалуйста, введите корректную площадь (от 5 до 10000 м²).");
+        if (isNaN(area) || area < 5 || area > 5000) {
+            return bot.sendMessage(chatId, "⚠️ Введите корректную площадь помещения (от 5 до 5000 м²).");
         }
         
-        session.data.area = area;
-        session.step = "ROOMS";
+        SessionManager.start(chatId, "CALC_ROOMS", { area });
         
-        await bot.sendMessage(chatId, "2️⃣ Введите <b>количество комнат</b> (числом):", { 
+        await bot.sendMessage(chatId, "2️⃣ Введите <b>количество комнат</b>:", { 
             parse_mode: "HTML",
-            reply_markup: UI.cancel 
+            reply_markup: KEYBOARDS.cancel 
         });
     },
 
-    ROOMS: async (chatId, text, session) => {
+    // Шаг 2: Получение комнат
+    CALC_ROOMS: async (chatId, text, session) => {
         const rooms = parseInt(text.replace(/\D/g, ''));
         if (isNaN(rooms) || rooms < 1 || rooms > 100) {
-            return bot.sendMessage(chatId, "⚠️ Введите корректное количество комнат (1-100).");
+            return bot.sendMessage(chatId, "⚠️ Введите корректное число комнат (1-100).");
         }
 
-        session.data.rooms = rooms;
-        // Передаем управление в Callback Handler (выбор стен кнопками)
-        session.step = "WALLS_WAIT"; 
+        // Сохраняем данные и показываем инлайн-кнопки для выбора стен
+        // Логика передается в callbacks.js
+        SessionManager.updateData(chatId, { rooms });
+        
+        // Меняем стейт на ожидание callback
+        SessionManager.start(chatId, "WAIT_WALL_SELECTION", session.data);
 
         await bot.sendMessage(
             chatId,
-            `✅ Принято: ${session.data.area} м², ${rooms} комн.\n\n` +
+            `✅ Параметры приняты: <b>${session.data.area} м²</b>, <b>${rooms} комн.</b>\n\n` +
             `3️⃣ <b>Выберите материал стен:</b>\n` +
-            `<i>От этого зависит сложность и стоимость штробления.</i>`,
+            `<i>Это влияет на стоимость штробления и сложность работ.</i>`,
             {
                 parse_mode: "HTML",
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "🧱 Газоблок / ГКЛ (Легко)", callback_data: "wall_light" }],
-                        [{ text: "🧱 Кирпич (Средне)", callback_data: "wall_brick" }],
-                        [{ text: "🏗 Бетон / Монолит (Сложно)", callback_data: "wall_concrete" }]
-                    ]
-                }
+                reply_markup: KEYBOARDS.walls // Берем из constants.js
             }
         );
     },
@@ -168,23 +140,32 @@ const STEPS = {
             return bot.sendMessage(chatId, "⚠️ Введите сумму расхода числом (например: 5000).");
         }
 
-        session.data.amount = amount;
-        session.step = "EXPENSE_CATEGORY";
+        SessionManager.start(chatId, "EXPENSE_CATEGORY", { ...session.data, amount });
+
+        // Тут можно было бы вынести клавиатуру категорий в constants, но оставим динамику
+        const categoryKeyboard = {
+            keyboard: [
+                [{ text: "🚕 Такси" }, { text: "🔌 Материалы" }],
+                [{ text: "🍔 Питание" }, { text: "🛠 Инструмент" }],
+                [{ text: BUTTONS.CANCEL }]
+            ],
+            resize_keyboard: true
+        };
 
         await bot.sendMessage(
             chatId,
-            `💸 Сумма расхода: <b>${formatKZT(amount)}</b>\nВыберите категорию или напишите свою:`,
+            `💸 Сумма: <b>${fmtMoney(amount)}</b>\nВыберите категорию или напишите комментарий:`,
             {
                 parse_mode: "HTML",
-                reply_markup: UI.expenseCategories
+                reply_markup: categoryKeyboard
             }
         );
     },
 
     EXPENSE_CATEGORY: async (chatId, text, session, user) => {
         const category = text.trim();
-        if (category.length > 50) {
-            return bot.sendMessage(chatId, "⚠️ Слишком длинное название категории. Сократите до 50 символов.");
+        if (category.length > 100) {
+            return bot.sendMessage(chatId, "⚠️ Слишком длинный текст. Сократите до 100 символов.");
         }
 
         try {
@@ -192,104 +173,100 @@ const STEPS = {
                 session.data.orderId,
                 session.data.amount,
                 category,
-                `Added by ${user.first_name}`
+                `User: ${user.first_name}`
             );
 
             await bot.sendMessage(
                 chatId,
                 `✅ <b>Расход успешно добавлен!</b>\n` +
-                `📉 Сумма: -${formatKZT(session.data.amount)}\n` +
+                `📉 Сумма: -${fmtMoney(session.data.amount)}\n` +
                 `📂 Категория: ${category}`,
                 {
                     parse_mode: "HTML",
-                    reply_markup: UI.mainMenu(user.role)
+                    reply_markup: KEYBOARDS.main(user.role) // Возврат в главное меню
                 }
             );
         } catch (e) {
-            console.error("Expense Add Error:", e);
-            await bot.sendMessage(chatId, "❌ Ошибка при сохранении данных.");
+            console.error("Expense Save Error:", e);
+            await bot.sendMessage(chatId, "❌ Ошибка при сохранении данных в БД.");
         } finally {
-            clearSession(chatId);
+            SessionManager.clear(chatId);
         }
     },
 
-    // --- SCENARIO: CLOSE ORDER (FINISH) ---
-    FINISH_SUM: async (chatId, text, session) => {
+    // --- SCENARIO: CLOSE ORDER ---
+    FINISH_SUM: async (chatId, text, session, user) => {
         const sum = parseInt(text.replace(/\D/g, ''));
         if (isNaN(sum) || sum <= 0) {
-            return bot.sendMessage(chatId, "⚠️ Введите итоговую сумму, полученную от клиента (числом).");
+            return bot.sendMessage(chatId, "⚠️ Введите корректную сумму, которую передал клиент.");
         }
 
-        session.data.finalSum = sum;
+        SessionManager.updateData(chatId, { finalSum: sum });
         
-        // Получаем список доступных касс для этого пользователя
-        const accounts = await db.getAccounts(session.data.userId);
+        // Получаем кассы сотрудника
+        const accounts = await db.getAccounts(user.telegram_id);
         
         if (accounts.length === 0) {
-            return bot.sendMessage(chatId, "❌ У вас нет доступных касс. Обратитесь к администратору.");
+            SessionManager.clear(chatId);
+            return bot.sendMessage(chatId, "❌ Ошибка: У вас нет привязанных касс. Обратитесь к администратору.");
         }
 
         const buttons = accounts.map(acc => [{
-            text: `${acc.type === 'bank' ? '💳' : '💵'} ${acc.name}`,
-            callback_data: `wallet_${acc.id}` // Обрабатывается в callbacks.js
+            text: `${acc.type === 'bank' ? '💳' : '💵'} ${acc.name} (${fmtMoney(acc.balance)})`,
+            callback_data: `wallet_${acc.id}` // Будет обработано в callbacks.js
         }]);
 
         await bot.sendMessage(
             chatId,
-            `💰 Итоговая сумма: <b>${formatKZT(sum)}</b>\n\n⬇️ Куда поступили средства?`,
+            `💰 Принятая сумма: <b>${fmtMoney(sum)}</b>\n\n⬇️ Выберите кассу для зачисления средств:`,
             {
                 parse_mode: "HTML",
                 reply_markup: { inline_keyboard: buttons }
             }
         );
-        // Дальше ждем callback, сессию не удаляем
+        // Не удаляем сессию, ждем нажатия кнопки
     }
 };
 
 // =============================================================================
-// 🚀 MESSAGE ROUTER
+// 🚀 MAIN ROUTER (CONTROLLER)
 // =============================================================================
 
 export const setupMessageHandlers = () => {
     
-    // --- 1. /start Handler ---
+    // --- 1. System & Entry Points ---
     bot.onText(/\/start/, async (msg) => {
         const chatId = msg.chat.id;
         try {
-            // Upsert пользователя (регистрация или обновление)
+            // Регистрация / Обновление пользователя
             const user = await db.upsertUser(
                 msg.from.id,
-                msg.from.first_name || "Гость",
+                msg.from.first_name || "Guest",
                 msg.from.username
             );
 
-            const roleLabel = {
-                'admin': '👑 Администратор',
-                'manager': '👷‍♂️ Менеджер / Мастер',
-                'client': '👤 Клиент'
-            };
+            SessionManager.clear(chatId);
+            
+            const welcomeText = 
+                `Салам, <b>${user.first_name}</b>! 👋\n` +
+                `Я цифровой помощник <b>ProElectric</b>.\n\n` +
+                `Ваша роль: <b>${user.role.toUpperCase()}</b>\n` +
+                `Выберите действие в меню ниже 👇`;
 
             await bot.sendMessage(
                 chatId,
-                `Салам, <b>${user.first_name}</b>! 👋\n` +
-                `Я бот-помощник <b>ProElectric</b>.\n\n` +
-                `🛠 <b>Что я умею:</b>\n` +
-                `• Быстрый расчет стоимости электромонтажа\n` +
-                `• Просмотр истории заказов\n` +
-                `• Связь с мастером\n\n` +
-                `<i>Ваш статус: ${roleLabel[user.role] || user.role}</i>`,
+                welcomeText,
                 {
                     parse_mode: "HTML",
-                    reply_markup: UI.mainMenu(user.role)
+                    reply_markup: KEYBOARDS.main(user.role) // Динамическое меню из constants.js
                 }
             );
-            clearSession(chatId);
         } catch (e) {
             console.error("Start Error:", e);
         }
     });
 
-    // --- 2. Contact Handler ---
+    // Обработка контактов
     bot.on('contact', async (msg) => {
         if (!msg.from || msg.contact.user_id !== msg.from.id) return;
         
@@ -300,12 +277,12 @@ export const setupMessageHandlers = () => {
             msg.contact.phone_number
         );
         
-        await bot.sendMessage(msg.chat.id, "✅ Номер телефона сохранен! Мы свяжемся с вами при необходимости.", {
-            reply_markup: UI.mainMenu(user.role)
+        await bot.sendMessage(msg.chat.id, "✅ Контакт успешно сохранен! Мы свяжемся с вами.", {
+            reply_markup: KEYBOARDS.main(user.role)
         });
     });
 
-    // --- 3. Main Message Handler ---
+    // --- 2. Main Message Loop ---
     bot.on('message', async (msg) => {
         if (!msg.text || msg.text.startsWith('/')) return;
 
@@ -313,128 +290,128 @@ export const setupMessageHandlers = () => {
         const text = msg.text.trim();
         const userId = msg.from.id;
 
-        // --- GLOBAL COMMANDS ---
-        if (text === "❌ Отмена" || text === "🔙 Назад") {
-            clearSession(chatId);
-            const user = await db.upsertUser(userId, msg.from.first_name); // Refresh user role
-            return bot.sendMessage(chatId, "🏠 Главное меню:", {
-                reply_markup: UI.mainMenu(user.role)
+        // --- A. Global Navigation Checks ---
+        // Используем константы для проверки нажатий
+        if (text === BUTTONS.CANCEL || text === BUTTONS.BACK) {
+            SessionManager.clear(chatId);
+            const user = await db.upsertUser(userId, msg.from.first_name);
+            return bot.sendMessage(chatId, "🔙 Возврат в главное меню.", {
+                reply_markup: KEYBOARDS.main(user.role)
             });
         }
 
-        // --- A. CLIENT MENU ---
+        // --- B. Client Features ---
         
-        if (text === "🧮 Рассчитать стоимость") {
-            startSession(chatId, "AREA");
+        // 🧮 Калькулятор
+        if (text === BUTTONS.CALCULATOR) {
+            SessionManager.start(chatId, "CALC_AREA");
             return bot.sendMessage(chatId, "1️⃣ Введите <b>площадь помещения (м²)</b>:", {
                 parse_mode: "HTML",
-                reply_markup: UI.cancel
+                reply_markup: KEYBOARDS.cancel
             });
         }
 
-        if (text === "💰 Прайс-лист") {
-            // Получаем базовые цены (например, из настроек БД или статики)
-            const settings = await db.getSettings();
-            const p = {
-                concrete: settings.price_strobe_concrete || 0,
-                brick: settings.price_strobe_brick || 0,
-                point: settings.price_socket_install || 0
-            };
-
-            return bot.sendMessage(chatId, 
-                `📋 <b>БАЗОВЫЙ ПРАЙС-ЛИСТ</b>\n\n` +
-                `🧱 Штробление (Кирпич): <b>${formatKZT(p.brick)} / м</b>\n` +
-                `🏗 Штробление (Бетон): <b>${formatKZT(p.concrete)} / м</b>\n` +
-                `🔌 Установка точки: <b>${formatKZT(p.point)} / шт</b>\n\n` +
-                `<i>* Полная смета рассчитывается индивидуально после замера.</i>`, 
-                { parse_mode: "HTML" }
-            );
+        // 💰 Прайс-лист
+        if (text === BUTTONS.PRICE_LIST) {
+            try {
+                // Получаем настройки из БД для актуальных цен
+                const dbSettings = await db.getSettings();
+                // Генерируем текст через шаблон в constants.js
+                const message = TEXTS.priceList(dbSettings);
+                
+                return bot.sendMessage(chatId, message, { parse_mode: "HTML" });
+            } catch (e) {
+                console.error("PriceList Error:", e);
+                // Fallback, если БД недоступна (текст с дефолтными ценами)
+                return bot.sendMessage(chatId, TEXTS.priceList(), { parse_mode: "HTML" });
+            }
         }
 
-        if (text === "📂 Мои заказы") {
-            const orders = await OrderService.getActiveOrders(userId, 'client'); // Надо бы фильтр по юзеру
-            // В OrderService.js метод getActiveOrders возвращает все заказы для админов. 
-            // Для клиента лучше использовать отдельный запрос или фильтрацию.
-            // Здесь используем упрощенный запрос через db (нужно реализовать в db.js getOrdersByUserId)
-            // Пока заглушка или используем то что есть:
-            const userOrders = await db.query("SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT 5", [userId]);
+        // 📂 Мои заказы
+        if (text === BUTTONS.ORDERS) {
+            const res = await db.query("SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT 5", [userId]);
             
-            if (userOrders.rows.length === 0) {
-                return bot.sendMessage(chatId, "📭 У вас пока нет активных заказов.");
+            if (res.rows.length === 0) {
+                return bot.sendMessage(chatId, "📭 История заказов пуста.");
             }
 
             let msgTxt = "<b>📂 ВАШИ ПОСЛЕДНИЕ ЗАКАЗЫ:</b>\n\n";
-            userOrders.rows.forEach(o => {
-                const statusEmoji = { new: '🆕', work: '🛠', done: '✅', cancel: '❌' }[o.status] || '❓';
+            res.rows.forEach(o => {
+                // Используем словарь статусов из constants
+                const statusLabel = STATUS_LABELS[o.status] || o.status;
                 msgTxt += `🔹 <b>Заказ #${o.id}</b>\n`;
-                msgTxt += `📅 ${new Date(o.created_at).toLocaleDateString()}\n`;
-                msgTxt += `💰 Сумма: ${formatKZT(o.total_price)}\n`;
-                msgTxt += `Статус: ${statusEmoji}\n\n`;
+                msgTxt += `📅 ${fmtDate(o.created_at)} | ${statusLabel}\n`;
+                msgTxt += `💰 ${fmtMoney(o.total_price)}\n\n`;
             });
-
             return bot.sendMessage(chatId, msgTxt, { parse_mode: "HTML" });
         }
 
-        if (text === "📞 Контакты") {
+        // 📞 Контакты
+        if (text === BUTTONS.CONTACTS) {
+            const contactKeyboard = {
+                keyboard: [
+                    [{ text: "📱 Отправить мой номер", request_contact: true }],
+                    [{ text: BUTTONS.BACK }]
+                ],
+                resize_keyboard: true
+            };
+            
             return bot.sendMessage(chatId, 
-                `📞 <b>Наши контакты:</b>\n\n` +
-                `👤 Ернияз (Руководитель)\n` +
+                `📞 <b>НАШИ КОНТАКТЫ:</b>\n\n` +
+                `👤 Менеджер: <b>Ернияз</b>\n` +
                 `📱 <a href="tel:+77066066323">+7 (706) 606-63-23</a>\n` +
                 `📍 г. Алматы\n\n` +
-                `💬 Нажмите кнопку ниже, чтобы отправить свой номер для связи:`, 
+                `💬 Нажмите кнопку ниже, чтобы мы сами связались с вами:`, 
                 { 
                     parse_mode: "HTML", 
-                    reply_markup: UI.contact 
+                    reply_markup: contactKeyboard 
                 }
             );
         }
 
-        // --- B. MANAGER / ADMIN MENU ---
+        // --- C. Manager / Admin Features ---
         
-        // 💵 МОЯ КАССА
-        if (text === "💵 Моя Касса") {
+        // 💵 Моя Касса
+        if (text === BUTTONS.MANAGER_CASH) {
             const user = await db.upsertUser(userId, msg.from.first_name);
-            if (!['admin', 'manager'].includes(user.role)) return;
+            // Проверка прав через ROLES
+            if (![ROLES.ADMIN, ROLES.MANAGER].includes(user.role)) return;
 
-            const accounts = await db.getAccounts(userId); // Фильтр внутри db.getAccounts
-            
-            if (accounts.length === 0) {
-                return bot.sendMessage(chatId, "🤷‍♂️ У вас нет доступных касс.");
-            }
+            const accounts = await db.getAccounts(userId);
+            if (accounts.length === 0) return bot.sendMessage(chatId, "🤷‍♂️ У вас нет доступных касс.");
 
-            let balanceMsg = "<b>👜 ВАШИ ФИНАНСЫ:</b>\n\n";
+            let balanceMsg = "<b>👜 ФИНАНСОВЫЙ ОТЧЕТ:</b>\n\n";
             let total = 0;
-
             accounts.forEach(acc => {
                 const icon = acc.type === 'bank' ? '💳' : '💵';
-                balanceMsg += `${icon} <b>${acc.name}</b>: ${formatKZT(acc.balance)}\n`;
+                balanceMsg += `▫️ ${icon} <b>${acc.name}</b>: ${fmtMoney(acc.balance)}\n`;
                 total += parseFloat(acc.balance);
             });
-
-            balanceMsg += `\n<b>💰 ИТОГО: ${formatKZT(total)}</b>`;
+            balanceMsg += `\n<b>💰 ИТОГО: ${fmtMoney(total)}</b>`;
             return bot.sendMessage(chatId, balanceMsg, { parse_mode: "HTML" });
         }
 
-        // 👷‍♂️ МОИ ОБЪЕКТЫ
-        if (text === "👷‍♂️ Мои объекты") {
+        // 👷‍♂️ Мои объекты
+        if (text === BUTTONS.MANAGER_OBJECTS) {
             const user = await db.upsertUser(userId, msg.from.first_name);
-            if (!['admin', 'manager'].includes(user.role)) return;
+            if (![ROLES.ADMIN, ROLES.MANAGER].includes(user.role)) return;
 
+            // Получаем активные заказы
             const orders = await OrderService.getActiveOrders(userId, user.role);
-            
-            if (orders.length === 0) {
-                return bot.sendMessage(chatId, "📭 Активных объектов в работе нет.");
-            }
+            if (orders.length === 0) return bot.sendMessage(chatId, "📭 Активных объектов в работе нет.");
 
+            // Рендерим карточки заказов
             for (const o of orders) {
                 const expenses = parseFloat(o.expenses_sum || 0);
-                const expText = expenses > 0 ? `\n💸 Расходы: -${formatKZT(expenses)}` : "";
+                const expText = expenses > 0 ? `\n💸 Расходы: -${fmtMoney(expenses)}` : "";
+                const clientName = o.client_name || 'Клиент';
+                const clientPhone = o.client_phone || 'нет номера';
                 
                 const msgText = 
-                    `🔌 <b>Объект #${o.id}</b> | ${o.status === 'work' ? '🛠 В работе' : '🆕 Новый'}\n` +
-                    `👤 ${o.client_name || 'Клиент'} (${o.client_phone || 'нет тел.'})\n` +
+                    `🔌 <b>ОБЪЕКТ #${o.id}</b> | ${STATUS_LABELS[o.status]}\n` +
+                    `👤 ${clientName} (${clientPhone})\n` +
                     `📍 ${o.city || 'Алматы'}\n` +
-                    `💰 Смета: ${formatKZT(o.total_price)}` + expText;
+                    `💰 Смета: <b>${fmtMoney(o.total_price)}</b>` + expText;
 
                 await bot.sendMessage(chatId, msgText, {
                     parse_mode: "HTML",
@@ -451,44 +428,59 @@ export const setupMessageHandlers = () => {
             return;
         }
 
-        // --- C. WIZARD STEP PROCESSOR ---
-        const session = sessions.get(chatId);
+        // --- D. Wizard State Machine Processing ---
+        
+        const session = SessionManager.get(chatId);
+        
         if (session && STEPS[session.step]) {
-            // Обогащаем сессию данными о пользователе
             const user = await db.upsertUser(userId, msg.from.first_name);
-            session.data.userId = userId;
-            
             try {
+                console.log(`👣 [WIZARD] Executing step ${session.step} for ${user.first_name}`);
                 await STEPS[session.step](chatId, text, session, user);
             } catch (err) {
                 console.error(`Wizard Error [${session.step}]:`, err);
-                bot.sendMessage(chatId, "⚠️ Произошла ошибка. Попробуйте начать заново (/start).");
-                clearSession(chatId);
+                bot.sendMessage(chatId, "⚠️ Произошла ошибка при обработке данных. Попробуйте снова.", { 
+                    reply_markup: KEYBOARDS.main(user.role) 
+                });
+                SessionManager.clear(chatId);
             }
         }
     });
 };
 
 /**
- * Уведомление админов о новом заказе
- * @param {string} text - Текст уведомления
- * @param {number|null} orderId - ID заказа для кнопки "Взять в работу"
+ * Уведомление сотрудников о новом событии (например, новом заказе).
+ * Используется в callbacks.js и Admin Service.
+ * @param {string} text - Текст сообщения (HTML)
+ * @param {number|null} orderId - ID заказа (опционально, для кнопки действия)
  */
 export const notifyAdmin = async (text, orderId = null) => {
     try {
-        const admins = await db.getEmployees(); // Получаем всех админов и менеджеров
-        
+        const employees = await db.getEmployees();
+        // Убираем дубликаты ID, если есть
+        const uniqueIds = [...new Set(employees.map(u => u.telegram_id))];
+
         const markup = orderId ? {
             inline_keyboard: [[{ text: "🙋‍♂️ Взять в работу", callback_data: `take_order_${orderId}` }]]
         } : undefined;
 
-        for (const admin of admins) {
-            await bot.sendMessage(admin.telegram_id, text, {
-                parse_mode: "HTML",
-                reply_markup: markup
-            }).catch(e => console.error(`Failed to send to admin ${admin.telegram_id}:`, e.message));
+        // Рассылка (Promise.allSettled чтобы ошибка одного не ломала всех)
+        const results = await Promise.allSettled(uniqueIds.map(id => 
+            bot.sendMessage(id, text, { parse_mode: "HTML", reply_markup: markup })
+        ));
+        
+        // Логирование результатов рассылки
+        const successCount = results.filter(r => r.status === 'fulfilled').length;
+        console.log(`📢 [NOTIFY] Sent to ${successCount}/${uniqueIds.length} employees.`);
+
+        // Дублирование в канал (если настроен)
+        if (config.bot.channelId) {
+             bot.sendMessage(config.bot.channelId, text, { parse_mode: "HTML" }).catch(e => {
+                 console.warn(`⚠️ Channel notify failed: ${e.message}`);
+             });
         }
+
     } catch (e) {
-        console.error("NotifyAdmin Error:", e);
+        console.error("NotifyAdmin Critical Error:", e);
     }
 };

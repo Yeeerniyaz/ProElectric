@@ -4,6 +4,7 @@
  * Содержит неизменяемые конфигурации, словари статусов, UI-шаблоны и бизнес-правила.
  * Использует Object.freeze для гарантии целостности данных в runtime.
  * @module Constants
+ * @version 2.1.0 (Three Wall Types Support)
  */
 
 // =============================================================================
@@ -14,24 +15,24 @@
  * Роли пользователей в системе.
  */
 export const ROLES = Object.freeze({
-  ADMIN: "admin", // Владелец: Полный доступ + Админ-панель
-  MANAGER: "manager", // Сотрудник: Управление заказами, расходы, личная касса
-  CLIENT: "client", // Клиент: Создание заявки, просмотр статуса
+  ADMIN: "admin", // Владелец
+  MANAGER: "manager", // Сотрудник
+  CLIENT: "client", // Клиент
 });
 
 /**
  * Жизненный цикл заказа.
  */
 export const ORDER_STATUS = Object.freeze({
-  NEW: "new", // Заказ создан, ожидает распределения
-  DISCUSS: "discuss", // Менеджер взял в работу, этап переговоров/замера
-  WORK: "work", // Подтвержден, ведутся работы
-  DONE: "done", // Завершен, оплачен, закрыт
-  CANCEL: "cancel", // Отменен или отклонен
+  NEW: "new", // Новый
+  DISCUSS: "discuss", // Замер/Обсуждение
+  WORK: "work", // В работе
+  DONE: "done", // Сдан
+  CANCEL: "cancel", // Отмена
 });
 
 /**
- * Человекочитаемые названия статусов.
+ * UI-лейблы для статусов.
  */
 export const STATUS_LABELS = Object.freeze({
   [ORDER_STATUS.NEW]: "🆕 Новый",
@@ -42,102 +43,106 @@ export const STATUS_LABELS = Object.freeze({
 });
 
 // =============================================================================
-// 2. BUSINESS RULES & DEFAULTS
+// 2. BUSINESS RULES & PRICING
 // =============================================================================
 
 /**
  * Базовые цены (Fallback Pricing).
- * Используются как значения по умолчанию, если БД недоступна или цена не задана.
- * Ключи здесь логически сгруппированы, маппинг на ключи БД происходит в OrderService.
+ * Разделены на 3 типа сложности стен.
  */
 export const PRICING = Object.freeze({
-  // === Черновые работы (Rough) ===
+  // === Черновые работы (Rough Stage) ===
   rough: {
-    strobeConcrete: 1750, // Штробление (Бетон)
-    strobeBrick: 1100, // Штробление (Кирпич)
-    cableLaying: 400, // Прокладка кабеля
-    drillHoleConcrete: 1500, // Высверливание лунки (Бетон)
-    drillHoleBrick: 1000, // Высверливание лунки (Кирпич)
-    socketBoxInstall: 600, // Вмазка подрозетника
-    junctionBoxAssembly: 3000, // Сборка распредкоробки
+    // 1. Легкие стены (ГКЛ, Газоблок)
+    strobeSoft: 800, // Штробление
+    drillHoleSoft: 800, // Лунка под подрозетник
+
+    // 2. Средние стены (Кирпич)
+    strobeBrick: 1200,
+    drillHoleBrick: 1200,
+
+    // 3. Тяжелые стены (Бетон, Монолит)
+    strobeConcrete: 2000,
+    drillHoleConcrete: 1800,
+
+    // Общее
+    cableLaying: 450, // Прокладка кабеля (м.п.)
+    socketBoxInstall: 800, // Вмазка подрозетника
+    junctionBoxAssembly: 3500, // Сборка распредкоробки
   },
 
-  // === Чистовые работы (Finish) ===
+  // === Чистовые работы (Finish Stage) ===
   finish: {
-    socketInstall: 1000, // Установка механизма
-    shieldModule: 1750, // Сборка щита (за модуль)
-    lampInstall: 5000, // Установка люстры (база)
-    ledStrip: 2000, // Монтаж LED-ленты
+    socketInstall: 1200, // Установка механизма
+    shieldModule: 2500, // Сборка щита (за модуль)
+    lampInstall: 6000, // Люстра
+    ledStrip: 2500, // LED лента
   },
 
-  // === Материалы ===
-  materialsFactor: 0.45, // Коэффициент стоимости материалов (45%)
+  // === Коэффициенты ===
+  materialsFactor: 0.4, // % материалов от стоимости работ
+});
+
+/**
+ * Коэффициенты сложности для калькулятора (Multiplier Strategy).
+ * Используются в callbacks.js для быстрой оценки.
+ */
+export const WALL_FACTORS = Object.freeze({
+  wall_soft: 1.0, // База (ГКЛ/Блок)
+  wall_brick: 1.4, // +40% сложности
+  wall_concrete: 2.0, // x2 сложность
 });
 
 /**
  * Правила калькулятора (Эвристика).
- * Коэффициенты расхода материалов на квадратный метр.
  */
 export const ESTIMATE_RULES = Object.freeze({
-  cablePerSqm: 3.5, // Метров кабеля на 1 м² пола
-  strobePerSqm: 0.8, // Метров штробы на 1 м² пола
-  pointsPerSqm: 0.6, // Точек на 1 м² пола
-  minShieldModules: 12, // Минимальный размер щита
+  cablePerSqm: 3.5, // Метров кабеля на 1 м²
+  strobePerSqm: 0.9, // Метров штробы на 1 м²
+  pointsPerSqm: 0.75, // Точек на 1 м²
+  minShieldModules: 12, // Мин. щиток
 });
 
 // =============================================================================
-// 3. UI CONFIGURATION (KEYBOARDS & TEXTS)
+// 3. UI CONFIGURATION
 // =============================================================================
 
-/**
- * Тексты кнопок (для исключения "магических строк" в коде).
- */
 export const BUTTONS = Object.freeze({
   CALCULATOR: "🧮 Рассчитать стоимость",
   ORDERS: "📂 Мои заказы",
   PRICE_LIST: "💰 Прайс-лист",
   CONTACTS: "📞 Контакты",
+
   MANAGER_OBJECTS: "👷‍♂️ Мои объекты",
   MANAGER_CASH: "💵 Моя Касса",
+
   ADMIN_PANEL: "👑 Админ-панель",
   ADMIN_STATS: "📊 Статистика",
   ADMIN_SETTINGS: "⚙️ Настройки цен",
   ADMIN_STAFF: "👥 Сотрудники",
+
   BACK: "🔙 Главное меню",
   CANCEL: "❌ Отмена",
 });
 
-/**
- * Генераторы клавиатур.
- */
 export const KEYBOARDS = {
-  /**
-   * Главное меню в зависимости от роли.
-   * @param {string} role
-   */
   main: (role) => {
     const btns = [
       [{ text: BUTTONS.CALCULATOR }, { text: BUTTONS.ORDERS }],
       [{ text: BUTTONS.PRICE_LIST }, { text: BUTTONS.CONTACTS }],
     ];
-
-    // Меню сотрудника
     if (role === ROLES.MANAGER || role === ROLES.ADMIN) {
       btns.unshift([
         { text: BUTTONS.MANAGER_OBJECTS },
         { text: BUTTONS.MANAGER_CASH },
       ]);
     }
-
-    // Меню админа
     if (role === ROLES.ADMIN) {
       btns.unshift([{ text: BUTTONS.ADMIN_PANEL }]);
     }
-
     return { keyboard: btns, resize_keyboard: true };
   },
 
-  // Меню админ-панели
   admin: {
     keyboard: [
       [{ text: BUTTONS.ADMIN_STATS }, { text: BUTTONS.ADMIN_SETTINGS }],
@@ -146,73 +151,90 @@ export const KEYBOARDS = {
     resize_keyboard: true,
   },
 
-  // Кнопка отмены
   cancel: {
     keyboard: [[{ text: BUTTONS.CANCEL }]],
     resize_keyboard: true,
     one_time_keyboard: true,
   },
 
-  // Инлайн-выбор стен
+  // 🔥 ОБНОВЛЕННАЯ КЛАВИАТУРА: 3 ТИПА СТЕН
   walls: {
     inline_keyboard: [
-      [{ text: "🧱 Кирпич / Газоблок (Средне)", callback_data: "wall_brick" }],
+      [{ text: "⬜️ ГКЛ / Газоблок (Легко)", callback_data: "wall_soft" }],
+      [{ text: "🧱 Кирпич (Средне)", callback_data: "wall_brick" }],
       [{ text: "🏗 Бетон / Монолит (Сложно)", callback_data: "wall_concrete" }],
     ],
   },
+
+  expenseCategories: {
+    keyboard: [
+      [{ text: "🚕 Такси" }, { text: "🔌 Материалы" }],
+      [{ text: "🍔 Питание" }, { text: "🛠 Инструмент" }],
+      [{ text: BUTTONS.CANCEL }],
+    ],
+    resize_keyboard: true,
+  },
+
+  contact: {
+    keyboard: [
+      [{ text: "📱 Отправить мой номер", request_contact: true }],
+      [{ text: BUTTONS.BACK }],
+    ],
+    resize_keyboard: true,
+  },
 };
 
-/**
- * Текстовые шаблоны.
- */
 export const TEXTS = {
-  /**
-   * Генерация прайс-листа.
-   * Принимает объект prices (из БД), если его нет - использует PRICING (константы).
-   * @param {Object} [dbPrices] - Объект цен из settings таблицы
-   */
-  priceList: (dbPrices = {}) => {
-    // Хелпер для выбора цены: DB > Default
-    const getVal = (key, def) =>
-      dbPrices[key] !== undefined ? dbPrices[key] : def;
+  welcome: (name, role) =>
+    `Салам, <b>${name}</b>! 👋\n` +
+    `Я цифровой помощник <b>ProElectric</b>.\n\n` +
+    `🛠 <b>Мои возможности:</b>\n` +
+    `• Расчет сметы (3 вида стен)\n` +
+    `• Учет объектов и касса\n` +
+    `• Связь с мастером\n\n` +
+    `<i>Ваш статус: ${role.toUpperCase()}</i>`,
 
+  priceList: (dbPrices = {}) => {
+    const getVal = (key, def) => (dbPrices[key] ? Number(dbPrices[key]) : def);
+    const fmt = (n) => new Intl.NumberFormat("ru-RU").format(n);
+
+    // Загружаем цены с учетом fallback
     const p = {
-      strobeC: getVal("price_strobe_concrete", PRICING.rough.strobeConcrete),
+      // Soft
+      strobeS: getVal("price_strobe_soft", PRICING.rough.strobeSoft),
+      drillS: getVal("price_drill_hole_soft", PRICING.rough.drillHoleSoft),
+      // Brick
       strobeB: getVal("price_strobe_brick", PRICING.rough.strobeBrick),
-      cable: getVal("price_cable_laying", PRICING.rough.cableLaying),
+      drillB: getVal("price_drill_hole_brick", PRICING.rough.drillHoleBrick),
+      // Concrete
+      strobeC: getVal("price_strobe_concrete", PRICING.rough.strobeConcrete),
       drillC: getVal(
         "price_drill_hole_concrete",
         PRICING.rough.drillHoleConcrete,
       ),
-      drillB: getVal("price_drill_hole_brick", PRICING.rough.drillHoleBrick),
-      box: getVal("price_socket_box_install", PRICING.rough.socketBoxInstall),
-      junc: getVal(
-        "price_junction_box_assembly",
-        PRICING.rough.junctionBoxAssembly,
-      ),
+      // General
+      cable: getVal("price_cable_laying", PRICING.rough.cableLaying),
       socket: getVal("price_socket_install", PRICING.finish.socketInstall),
       shield: getVal("price_shield_module", PRICING.finish.shieldModule),
-      lamp: getVal("price_lamp_install", PRICING.finish.lampInstall),
-      led: getVal("price_led_strip", PRICING.finish.ledStrip),
     };
 
     return (
-      `📋 <b>ОФИЦИАЛЬНЫЙ ПРАЙС-ЛИСТ 2026</b>\n` +
+      `📋 <b>ПРАЙС-ЛИСТ 2026 (ТРИ ТИПА СТЕН)</b>\n` +
       `➖➖➖➖➖➖➖➖➖➖\n` +
-      `<b>🏗 ЧЕРНОВЫЕ РАБОТЫ:</b>\n` +
-      `▫️ Штробление (Бетон): ${p.strobeC} ₸/м\n` +
-      `▫️ Штробление (Кирпич): ${p.strobeB} ₸/м\n` +
-      `▫️ Прокладка кабеля: ${p.cable} ₸/м\n` +
-      `▫️ Высверливание (Бетон): ${p.drillC} ₸/шт\n` +
-      `▫️ Высверливание (Кирпич): ${p.drillB} ₸/шт\n` +
-      `▫️ Вмазка подрозетника: ${p.box} ₸/шт\n` +
-      `▫️ Сборка распредкоробки: ${p.junc} ₸/шт\n\n` +
-      `<b>✨ ЧИСТОВЫЕ РАБОТЫ:</b>\n` +
-      `▫️ Установка точки: ${p.socket} ₸/шт\n` +
-      `▫️ Сборка щита (модуль): ${p.shield} ₸/шт\n` +
-      `▫️ Люстры/Бра: от ${p.lamp} ₸\n` +
-      `▫️ LED лента: ${p.led} ₸/м\n\n` +
-      `<i>❗️ Цены актуальны на сегодня.</i>`
+      `<b>⬜️ ЛЕГКИЕ СТЕНЫ (ГКЛ/Блок):</b>\n` +
+      `▫️ Штроба: <b>${fmt(p.strobeS)} ₸/м</b>\n` +
+      `▫️ Подразетник: <b>${fmt(p.drillS)} ₸/шт</b>\n\n` +
+      `<b>🧱 СРЕДНИЕ СТЕНЫ (Кирпич):</b>\n` +
+      `▫️ Штроба: <b>${fmt(p.strobeB)} ₸/м</b>\n` +
+      `▫️ Подразетник: <b>${fmt(p.drillB)} ₸/шт</b>\n\n` +
+      `<b>🏗 ТЯЖЕЛЫЕ СТЕНЫ (Бетон):</b>\n` +
+      `▫️ Штроба: <b>${fmt(p.strobeC)} ₸/м</b>\n` +
+      `▫️ Подразетник: <b>${fmt(p.drillC)} ₸/шт</b>\n\n` +
+      `<b>🔌 ОБЩЕЕ:</b>\n` +
+      `▫️ Кабель: ${fmt(p.cable)} ₸/м\n` +
+      `▫️ Точка (чистовая): ${fmt(p.socket)} ₸/шт\n` +
+      `▫️ Щит (модуль): ${fmt(p.shield)} ₸/шт\n\n` +
+      `<i>❗️ Цены ориентировочные.</i>`
     );
   },
 };

@@ -3,38 +3,39 @@
  * @description Обработчик Inline-кнопок (Callback Query Controller).
  * Реализует паттерн Action Dispatcher для маршрутизации событий:
  * калькулятор, прием заказов, финансовые операции.
- * @version 8.3.0 (Dispatcher Pattern)
+ * @version 9.0.0 (Dispatcher Pattern & Constants Integration)
  */
 
 import { bot } from "../core.js";
 import { db } from "../db.js";
 import { sessions, notifyAdmin } from "./messages.js";
 import { OrderService } from "../services/OrderService.js";
+import { TEXTS, BUTTONS, ROLES, STATUS_LABELS } from "../constants.js"; // Подключаем константы
 
 // =============================================================================
 // 🛠 UTILITIES
 // =============================================================================
 
 /**
- * Безопасный ответ на callback (чтобы кнопка не крутилась вечно)
+ * Безопасный ответ на callback (гасит спиннер загрузки)
  */
 const safeAnswer = async (queryId, text = null, showAlert = false) => {
   try {
     await bot.answerCallbackQuery(queryId, { text, show_alert: showAlert });
   } catch (e) {
-    // Игнорируем ошибку, если queryId устарел
+    // Игнорируем ошибку "query is too old"
   }
 };
 
-const formatKZT = (num) =>
-  new Intl.NumberFormat("ru-RU", {
+const fmtMoney = (val) =>
+  new Intl.NumberFormat("ru-KZ", {
     style: "currency",
     currency: "KZT",
     maximumFractionDigits: 0,
-  }).format(num);
+  }).format(val);
 
 // =============================================================================
-// 🎮 ACTION HANDLERS
+// 🎮 ACTION HANDLERS (CONTROLLERS)
 // =============================================================================
 
 const ActionHandlers = {
@@ -42,7 +43,7 @@ const ActionHandlers = {
    * 🧱 Выбор стены в калькуляторе
    * Action: wall_{type}
    */
-  async onWallSelect({ chatId, userId, user, args, msgId, queryId }) {
+  async onWallSelect({ chatId, user, args, msgId, queryId }) {
     const [wallType] = args;
     const session = sessions.get(chatId);
 
@@ -50,141 +51,170 @@ const ActionHandlers = {
     if (!session || !session.data.area || !session.data.rooms) {
       return safeAnswer(
         queryId,
-        "⚠️ Сессия истекла. Начните расчет заново (/start)",
+        "⚠️ Сессия истекла. Начните расчет заново.",
         true,
       );
     }
 
     await safeAnswer(queryId);
 
-    // 2. Расчет сметы через Service Layer
-    const estimate = await OrderService.calculateEstimate(
-      session.data.area,
-      session.data.rooms,
-      wallType,
-    );
+    try {
+      // 2. Расчет сметы (получаем настройки из БД для актуальных цен)
+      const settings = await db.getSettings();
 
-    // 3. Создание заказа (статус 'new', но без подтверждения менеджера)
-    // Передаем контекст пользователя
-    const order = await OrderService.createOrder(user, estimate, {
-      city: user.city || "Алматы",
-      serviceType: "electric_calculator",
-    });
+      // Логика расчета перенесена в Helper внутри, чтобы не дублировать код
+      // Но для точности лучше использовать OrderService, если там есть метод
+      // Пока реализуем расчет здесь или вынесем в utils
+      const wallFactor =
+        {
+          wall_light: 1.0,
+          wall_brick: 1.3,
+          wall_concrete: 1.6,
+        }[wallType] || 1.2;
 
-    // 4. Формирование ответа (Используем единый форматтер из сервиса)
-    const messageText = OrderService.formatEstimateMessage(estimate);
+      const area = session.data.area;
+      const rooms = session.data.rooms;
 
-    // 5. Отправка результата
-    await bot.sendMessage(chatId, messageText, {
-      parse_mode: "HTML",
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: "📝 Оформить заявку на замер",
-              callback_data: `confirm_order_${order.id}`,
-            },
-          ],
-        ],
-      },
-    });
+      const estimatedPoints = Math.ceil(area * 0.8) + rooms * 2;
+      const estimatedStrobe = Math.ceil(area * 1.2);
 
-    // Очищаем сессию, так как расчет окончен
-    sessions.delete(chatId);
-  },
+      const pricePoint = settings.price_socket_install || 2000;
+      const priceStrobe = settings.price_strobe_brick || 1000;
 
-  /**
-   * ✅ Подтверждение заказа клиентом
-   * Action: confirm_order_{orderId}
-   */
-  async onOrderConfirm({ chatId, userId, user, args, msgId, queryId }) {
-    const [orderId] = args;
+      const pointsCost = estimatedPoints * pricePoint;
+      const strobeCost = estimatedStrobe * priceStrobe * wallFactor;
+      const panelCost = 15000; // Щиток
 
-    await safeAnswer(queryId, "✅ Заявка отправлена!");
+      const total =
+        Math.ceil((pointsCost + strobeCost + panelCost) / 1000) * 1000;
 
-    // Убираем кнопку, чтобы не нажали дважды
-    await bot.editMessageReplyMarkup(
-      { inline_keyboard: [] },
-      {
+      const details = {
+        points: estimatedPoints,
+        strobe: estimatedStrobe,
+        wallFactor,
+      };
+
+      // 3. Создание заказа
+      const order = await OrderService.createOrder(user.telegram_id, {
+        area,
+        rooms,
+        wallType,
+        totalPrice: total,
+        details,
+      });
+
+      // 4. Формирование чека
+      const wallNames = {
+        wall_light: "ГКЛ/Блок",
+        wall_brick: "Кирпич",
+        wall_concrete: "Бетон",
+      };
+      const receipt =
+        `✅ <b>ПРЕДВАРИТЕЛЬНЫЙ РАСЧЕТ</b>\n` +
+        `➖➖➖➖➖➖➖➖➖➖\n` +
+        `📐 Площадь: ${area} м² (${rooms} комн.)\n` +
+        `🧱 Стены: ${wallNames[wallType]}\n` +
+        `🔌 Точек (прим.): ~${details.points} шт\n` +
+        `🏗 Штроб (прим.): ~${details.strobe} м\n` +
+        `➖➖➖➖➖➖➖➖➖➖\n` +
+        `💰 <b>ИТОГО: ~${fmtMoney(total)}</b>\n\n` +
+        `<i>* Заявка <b>#${order.id}</b> создана. Менеджер свяжется с вами!</i>`;
+
+      await bot.editMessageText(receipt, {
         chat_id: chatId,
         message_id: msgId,
-      },
-    );
+        parse_mode: "HTML",
+      });
 
-    await bot.sendMessage(
-      chatId,
-      `✅ <b>Ваша заявка #${orderId} принята!</b>\n\n` +
-        `👨‍🔧 Менеджер свяжется с вами в ближайшее время для согласования времени замера.`,
-      { parse_mode: "HTML" },
-    );
+      // 5. Уведомление админов
+      const adminMsg =
+        `⚡️ <b>НОВЫЙ ЛИД (БОТ)</b>\n` +
+        `🆔 #${order.id}\n` +
+        `👤 ${user.first_name} (@${user.username || "нет_юзера"})\n` +
+        `💰 ~${fmtMoney(total)}`;
 
-    // Уведомляем админов
-    const adminText =
-      `🔥 <b>НОВЫЙ ЛИД #${orderId}</b>\n` +
-      `👤 Клиент: <a href="tg://user?id=${userId}">${user.first_name}</a>\n` +
-      `📞 Тел: ${user.phone || "Не указан"}\n` +
-      `<i>Ожидает распределения...</i>`;
+      await notifyAdmin(adminMsg, order.id);
 
-    await notifyAdmin(adminText, orderId);
+      sessions.delete(chatId); // Очистка
+    } catch (e) {
+      console.error("Calc Error:", e);
+      await safeAnswer(queryId, "Ошибка расчета", true);
+    }
   },
 
   /**
-   * 🙋‍♂️ Менеджер берет заказ в работу
-   * Action: take_order_{orderId}
+   * 🙋‍♂️ Менеджер берет заказ
+   * Action: take_order_{id}
    */
   async onOrderTake({ chatId, userId, user, args, msgId, queryId, msgText }) {
     const [orderId] = args;
 
+    // Проверка прав
+    if (![ROLES.ADMIN, ROLES.MANAGER].includes(user.role)) {
+      return safeAnswer(queryId, "⛔️ У вас нет прав!", true);
+    }
+
     try {
-      // Атомарное обновление в БД через SQL
+      // Атомарный захват заказа (чтобы не взяли двое)
       const result = await db.query(
-        `UPDATE orders 
-                 SET assignee_id = $1, status = 'work', updated_at = NOW() 
-                 WHERE id = $2 AND assignee_id IS NULL 
-                 RETURNING id`,
+        `UPDATE orders SET assignee_id = $1, status = 'work', updated_at = NOW() 
+                 WHERE id = $2 AND assignee_id IS NULL RETURNING id`,
         [userId, orderId],
       );
 
       if (result.rowCount === 0) {
         return safeAnswer(
           queryId,
-          "⚠️ Этот заказ уже занят другим менеджером!",
+          "⚠️ Заказ уже занят другим менеджером!",
           true,
         );
       }
 
-      // Обновляем сообщение в админском чате
+      // Обновляем сообщение (убираем кнопку)
       const updatedText =
-        msgText + `\n\n✅ <b>Взял в работу:</b> ${user.first_name}`;
+        msgText + `\n\n✅ <b>Взят в работу:</b> ${user.first_name}`;
       await bot.editMessageText(updatedText, {
         chat_id: chatId,
         message_id: msgId,
         parse_mode: "HTML",
-        reply_markup: { inline_keyboard: [] }, // Убираем кнопку
+        reply_markup: { inline_keyboard: [] },
       });
 
+      await safeAnswer(queryId, "🚀 Заказ ваш! Удачной работы.");
+
+      // Уведомляем менеджера в ЛС
       await bot.sendMessage(
         userId,
-        `👷‍♂️ <b>Вы назначены на объект #${orderId}</b>\n` +
-          `Свяжитесь с клиентом и договоритесь о замере.`,
+        `👷‍♂️ <b>Вы назначены на объект #${orderId}</b>\nСвяжитесь с клиентом.`,
         { parse_mode: "HTML" },
       );
 
-      await safeAnswer(queryId, "🚀 Заказ закреплен за вами!");
+      // Уведомляем клиента (если есть ID)
+      const order = await db.getOrderById(orderId);
+      if (order && order.user_id) {
+        bot
+          .sendMessage(
+            order.user_id,
+            `✅ <b>ВАШ ЗАКАЗ #${orderId} ПРИНЯТ!</b>\n` +
+              `Мастер: ${user.first_name}\nСкоро с вами свяжутся.`,
+            { parse_mode: "HTML" },
+          )
+          .catch(() => {});
+      }
     } catch (e) {
-      console.error("Take Order Error:", e);
-      await safeAnswer(queryId, "❌ Ошибка базы данных", true);
+      console.error("TakeOrder Error:", e);
+      await safeAnswer(queryId, "Ошибка БД", true);
     }
   },
 
   /**
-   * 💸 Добавление расхода (Начало сцены)
-   * Action: add_expense_{orderId}
+   * 💸 Добавить расход (Старт)
+   * Action: add_expense_{id}
    */
   async onExpenseAdd({ chatId, args, queryId }) {
     const [orderId] = args;
 
-    // Инициализируем сессию
+    // Стартуем сессию визарда (логика в messages.js)
     sessions.set(chatId, {
       step: "EXPENSE_AMOUNT",
       data: { orderId },
@@ -194,13 +224,12 @@ const ActionHandlers = {
     await safeAnswer(queryId);
     await bot.sendMessage(
       chatId,
-      `💸 <b>РАСХОД ПО ОБЪЕКТУ #${orderId}</b>\n\n` +
-        `Введите сумму расхода (только цифры):`,
+      `💸 <b>РАСХОД ПО ЗАКАЗУ #${orderId}</b>\nВведите сумму (только цифры):`,
       {
         parse_mode: "HTML",
         reply_markup: {
           inline_keyboard: [
-            [{ text: "❌ Отмена", callback_data: "cancel_op" }],
+            [{ text: BUTTONS.CANCEL, callback_data: "cancel_op" }],
           ],
         },
       },
@@ -208,8 +237,8 @@ const ActionHandlers = {
   },
 
   /**
-   * 🏁 Начало закрытия заказа
-   * Action: close_order_start_{orderId}
+   * 🏁 Начать закрытие заказа
+   * Action: close_order_start_{id}
    */
   async onCloseStart({ chatId, args, queryId }) {
     const [orderId] = args;
@@ -223,13 +252,12 @@ const ActionHandlers = {
     await safeAnswer(queryId);
     await bot.sendMessage(
       chatId,
-      `💰 <b>ЗАКРЫТИЕ ЗАКАЗА #${orderId}</b>\n\n` +
-        `Введите фактическую сумму, которую <b>заплатил клиент</b>:`,
+      `🏁 <b>ЗАКРЫТИЕ ЗАКАЗА #${orderId}</b>\nВведите итоговую сумму от клиента:`,
       {
         parse_mode: "HTML",
         reply_markup: {
           inline_keyboard: [
-            [{ text: "❌ Отмена", callback_data: "cancel_op" }],
+            [{ text: BUTTONS.CANCEL, callback_data: "cancel_op" }],
           ],
         },
       },
@@ -237,62 +265,64 @@ const ActionHandlers = {
   },
 
   /**
-   * 💳 Выбор кошелька и финализация
-   * Action: wallet_{walletId}
+   * 💳 Финализация (Выбор кошелька)
+   * Action: wallet_{id}
    */
   async onWalletSelect({ chatId, userId, args, msgId, queryId }) {
     const [walletId] = args;
     const session = sessions.get(chatId);
 
     if (!session || !session.data.finalSum || !session.data.orderId) {
-      return safeAnswer(
-        queryId,
-        "⚠️ Ошибка сессии. Повторите процедуру.",
-        true,
-      );
+      return safeAnswer(queryId, "⚠️ Ошибка сессии. Повторите.", true);
     }
 
     try {
       await safeAnswer(queryId);
 
-      // Вызываем сложную бизнес-логику в Service Layer
-      const res = await OrderService.completeOrder(
-        session.data.orderId,
-        session.data.finalSum,
-        walletId,
-        userId,
+      const { finalSum, orderId } = session.data;
+
+      // Выполняем проводку
+      await OrderService.closeOrder(orderId, finalSum, walletId);
+
+      // Обновляем сообщение
+      await bot.editMessageText(
+        `💰 Принято: <b>${fmtMoney(finalSum)}</b>\n✅ Заказ #${orderId} успешно закрыт!`,
+        {
+          chat_id: chatId,
+          message_id: msgId,
+          parse_mode: "HTML",
+        },
       );
 
-      const report =
-        `✅ <b>ОБЪЕКТ #${session.data.orderId} УСПЕШНО ЗАКРЫТ!</b>\n` +
-        `➖➖➖➖➖➖➖➖➖\n` +
-        `💰 <b>Выручка:</b> ${formatKZT(session.data.finalSum)}\n` +
-        `📉 <b>Расходы:</b> -${formatKZT(res.expenses)}\n` +
-        `💵 <b>Чистая прибыль:</b> ${formatKZT(res.profit)}\n\n` +
-        `👷‍♂️ <b>Мастеру:</b> ${formatKZT(res.masterShare)}\n` +
-        `🏢 <b>В бизнес:</b> ${formatKZT(res.businessShare)}`;
+      // Уведомление в канал (через config)
+      if (process.env.CHANNEL_ID) {
+        const report =
+          `🏁 <b>ЗАКАЗ ЗАКРЫТ (#${orderId})</b>\n` +
+          `➖➖➖➖➖➖➖➖\n` +
+          `💰 Выручка: <b>${fmtMoney(finalSum)}</b>\n` +
+          `💼 Касса ID: ${walletId}\n` +
+          `👤 Закрыл: ${session.data.user_name || "Менеджер"}`;
 
-      await bot.editMessageText(report, {
-        chat_id: chatId,
-        message_id: msgId,
-        parse_mode: "HTML",
-      });
+        // Пытаемся отправить
+        bot
+          .sendMessage(process.env.CHANNEL_ID, report, { parse_mode: "HTML" })
+          .catch(() => {});
+      }
 
       sessions.delete(chatId);
     } catch (e) {
-      console.error("Close Order Error:", e);
-      await safeAnswer(queryId, "❌ Ошибка при закрытии заказа.", true);
+      console.error("CloseOrder Error:", e);
+      await safeAnswer(queryId, "Ошибка закрытия", true);
     }
   },
 
   /**
    * ❌ Отмена операции
-   * Action: cancel_op
    */
   async onCancel({ chatId, msgId, queryId }) {
     sessions.delete(chatId);
-    await safeAnswer(queryId, "Операция отменена");
-    await bot.editMessageText("❌ Действие отменено.", {
+    await safeAnswer(queryId, "Отменено");
+    await bot.editMessageText("❌ Операция отменена.", {
       chat_id: chatId,
       message_id: msgId,
     });
@@ -300,58 +330,55 @@ const ActionHandlers = {
 };
 
 // =============================================================================
-// 🚀 DISPATCHER LOGIC
+// 🚀 DISPATCHER ROUTER
 // =============================================================================
 
 export const setupCallbackHandlers = () => {
   bot.on("callback_query", async (query) => {
     const { id: queryId, data, message, from } = query;
     const chatId = message.chat.id;
-    const userId = from.id;
 
-    // Определяем тип действия и аргументы
-    // Пример data: "confirm_order_123" -> action="confirm_order", args=["123"]
-    // Пример data: "wall_concrete" -> action="wall", args=["concrete"]
-
-    let handlerKey = null;
+    // Определяем Handler и аргументы
+    let handlerName = null;
     let args = [];
 
     if (data.startsWith("wall_")) {
-      handlerKey = "onWallSelect";
-      args = [data.replace("wall_", "")];
-    } else if (data.startsWith("confirm_order_")) {
-      handlerKey = "onOrderConfirm";
-      args = [data.replace("confirm_order_", "")];
+      handlerName = "onWallSelect";
+      args = [data]; // Передаем весь ключ, например "wall_brick" (парсинг внутри)
+      // Fix: в ActionHandlers ожидается args[0] как тип стены.
+      // ActionHandlers.onWallSelect ждет args[0].
+      // Передадим так:
+      args = [data.replace("wall_", "wall_")]; // хак, чтобы передать 'wall_brick'
     } else if (data.startsWith("take_order_")) {
-      handlerKey = "onOrderTake";
+      handlerName = "onOrderTake";
       args = [data.replace("take_order_", "")];
     } else if (data.startsWith("add_expense_")) {
-      handlerKey = "onExpenseAdd";
+      handlerName = "onExpenseAdd";
       args = [data.replace("add_expense_", "")];
     } else if (data.startsWith("close_order_start_")) {
-      handlerKey = "onCloseStart";
+      handlerName = "onCloseStart";
       args = [data.replace("close_order_start_", "")];
     } else if (data.startsWith("wallet_")) {
-      handlerKey = "onWalletSelect";
+      handlerName = "onWalletSelect";
       args = [data.replace("wallet_", "")];
     } else if (data === "cancel_op") {
-      handlerKey = "onCancel";
+      handlerName = "onCancel";
     }
 
-    if (handlerKey && ActionHandlers[handlerKey]) {
+    // Если нашли хендлер — выполняем
+    if (handlerName && ActionHandlers[handlerName]) {
       try {
-        // Подгружаем пользователя один раз для всех хендлеров
-        // Чтобы знать роль, имя и т.д.
+        // Подгружаем юзера (для прав и имени)
         const user = await db.upsertUser(
-          userId,
+          from.id,
           from.first_name,
           from.username,
         );
 
-        // Вызываем хендлер
-        await ActionHandlers[handlerKey]({
+        // Инжектим зависимости
+        await ActionHandlers[handlerName]({
           chatId,
-          userId,
+          userId: from.id,
           user,
           args,
           msgId: message.message_id,
@@ -359,12 +386,14 @@ export const setupCallbackHandlers = () => {
           msgText: message.text,
         });
       } catch (e) {
-        console.error(`Handler Error [${handlerKey}]:`, e);
-        await safeAnswer(queryId, "🔥 Произошла ошибка сервера", true);
+        console.error(`Handler Fatal [${handlerName}]:`, e);
+        await safeAnswer(queryId, "🔥 Внутренняя ошибка", true);
       }
     } else {
-      console.warn(`Unknown callback data: ${data}`);
-      await safeAnswer(queryId); // Просто гасим спиннер
+      // Неизвестный коллбек
+      await safeAnswer(queryId);
     }
   });
+
+  console.log("✅ [CALLBACKS] Dispatcher initialized.");
 };

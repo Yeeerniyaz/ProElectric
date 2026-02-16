@@ -1,9 +1,11 @@
 /**
  * @file src/handlers/admin.js
- * @description Administrative Control Plane.
- * Модуль управления системой: HR, Финансы, Аналитика и Массовые коммуникации.
- * Реализует защищенные маршруты с проверкой RBAC и Rate Limiting для рассылок.
- * @version 5.0.0 (Enterprise Grade)
+ * @description Administrative Control Plane (ACP).
+ * Модуль высшего уровня для управления бизнес-логикой, персоналом и финансами.
+ *
+ * @architecture MVC (Model-View-Controller)
+ * @security RBAC (Role-Based Access Control) + Type-Safe Guards
+ * @version 7.0.0 (Titanium Edition)
  */
 
 import { bot } from "../core.js";
@@ -12,36 +14,43 @@ import { config } from "../config.js";
 import { OrderService } from "../services/OrderService.js";
 
 // =============================================================================
-// 1. CONFIGURATION & CONSTANTS
+// 1. CONSTANTS & PRESENTATION LAYER
 // =============================================================================
 
 const UI = {
   FORMATTERS: {
-    money: (num) =>
+    money: (amount) =>
       new Intl.NumberFormat("ru-KZ", {
         style: "currency",
         currency: "KZT",
         maximumFractionDigits: 0,
-      }).format(num),
-    date: (d) => new Date(d).toLocaleString("ru-RU"),
+      }).format(amount),
+
+    date: (date) =>
+      new Date(date).toLocaleString("ru-RU", {
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
   },
 
   MESSAGES: {
-    ACCESS_DENIED: `⛔️ <b>ДОСТУП ЗАПРЕЩЕН</b>\nЭта команда доступна только Администраторам.`,
-    PANEL_HEADER: `👑 <b>ПАНЕЛЬ УПРАВЛЕНИЯ</b>\nСистемы работают в штатном режиме.`,
-    INVALID_INPUT: `⚠️ <b>Ошибка формата</b>\nПроверьте правильность введенных данных.`,
-    BROADCAST_START: (count) =>
-      `📣 Запуск рассылки на <b>${count}</b> пользователей...`,
-    BROADCAST_REPORT: (s, f, t) =>
-      `✅ <b>Рассылка завершена</b>\n⏱ Время: ${t}ms\n✅ Успешно: ${s}\n❌ Ошибок: ${f}`,
+    ACCESS_DENIED: (id) =>
+      `⛔️ <b>ACCESS DENIED</b>\nID: <code>${id}</code> не авторизован.`,
+    PANEL_HEADER: `🛰 <b>COMMAND CENTER</b>\nСистемы в норме. Выберите действие:`,
+    MANUAL_ORDER_HELP: `📝 <b>Ручной заказ:</b>\n<code>/neworder +77071234567 50 150000</code>`,
+    BROADCAST_START: (n) => `📣 Начинаем вещание на <b>${n}</b> получателей...`,
+    BROADCAST_DONE: (s, f, t) =>
+      `✅ <b>Рассылка завершена</b>\n⏱ ${t}ms | ✅ ${s} | ❌ ${f}`,
   },
 
   KEYBOARDS: {
-    ADMIN_MAIN: {
+    MAIN: {
       keyboard: [
-        [{ text: "📊 Статистика (KPI)" }, { text: "👥 Сотрудники" }],
-        [{ text: "📣 Рассылка" }, { text: "📂 Все заказы" }],
-        [{ text: "🔙 Выход" }],
+        [{ text: "📊 KPI & Финансы" }, { text: "👥 Персонал" }],
+        [{ text: "📣 Рассылка" }, { text: "📂 Активные заказы" }],
+        [{ text: "🔙 Главное меню" }],
       ],
       resize_keyboard: true,
     },
@@ -49,84 +58,95 @@ const UI = {
 };
 
 // =============================================================================
-// 2. MIDDLEWARE (GUARDS)
+// 2. SECURITY LAYER (GUARDS)
 // =============================================================================
 
 /**
- * Декоратор для защиты админских маршрутов.
- * Проверяет роль пользователя перед выполнением целевой функции.
- * @param {Function} handler - Целевая функция
+ * Guard: Проверяет права администратора.
+ * Устойчив к типам данных (String/Number) и контексту (ЛС/Канал).
  */
 const AdminGuard = (handler) => async (msg, match) => {
   const chatId = msg.chat.id;
-  const userId = msg.from.id;
+
+  // Определяем, кто инициатор.
+  // Если сообщение из канала (через bot.js bridge), msg.from.id может быть ID канала.
+  const initiatorId = msg.from ? msg.from.id : chatId;
+
+  // Приводим все к строкам для надежного сравнения
+  const userIdStr = String(initiatorId).trim();
+  const ownerIdStr = String(config.bot.ownerId).trim();
+
+  // Логируем попытку входа (для отладки)
+  console.log(
+    `🛡 [GUARD] Auth Check: User(${userIdStr}) vs Owner(${ownerIdStr})`,
+  );
 
   try {
-    // 1. Fast Path: Проверка по конфигу (Owner)
-    if (userId === config.bot.ownerId) {
-      return await handler(msg, match);
+    let authorized = false;
+
+    // 1. Root Access (Owner ID из .env)
+    if (userIdStr === ownerIdStr) {
+      authorized = true;
+    }
+    // 2. Database Role Check
+    else {
+      // Пытаемся найти пользователя или канал в базе
+      const user = await db.upsertUser(
+        initiatorId,
+        msg.from?.first_name || msg.chat.title || "Unknown",
+        msg.from?.username || msg.chat.username,
+      );
+
+      if (user && user.role === "admin") {
+        authorized = true;
+      }
     }
 
-    // 2. Slow Path: Проверка через БД
-    const user = await db.upsertUser(
-      userId,
-      msg.from.first_name,
-      msg.from.username,
-    );
-
-    if (user.role === "admin") {
+    if (authorized) {
       return await handler(msg, match);
     } else {
-      console.warn(
-        `⛔️ [Admin Attempt] Unauthorized access by ${userId} (${user.first_name})`,
-      );
-      return bot.sendMessage(chatId, UI.MESSAGES.ACCESS_DENIED, {
-        parse_mode: "HTML",
-      });
+      console.warn(`⛔️ [GUARD] Unauthorized access: ${userIdStr}`);
+      // В каналах лучше не отвечать на ошибки прав, чтобы не спамить
+      if (msg.chat.type === "private") {
+        bot.sendMessage(chatId, UI.MESSAGES.ACCESS_DENIED(userIdStr), {
+          parse_mode: "HTML",
+        });
+      }
     }
   } catch (e) {
-    console.error("💥 [Admin Guard Error]", e);
-    bot.sendMessage(chatId, "⚠️ Внутренняя ошибка проверки прав.");
+    console.error("💥 [GUARD CRITICAL]", e);
   }
 };
 
 // =============================================================================
-// 3. SERVICES (LOCAL HELPERS)
+// 3. SERVICE LAYER (BUSINESS LOGIC)
 // =============================================================================
 
-class BroadcastService {
+class BroadcastEngine {
   /**
-   * Безопасная рассылка сообщений с учетом лимитов Telegram.
-   * @param {string} text - Текст сообщения
-   * @param {Array} users - Массив пользователей
-   * @param {Function} progressCallback - Коллбек прогресса (необязательно)
+   * Умная рассылка с соблюдением лимитов Telegram (30 msg/sec).
    */
-  static async send(text, users, progressCallback) {
-    const BATCH_SIZE = 20; // Сообщений за раз
-    const DELAY_MS = 1000; // Пауза между пачками
-    let success = 0;
-    let fail = 0;
+  static async execute(text, userIds) {
+    const BATCH_SIZE = 25;
+    const INTERVAL = 1100; // Чуть больше секунды для безопасности
+    let success = 0,
+      fail = 0;
 
-    // Разбиваем на пачки (Chunking)
-    for (let i = 0; i < users.length; i += BATCH_SIZE) {
-      const batch = users.slice(i, i + BATCH_SIZE);
-
-      const promises = batch.map((u) =>
+    for (let i = 0; i < userIds.length; i += BATCH_SIZE) {
+      const chunk = userIds.slice(i, i + BATCH_SIZE);
+      const tasks = chunk.map((id) =>
         bot
-          .sendMessage(u.telegram_id, `📢 <b>НОВОСТИ:</b>\n\n${text}`, {
+          .sendMessage(id, `🔔 <b>ОПОВЕЩЕНИЕ:</b>\n\n${text}`, {
             parse_mode: "HTML",
           })
           .then(() => success++)
           .catch(() => fail++),
       );
 
-      await Promise.all(promises);
-
-      if (i + BATCH_SIZE < users.length) {
-        await new Promise((r) => setTimeout(r, DELAY_MS)); // Rate Limiting
-      }
+      await Promise.all(tasks);
+      if (i + BATCH_SIZE < userIds.length)
+        await new Promise((r) => setTimeout(r, INTERVAL));
     }
-
     return { success, fail };
   }
 }
@@ -137,130 +157,148 @@ class BroadcastService {
 
 const AdminController = {
   /**
-   * Главное меню админки
+   * Панель управления (Dashboard)
    */
-  async openPanel(msg) {
+  async dashboard(msg) {
     await bot.sendMessage(msg.chat.id, UI.MESSAGES.PANEL_HEADER, {
       parse_mode: "HTML",
-      reply_markup: UI.KEYBOARDS.ADMIN_MAIN,
+      reply_markup: UI.KEYBOARDS.MAIN,
     });
   },
 
   /**
-   * Статистика и Финансы
+   * Отчет по финансам и KPI
    */
-  async showStats(msg) {
-    const kpi = await db.getKPI();
-    const activeOrders = await OrderService.getActiveOrders(null, "admin");
-    const accounts = await db.getAccounts(null, "admin");
+  async financeReport(msg) {
+    const startT = Date.now();
+    const [kpi, activeOrders, accounts] = await Promise.all([
+      db.getKPI(),
+      OrderService.getActiveOrders(null, "admin"),
+      db.getAccounts(null, "admin"),
+    ]);
 
     const totalCash = accounts.reduce(
-      (acc, val) => acc + parseFloat(val.balance),
+      (sum, acc) => sum + Number(acc.balance),
       0,
     );
 
-    let accountsList = "";
-    accounts.forEach((acc) => {
-      const icon = acc.type === "bank" ? "💳" : "💵";
-      accountsList += `▫️ ${icon} ${acc.name}: <b>${UI.FORMATTERS.money(acc.balance)}</b>\n`;
-    });
+    const accRows = accounts
+      .map(
+        (a) =>
+          `▫️ ${a.type === "bank" ? "💳" : "💵"} ${a.name}: <b>${UI.FORMATTERS.money(a.balance)}</b>`,
+      )
+      .join("\n");
 
     const report =
-      `📊 <b>СВОДНЫЙ ОТЧЕТ</b>\n` +
+      `📊 <b>ФИНАНСОВАЯ СВОДКА</b>\n` +
+      `🕒 <i>${UI.FORMATTERS.date(new Date())}</i>\n` +
       `➖➖➖➖➖➖➖➖➖➖\n` +
-      `💰 <b>Выручка (Gross):</b> ${UI.FORMATTERS.money(kpi.revenue)}\n` +
-      `📉 <b>Чистая прибыль (Net):</b> ${UI.FORMATTERS.money(kpi.profit)}\n` +
-      `🛠 <b>Активные заказы:</b> ${activeOrders.length}\n` +
+      `💸 <b>Выручка:</b> ${UI.FORMATTERS.money(kpi.revenue)}\n` +
+      `📉 <b>Прибыль:</b> ${UI.FORMATTERS.money(kpi.profit)}\n` +
+      `🏗 <b>В работе:</b> ${activeOrders.length} заказов\n` +
       `➖➖➖➖➖➖➖➖➖➖\n` +
-      `🏦 <b>БАЛАНС КАСС (${UI.FORMATTERS.money(totalCash)}):</b>\n` +
-      `${accountsList}\n` +
-      `<i>📅 ${UI.FORMATTERS.date(new Date())}</i>`;
+      `🏦 <b>БАЛАНСЫ (${UI.FORMATTERS.money(totalCash)}):</b>\n${accRows}`;
 
     await bot.sendMessage(msg.chat.id, report, { parse_mode: "HTML" });
+    console.log(`⏱ [PERF] Report generated in ${Date.now() - startT}ms`);
   },
 
   /**
-   * Управление персоналом
+   * Создание заказа вручную (Manual Order Entry)
    */
-  async showEmployees(msg) {
-    const employees = await db.getEmployees();
+  async manualOrder(msg, match) {
+    // Regex: /neworder +77771112233 50 150000
+    const [_, rawPhone, rawArea, rawPrice] = match;
+    const area = parseInt(rawArea);
+    const price = parseInt(rawPrice);
 
-    if (employees.length === 0) {
-      return bot.sendMessage(msg.chat.id, "🤷‍♂️ Список сотрудников пуст.");
-    }
-
-    let list = "<b>👥 ПЕРСОНАЛ:</b>\n\n";
-    employees.forEach((u, index) => {
-      const roleIcons = { admin: "👑", manager: "👷‍♂️" };
-      const link = u.username
-        ? `@${u.username}`
-        : `ID: <code>${u.telegram_id}</code>`;
-      list += `${index + 1}. ${roleIcons[u.role] || "👤"} <b>${u.first_name}</b>\n`;
-      list += `   └ ${link} — ${u.role.toUpperCase()}\n`;
-    });
-
-    list +=
-      `\n⚙️ <b>Команды управления:</b>\n` +
-      `/setrole [ID] [manager/admin/client]\n` +
-      `<i>Пример: /setrole 12345678 manager</i>`;
-
-    await bot.sendMessage(msg.chat.id, list, { parse_mode: "HTML" });
-  },
-
-  /**
-   * Изменение роли пользователя
-   */
-  async setRole(msg, match) {
-    const targetId = match[1];
-    const newRole = match[2].toLowerCase();
-
-    if (!["admin", "manager", "client"].includes(newRole)) {
-      return bot.sendMessage(
-        msg.chat.id,
-        "⚠️ Недопустимая роль. Используйте: admin, manager, client",
-      );
+    if (isNaN(area) || isNaN(price)) {
+      return bot.sendMessage(msg.chat.id, UI.MESSAGES.MANUAL_ORDER_HELP, {
+        parse_mode: "HTML",
+      });
     }
 
     try {
-      // Создаем имя для личной кассы, если это сотрудник
-      const cashierName = `Сотрудник ${targetId}`;
-      await db.promoteUser(targetId, newRole, cashierName);
+      // 1. Создаем заказ в системе
+      const order = await OrderService.createManualOrder(msg.from.id, {
+        clientName: "Ручной ввод",
+        clientPhone: rawPhone,
+        area,
+        price,
+      });
 
+      // 2. Подтверждаем админу
       await bot.sendMessage(
         msg.chat.id,
-        `✅ <b>Права обновлены!</b>\nПользователь <code>${targetId}</code> теперь <b>${newRole.toUpperCase()}</b>`,
+        `✅ <b>Заказ #${order.id} создан!</b>\nСумма: ${UI.FORMATTERS.money(price)}`,
         { parse_mode: "HTML" },
       );
 
-      // Уведомление пользователю
-      bot
-        .sendMessage(
-          targetId,
-          `🆙 <b>ВАШ СТАТУС ОБНОВЛЕН</b>\n` +
-            `Текущая роль: <b>${newRole.toUpperCase()}</b>\n` +
-            `Введите /start для обновления меню.`,
-          { parse_mode: "HTML" },
-        )
-        .catch(() => {}); // Игнорируем ошибку, если бот заблокирован пользователем
+      // 3. 🔥 ОТПРАВЛЯЕМ УВЕДОМЛЕНИЕ В КАНАЛ (Notifier)
+      if (config.bot.channelId) {
+        const channelMsg =
+          `⚡️ <b>НОВЫЙ ЗАКАЗ (MANUAL)</b>\n` +
+          `➖➖➖➖➖➖➖➖\n` +
+          `🆔 <b>#${order.id}</b>\n` +
+          `📞 Контакт: ${rawPhone}\n` +
+          `📐 Объем: ${area} м²\n` +
+          `💰 Бюджет: <b>${UI.FORMATTERS.money(price)}</b>\n` +
+          `👤 Менеджер: ${msg.from?.first_name || "Admin"}`;
+
+        // Отправляем тихо, если это ночь (опционально), или всегда
+        await bot
+          .sendMessage(config.bot.channelId, channelMsg, { parse_mode: "HTML" })
+          .catch((err) => console.error(`⚠️ [NOTIFY FAIL] ${err.message}`));
+      }
     } catch (e) {
-      console.error(e);
-      bot.sendMessage(msg.chat.id, "❌ Ошибка БД при смене роли.");
+      console.error("❌ [MANUAL ORDER]", e);
+      bot.sendMessage(msg.chat.id, "❌ Ошибка создания заказа.");
     }
   },
 
   /**
-   * Массовая рассылка
+   * Управление ролями (HR)
+   */
+  async setRole(msg, match) {
+    const [_, targetId, role] = match;
+    const validRoles = ["admin", "manager", "client"];
+
+    if (!validRoles.includes(role.toLowerCase())) return;
+
+    try {
+      await db.promoteUser(
+        targetId,
+        role.toLowerCase(),
+        `Сотрудник ${targetId}`,
+      );
+      await bot.sendMessage(
+        msg.chat.id,
+        `✅ Пользователь <code>${targetId}</code> теперь <b>${role.toUpperCase()}</b>`,
+        { parse_mode: "HTML" },
+      );
+
+      // Notify user
+      bot
+        .sendMessage(
+          targetId,
+          `🆙 Вам выданы права: <b>${role.toUpperCase()}</b>`,
+          { parse_mode: "HTML" },
+        )
+        .catch(() => {});
+    } catch (e) {
+      bot.sendMessage(msg.chat.id, "❌ Ошибка базы данных.");
+    }
+  },
+
+  /**
+   * Массовая рассылка (Broadcast)
    */
   async broadcast(msg, match) {
     const text = match[1];
-    if (!text || text.length < 5)
-      return bot.sendMessage(
-        msg.chat.id,
-        "⚠️ Текст рассылки слишком короткий.",
-      );
+    if (!text) return;
 
     const res = await db.query("SELECT telegram_id FROM users");
-    const users = res.rows;
+    const users = res.rows.map((r) => r.telegram_id);
 
     await bot.sendMessage(
       msg.chat.id,
@@ -268,130 +306,73 @@ const AdminController = {
       { parse_mode: "HTML" },
     );
 
-    const startTime = Date.now();
-    const { success, fail } = await BroadcastService.send(text, users);
-    const duration = Date.now() - startTime;
+    const start = Date.now();
+    const { success, fail } = await BroadcastEngine.execute(text, users);
 
     await bot.sendMessage(
       msg.chat.id,
-      UI.MESSAGES.BROADCAST_REPORT(success, fail, duration),
+      UI.MESSAGES.BROADCAST_DONE(success, fail, Date.now() - start),
       { parse_mode: "HTML" },
     );
   },
 
   /**
-   * Создание заказа вручную (Manual Order)
+   * Отладочная команда для проверки ID
    */
-  async manualOrder(msg, match) {
-    const [_, phone, areaStr, priceStr] = match;
-    const area = parseInt(areaStr);
-    const price = parseInt(priceStr);
+  async debugId(msg) {
+    const debugInfo =
+      `🕵️‍♂️ <b>DEBUG INFO</b>\n` +
+      `👤 Your ID (msg.from): <code>${msg.from?.id}</code>\n` +
+      `💬 Chat ID (msg.chat): <code>${msg.chat.id}</code>\n` +
+      `🔑 Owner ID (env): <code>${config.bot.ownerId}</code>\n` +
+      `📁 Context: ${msg.chat.type}`;
 
-    if (isNaN(area) || isNaN(price)) {
-      return bot.sendMessage(msg.chat.id, UI.MESSAGES.INVALID_INPUT, {
-        parse_mode: "HTML",
-      });
-    }
-
-    try {
-      const order = await OrderService.createManualOrder(msg.from.id, {
-        clientName: "Клиент (Телефон)",
-        clientPhone: phone,
-        area: area,
-        price: price,
-      });
-
-      await bot.sendMessage(
-        msg.chat.id,
-        `✅ <b>Заказ #${order.id} создан успешно!</b>\n` +
-          `📞 ${phone} | 🏠 ${area}м² | 💰 ${UI.FORMATTERS.money(price)}`,
-        { parse_mode: "HTML" },
-      );
-    } catch (e) {
-      console.error("Manual Order Error:", e);
-      bot.sendMessage(msg.chat.id, "❌ Ошибка создания заказа.");
-    }
-  },
-
-  /**
-   * Системная диагностика
-   */
-  async systemHealth(msg) {
-    const mem = process.memoryUsage();
-    const uptime = process.uptime();
-    const settings = await db.getSettings();
-
-    const status =
-      `🖥 <b>SYSTEM STATUS</b>\n` +
-      `⏱ Uptime: ${Math.floor(uptime / 60)} min\n` +
-      `💾 RAM: ${Math.round(mem.rss / 1024 / 1024)} MB\n` +
-      `🔌 DB Connection: OK\n` +
-      `⚙️ Config Loaded: ${Object.keys(settings).length} keys`;
-
-    bot.sendMessage(msg.chat.id, status, { parse_mode: "HTML" });
-  },
-
-  async showMyId(msg) {
-    const userId = msg.from.id;
-    const user = await db.upsertUser(userId, msg.from.first_name);
-    bot.sendMessage(
-      msg.chat.id,
-      `🆔 <b>ID:</b> <code>${userId}</code>\n` +
-        `🎭 <b>Role:</b> ${user.role}\n` +
-        `💬 <b>Chat:</b> <code>${msg.chat.id}</code>`,
-      { parse_mode: "HTML" },
-    );
+    await bot.sendMessage(msg.chat.id, debugInfo, { parse_mode: "HTML" });
   },
 };
 
 // =============================================================================
-// 5. HANDLER REGISTRATION
+// 5. ROUTER CONFIGURATION
 // =============================================================================
 
 export const setupAdminHandlers = () => {
-  // UI Commands
-  bot.onText(/\/admin/, AdminGuard(AdminController.openPanel));
-  bot.onText(/👑 Админ-панель/, AdminGuard(AdminController.openPanel));
-  bot.onText(/📊 Статистика \(KPI\)/, AdminGuard(AdminController.showStats));
-  bot.onText(/👥 Сотрудники/, AdminGuard(AdminController.showEmployees));
+  // RegExp Commands
+  const R = {
+    ADMIN_PANEL: /^\/admin|👑/i,
+    STATS: /KPI|Статистика/i,
+    MANUAL_ORDER: /^\/neworder\s+([+\d\s\-\(\)]+)\s+(\d+)\s+(\d+)/,
+    SET_ROLE: /^\/setrole (\d+) (admin|manager|client)/i,
+    BROADCAST: /^\/broadcast\s+(.+)/s,
+    DEBUG: /^\/debug_id/,
+  };
 
-  // Action Commands
-  // Regex: /setrole 12345678 manager
+  // Register Routes
+  bot.onText(R.ADMIN_PANEL, AdminGuard(AdminController.dashboard));
+  bot.onText(R.STATS, AdminGuard(AdminController.financeReport));
+  bot.onText(R.MANUAL_ORDER, AdminGuard(AdminController.manualOrder));
+  bot.onText(R.SET_ROLE, AdminGuard(AdminController.setRole));
+  bot.onText(R.BROADCAST, AdminGuard(AdminController.broadcast));
+
+  // Public Debug (Safe)
+  bot.onText(R.DEBUG, AdminController.debugId);
+
+  // Сотрудники
   bot.onText(
-    /\/setrole (\d+) (admin|manager|client)/i,
-    AdminGuard(AdminController.setRole),
-  );
-
-  // Regex: /broadcast Hello World
-  bot.onText(/\/broadcast (.+)/s, AdminGuard(AdminController.broadcast)); // s flag allows multiline match
-
-  // Regex: /neworder +77001112233 50 150000
-  // Поддерживает телефоны с +, пробелами, скобками
-  bot.onText(
-    /\/neworder\s+([\+\d\s\-\(\)]+)\s+(\d+)\s+(\d+)/,
-    AdminGuard(AdminController.manualOrder),
-  );
-
-  // Utility Commands
-  bot.onText(/\/ping/, AdminGuard(AdminController.systemHealth));
-  bot.onText(/\/myid/, AdminController.showMyId); // Public safe
-
-  // Help
-  bot.onText(
-    /\/help_admin/,
+    /👥 Сотрудники/i,
     AdminGuard(async (msg) => {
-      const text =
-        `🛠 <b>СПРАВКА АДМИНИСТРАТОРА</b>\n\n` +
-        `<b>1. Управление ролями:</b>\n` +
-        `/setrole [ID] [role] - Назначить права\n\n` +
-        `<b>2. Создание заказа (по звонку):</b>\n` +
-        `/neworder [Тел] [М²] [Цена]\n` +
-        `<i>Пример: /neworder +77071234567 45 200000</i>\n\n` +
-        `<b>3. Рассылка:</b>\n` +
-        `/broadcast [Текст] - Отправить всем пользователям`;
-      bot.sendMessage(msg.chat.id, text, { parse_mode: "HTML" });
+      const users = await db.getEmployees();
+      const list =
+        users
+          .map(
+            (u) =>
+              `${u.role === "admin" ? "👑" : "👷"} <b>${u.first_name}</b> (ID: <code>${u.telegram_id}</code>)`,
+          )
+          .join("\n") || "Список пуст";
+      bot.sendMessage(msg.chat.id, `<b>ПЕРСОНАЛ:</b>\n\n${list}`, {
+        parse_mode: "HTML",
+      });
     }),
   );
 
-  console.log("✅ [Admin] Handlers initialized.");
+  console.log("✅ [ADMIN] Module initialized.");
 };
