@@ -37,7 +37,7 @@ const IS_PROD = process.env.NODE_ENV === "production";
 // =============================================================================
 // 1. ИНИЦИАЛИЗАЦИЯ TELEGRAM БОТА
 // =============================================================================
-const bot = new Telegraf(config.botToken);
+const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // Middleware бота
 bot.use(telegrafSession()); // Включаем поддержку сессий (ctx.session)
