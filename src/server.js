@@ -2,7 +2,7 @@
  * @file src/server.js
  * @description REST API для CRM-системы (ProElectro Enterprise).
  * Интегрирована новая финансовая модель и строгий учет расходов.
- * @version 7.0.0 (Production Ready)
+ * @version 7.5.0 (Full Expenses Support)
  */
 
 import express from "express";
@@ -36,7 +36,7 @@ export const startServer = () => {
   );
   app.use(
     cors({
-      origin: config.server.env === "production" ? false : "*", // В проде только свой домен
+      origin: config.server.env === "production" ? false : "*",
       credentials: true,
     }),
   );
@@ -50,7 +50,7 @@ export const startServer = () => {
   app.use(express.json({ limit: "5mb" }));
   app.use(express.urlencoded({ extended: true }));
 
-  // Сессии (храним в памяти для скорости, в проде лучше Redis)
+  // Сессии
   app.use(
     session({
       name: "proelectro_sid",
@@ -87,12 +87,11 @@ export const startServer = () => {
   // =========================================================================
   app.post("/api/login", (req, res) => {
     const { password } = req.body;
-    // Простая проверка хэша пароля
     const hash = crypto.createHash("sha256").update(password || "").digest("hex");
 
     if (hash === config.security.adminPassHash) {
       req.session.isAdmin = true;
-      req.session.telegram_id = 999; // ID Админа
+      req.session.telegram_id = 999;
       return res.json({ success: true, user: { role: "admin" } });
     }
     res.status(403).json({ error: "Неверный пароль" });
@@ -152,10 +151,12 @@ export const startServer = () => {
   app.get("/api/orders", requireAuth, async (req, res) => {
     try {
         const { status, limit = 20 } = req.query;
+        // 🔥 ВАЖНО: Добавили expenses_sum (сумма расходов по объекту)
         let query = `
             SELECT o.*, 
                    u.first_name as client_name, u.phone as client_phone, u.username as client_user,
-                   m.first_name as manager_name
+                   m.first_name as manager_name,
+                   (SELECT COALESCE(SUM(amount), 0) FROM object_expenses WHERE order_id = o.id) as expenses_sum
             FROM orders o
             LEFT JOIN users u ON o.user_id = u.telegram_id
             LEFT JOIN users m ON o.assignee_id = m.telegram_id
@@ -182,14 +183,10 @@ export const startServer = () => {
   app.post("/api/orders", requireAuth, async (req, res) => {
     const { area, rooms, wallType, clientName, clientPhone } = req.body;
     try {
-        // Создаем фейк-юзера если нет ID
         const fakeId = -Date.now(); 
         await db.upsertUser(fakeId, clientName, null, clientPhone);
 
-        // Считаем смету через наш Service
         const estimate = await OrderService.calculateEstimate(area, rooms, wallType);
-        
-        // Создаем заказ
         const order = await db.createOrder(fakeId, estimate);
         
         res.json({ success: true, orderId: order.id });
@@ -198,12 +195,12 @@ export const startServer = () => {
     }
   });
 
-  // POST Add Expense (Добавить расход к объекту)
+  // POST Add Expense (Добавить расход через Админку)
   app.post("/api/orders/:id/expenses", requireAuth, async (req, res) => {
       const { amount, category, comment } = req.body;
       const orderId = req.params.id;
       try {
-          await db.addObjectExpense(orderId, amount, category, comment);
+          await db.addObjectExpense(orderId, amount, category, comment || "Web Admin");
           res.json({ success: true });
       } catch (e) {
           res.status(500).json({ error: e.message });
@@ -223,9 +220,9 @@ export const startServer = () => {
     }
   });
 
-  // Проведение транзакции (Расход/Приход/Перевод)
+  // Проведение транзакции
   app.post("/api/finance/transaction", requireAuth, async (req, res) => {
-    const { accountId, amount, type, category, comment } = req.body; // type: income/expense
+    const { accountId, amount, type, category, comment } = req.body;
     try {
         await db.updateBalance({
             accountId,
@@ -257,7 +254,7 @@ export const startServer = () => {
   });
 
   // =========================================================================
-  // ⚙️ SETTINGS (Prices)
+  // ⚙️ SETTINGS
   // =========================================================================
   app.get("/api/settings", requireAuth, async (req, res) => {
     const settings = await db.getSettings();
@@ -279,7 +276,7 @@ export const startServer = () => {
   });
 
   // =========================================================================
-  // 🌍 FRONTEND SERVE (SPA)
+  // 🌍 SPA FALLBACK
   // =========================================================================
   app.use(express.static(path.join(__dirname, "../public")));
   app.get("*path", (req, res) => {

@@ -2,7 +2,7 @@
  * @file src/services/OrderService.js
  * @description Бизнес-логика CRM.
  * Калькулятор смет, Управление заказами, Финансовое закрытие.
- * @version 7.0.0 (Enterprise Logic)
+ * @version 7.1.0 (Expenses Tracking)
  */
 
 import { db } from "../db.js";
@@ -15,14 +15,11 @@ export class OrderService {
 
   /**
    * Расчет предварительной сметы по алгоритму "Умные точки"
-   * @param {number} area - Площадь (м2)
-   * @param {number} rooms - Количество комнат
-   * @param {string} wallType - Тип стен (concrete, brick, gasblock)
    */
   static async calculateEstimate(area, rooms, wallType) {
     const prices = await db.getSettings();
 
-    // 1. Алгоритм объемов (Volume Calculation)
+    // 1. Алгоритм объемов
     const vol = {
       // (Площадь * 0.8) + (Комнаты * 5)
       points: Math.ceil(area * 0.8 + rooms * 5),
@@ -30,7 +27,7 @@ export class OrderService {
       powerPoints: Math.ceil(area / 20),
       // Распред. коробки: 1 на комнату
       boxes: rooms,
-      // Штроба: Грубая оценка ~ 1.2м на м2 (или можно привязать к точкам)
+      // Штроба: ~ 1.2м на м2
       strobe: Math.ceil(area * 1.2),
       // Кабель: ~ 5.5м на м2
       cable: Math.ceil(area * 5.5),
@@ -38,7 +35,7 @@ export class OrderService {
       shieldModules: 12 + rooms * 2,
     };
 
-    // 2. Определение цен (Pricing Strategy)
+    // 2. Определение цен
     let pPoint = 0,
       pStrobe = 0;
 
@@ -56,7 +53,7 @@ export class OrderService {
         pStrobe = prices.price_strobe_gasblock || 800;
     }
 
-    // 3. Расчет стоимости работ (Labor Cost)
+    // 3. Расчет стоимости работ
     const cost = {
       points: (vol.points + vol.powerPoints) * pPoint,
       strobe: vol.strobe * pStrobe,
@@ -71,7 +68,6 @@ export class OrderService {
     const totalWork = Object.values(cost).reduce((a, b) => a + b, 0);
 
     // 4. Материал (Roughly estimate)
-    // Если нет настройки material_m2, берем 4000
     const matPrice = prices.material_m2 || 4000;
     const totalMat = Math.ceil(area * matPrice);
 
@@ -90,9 +86,6 @@ export class OrderService {
   // 🏗 ORDER MANAGEMENT (CRUD)
   // =========================================================================
 
-  /**
-   * Создание заказа (Конверсия из калькулятора)
-   */
   static async createOrder(userId, estimate) {
     return await db.createOrder(userId, {
       area: estimate.params.area,
@@ -102,31 +95,19 @@ export class OrderService {
     });
   }
 
-  /**
-   * Назначение мастера (Взять в работу)
-   */
   static async assignMaster(orderId, managerId) {
-    // Проверяем роль через SQL (или доверяем боту, здесь для скорости просто апдейт)
     await db.query(
       `UPDATE orders SET assignee_id = $1, status = 'work', updated_at = NOW() WHERE id = $2`,
       [managerId, orderId],
     );
   }
 
-  /**
-   * 🤖 AUTO-ASSIGN: Назначить случайного свободного менеджера
-   * Вызывается, если заказ висит долго.
-   */
   static async autoAssignMaster(orderId) {
-    // Берем всех менеджеров/админов
     const res = await db.query(
       "SELECT telegram_id FROM users WHERE role IN ('manager', 'admin')",
     );
     if (res.rows.length === 0) return null;
-
-    // Выбираем случайного (Simple Load Balancer)
     const randomMaster = res.rows[Math.floor(Math.random() * res.rows.length)];
-
     await this.assignMaster(orderId, randomMaster.telegram_id);
     return randomMaster.telegram_id;
   }
@@ -135,13 +116,6 @@ export class OrderService {
   // 💰 ФИНАНСОВОЕ ЗАКРЫТИЕ (CLOSING)
   // =========================================================================
 
-  /**
-   * Закрытие объекта. Самый важный метод.
-   * @param {number} orderId
-   * @param {number} finalSum - Итоговая сумма, которую заплатил клиент
-   * @param {number} walletId - ID кошелька, куда упали деньги
-   * @param {number} userId - Кто закрывает заказ
-   */
   static async completeOrder(orderId, finalSum, walletId, userId) {
     return db.transaction(async (client) => {
       // 1. Считаем расходы объекта
@@ -161,7 +135,7 @@ export class OrderService {
       const staffPercent = (settingsRes.rows[0]?.value || 80) / 100;
       const masterSalary = Math.floor(profit * staffPercent);
 
-      // 4. Обновляем заказ (Статус DONE)
+      // 4. Обновляем заказ
       await client.query(
         `UPDATE orders SET
                 status = 'done',
@@ -173,24 +147,20 @@ export class OrderService {
         [finalSum, profit, orderId],
       );
 
-      // 5. Проводим приход денег в кассу (Income)
+      // 5. Проводим приход денег
       await client.query(
         `UPDATE accounts SET balance = balance + $1, updated_at = NOW() WHERE id = $2`,
         [finalSum, walletId],
       );
 
-      // 6. Пишем лог транзакции
+      // 6. Пишем лог
       await client.query(
         `INSERT INTO transactions (account_id, user_id, amount, type, category, comment, created_at)
              VALUES ($1, $2, $3, 'income', 'order_payment', $4, NOW())`,
         [walletId, userId, finalSum, `Закрытие заказа #${orderId}`],
       );
 
-      return {
-        profit,
-        expenses,
-        masterSalary,
-      };
+      return { profit, expenses, masterSalary };
     });
   }
 
@@ -198,13 +168,21 @@ export class OrderService {
   // 📊 READ (GETTERS)
   // =========================================================================
 
+  // 🔥 ОБНОВЛЕННЫЙ МЕТОД С ПОДСЧЕТОМ РАСХОДОВ
   static async getManagerActiveOrders(managerId) {
     const sql = `
-        SELECT o.id, o.status, o.created_at, o.total_price, o.area, o.wall_type,
-               u.first_name as client_name, u.phone as client_phone, u.username as client_user
+        SELECT 
+            o.id, o.status, o.created_at, o.total_price, 
+            o.area, o.wall_type,
+            u.first_name as client_name, 
+            u.phone as client_phone, 
+            u.username as client_user,
+            -- Подзапрос для суммы расходов
+            (SELECT COALESCE(SUM(amount), 0) FROM object_expenses WHERE order_id = o.id) as expenses_sum
         FROM orders o
         JOIN users u ON o.user_id = u.telegram_id
-        WHERE o.assignee_id = $1 AND o.status IN ('work', 'discuss')
+        WHERE o.assignee_id = $1 
+        AND o.status IN ('work', 'discuss') 
         ORDER BY o.updated_at DESC
     `;
     const res = await db.query(sql, [managerId]);

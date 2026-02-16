@@ -1,140 +1,98 @@
 /**
  * @file public/js/api.js
- * @description API Client for ProElectro ERP.
- * Handles HTTP requests, Authentication & Error Management.
- * @version 6.5.0 (Mobile Ready)
+ * @description Клиентская библиотека для работы с API.
+ * Все запросы к бэкенду живут здесь.
  */
 
-const API_URL = '/api';
+const API_BASE = '/api';
 
-class API {
-    // Токенді (сессия статусын) LocalStorage-дан аламыз
-    static get token() {
-        return localStorage.getItem('erp_token');
-    }
-
-    // Негізгі сұраныс жіберу функциясы
-    static async request(endpoint, method = 'GET', body = null) {
-        const headers = { 'Content-Type': 'application/json' };
-        
-        // UI логикасы үшін ғана (Сервер cookie тексереді)
-        if (this.token) {
-            headers['Authorization'] = `Bearer ${this.token}`;
-        }
-
-        try {
-            const response = await fetch(API_URL + endpoint, {
-                method,
-                headers,
-                body: body ? JSON.stringify(body) : null
-            });
-
-            // Егер авторизация қатесі болса (401) -> Шығарып жібереміз
-            if (response.status === 401) {
-                this.logout();
-                location.reload();
-                throw new Error('Сессия аяқталды.');
-            }
-
-            const data = await response.json();
-
-            // Егер сервер қате қайтарса
-            if (!response.ok) {
-                throw new Error(data.error || 'Server Error');
-            }
-
-            return data;
-        } catch (error) {
-            console.error(`API Error [${endpoint}]:`, error);
-            throw error;
-        }
-    }
-
-    // ============================================================
-    // 🔐 AUTHENTICATION
-    // ============================================================
+class ApiClient {
     
-    static async login(password) {
-        const res = await this.request('/login', 'POST', { password });
-        if (res.success) {
-            localStorage.setItem('erp_token', 'session_active'); 
-        }
-        return res;
+    // --- AUTH ---
+    async login(password) {
+        const res = await fetch(`${API_BASE}/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password })
+        });
+        if (!res.ok) throw new Error('Неверный пароль');
+        return await res.json();
     }
 
-    static async checkAuth() {
-        return this.request('/me');
+    async logout() {
+        await fetch(`${API_BASE}/logout`, { method: 'POST' });
+        window.location.reload();
     }
 
-    static async logout() {
+    async checkAuth() {
         try {
-            await this.request('/logout', 'POST');
-        } finally {
-            localStorage.removeItem('erp_token');
+            const res = await fetch(`${API_BASE}/me`);
+            const data = await res.json();
+            return data.isAdmin;
+        } catch (e) {
+            return false;
         }
     }
 
-    // ============================================================
-    // 🏗 ORDER MANAGEMENT
-    // ============================================================
-
-    static async getOrders(params = {}) {
-        const searchParams = new URLSearchParams(params);
-        return this.request(`/orders?${searchParams.toString()}`);
+    // --- DASHBOARD ---
+    async getDashboardData() {
+        return this._request('/analytics/kpi');
     }
 
-    // Бот арқылы емес, қолмен заказ ашу
-    static async createOrder(data) {
-        return this.request('/orders', 'POST', data);
+    // --- ORDERS ---
+    async getOrders(status = 'all') {
+        return this._request(`/orders?status=${status}&limit=50`);
     }
 
-    // Заказды жаңарту (Статус, Баға, Шығын, Менеджер)
-    static async updateOrder(id, data) {
-        return this.request(`/orders/${id}`, 'PATCH', data);
+    async createOrder(data) {
+        return this._request('/orders', 'POST', data);
     }
 
-    // ============================================================
-    // 💰 FINANCE
-    // ============================================================
-
-    static async getAccounts() {
-        return this.request('/accounts');
+    async addExpense(orderId, data) {
+        return this._request(`/orders/${orderId}/expenses`, 'POST', data);
     }
 
-    static async transfer(fromId, toId, amount, comment) {
-        return this.request('/accounts/transfer', 'POST', { fromId, toId, amount, comment });
+    // --- FINANCE ---
+    async getAccounts() {
+        return this._request('/accounts');
     }
 
-    // 🔥 ЖАҢА: Қаржылық статистика (Кіріс/Шығыс категориялары)
-    static async getFinanceStats() {
-        return this.request('/analytics/finance');
+    async getTransactions() {
+        return this._request('/finance/history');
     }
 
-    // ============================================================
-    // 📊 ANALYTICS (KPI)
-    // ============================================================
-
-    static async getKPI() {
-        return this.request('/analytics/kpi');
+    // --- SETTINGS ---
+    async getSettings() {
+        return this._request('/settings');
     }
 
-    // ============================================================
-    // 👥 CRM & SETTINGS
-    // ============================================================
-
-    static async getUsers() {
-        return this.request('/users');
+    async updateSetting(key, value) {
+        return this._request('/settings', 'POST', { key, value });
     }
 
-    static async updateUserRole(id, role) {
-        return this.request(`/users/${id}/role`, 'POST', { role });
-    }
+    // --- INTERNAL HELPER ---
+    async _request(endpoint, method = 'GET', body = null) {
+        const options = {
+            method,
+            headers: { 'Content-Type': 'application/json' }
+        };
+        if (body) options.body = JSON.stringify(body);
 
-    static async getSettings() {
-        return this.request('/settings');
-    }
-
-    static async updateSettings(data) {
-        return this.request('/settings', 'POST', data);
+        const res = await fetch(`${API_BASE}${endpoint}`, options);
+        
+        if (res.status === 401) {
+            // Если сессия протухла — выкидываем на логин
+            window.location.reload();
+            throw new Error('Unauthorized');
+        }
+        
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error || 'Server Error');
+        }
+        
+        return await res.json();
     }
 }
+
+const api = new ApiClient();
