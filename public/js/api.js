@@ -1,98 +1,46 @@
 /**
- * @file public/js/api.js
- * @description Клиентская библиотека для работы с API.
- * Все запросы к бэкенду живут здесь.
+ * 🔌 API Client (Singleton)
+ * Отвечает за общение с сервером. Никакой UI логики.
  */
-
-const API_BASE = '/api';
-
 class ApiClient {
-    
-    // --- AUTH ---
-    async login(password) {
-        const res = await fetch(`${API_BASE}/login`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password })
-        });
-        if (!res.ok) throw new Error('Неверный пароль');
-        return await res.json();
-    }
+  constructor(baseUrl = "/api/execute") {
+    this.baseUrl = baseUrl;
+  }
 
-    async logout() {
-        await fetch(`${API_BASE}/logout`, { method: 'POST' });
-        window.location.reload();
-    }
+  async request(action, payload = {}) {
+    try {
+      const response = await fetch(this.baseUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, payload }),
+      });
 
-    async checkAuth() {
-        try {
-            const res = await fetch(`${API_BASE}/me`);
-            const data = await res.json();
-            return data.isAdmin;
-        } catch (e) {
-            return false;
-        }
-    }
+      if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
 
-    // --- DASHBOARD ---
-    async getDashboardData() {
-        return this._request('/analytics/kpi');
-    }
+      const json = await response.json();
+      if (!json.ok) throw new Error(json.error || "Unknown API Error");
 
-    // --- ORDERS ---
-    async getOrders(status = 'all') {
-        return this._request(`/orders?status=${status}&limit=50`);
+      return json.data;
+    } catch (error) {
+      console.error("API Request Failed:", error);
+      // Можно добавить всплывающее уведомление об ошибке здесь
+      throw error;
     }
+  }
 
-    async createOrder(data) {
-        return this._request('/orders', 'POST', data);
-    }
-
-    async addExpense(orderId, data) {
-        return this._request(`/orders/${orderId}/expenses`, 'POST', data);
-    }
-
-    // --- FINANCE ---
-    async getAccounts() {
-        return this._request('/accounts');
-    }
-
-    async getTransactions() {
-        return this._request('/finance/history');
-    }
-
-    // --- SETTINGS ---
-    async getSettings() {
-        return this._request('/settings');
-    }
-
-    async updateSetting(key, value) {
-        return this._request('/settings', 'POST', { key, value });
-    }
-
-    // --- INTERNAL HELPER ---
-    async _request(endpoint, method = 'GET', body = null) {
-        const options = {
-            method,
-            headers: { 'Content-Type': 'application/json' }
-        };
-        if (body) options.body = JSON.stringify(body);
-
-        const res = await fetch(`${API_BASE}${endpoint}`, options);
-        
-        if (res.status === 401) {
-            // Если сессия протухла — выкидываем на логин
-            window.location.reload();
-            throw new Error('Unauthorized');
-        }
-        
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.error || 'Server Error');
-        }
-        
-        return await res.json();
-    }
+  // Удобные методы-обертки
+  getStats() {
+    return this.request("get_stats");
+  }
+  getOrders() {
+    return this.request("get_orders");
+  }
+  getUsers() {
+    return this.request("get_users");
+  }
+  updateOrderStatus(id, status) {
+    return this.request("update_status", { id, status });
+  }
 }
 
-const api = new ApiClient();
+export const api = new ApiClient();
