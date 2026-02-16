@@ -16,21 +16,15 @@ const { Pool } = pg;
 // КОНФИГУРАЦИЯ ПУЛА (POOL CONFIGURATION)
 // =============================================================================
 const poolConfig = {
-  host: config.db.host,
-  port: config.db.port,
-  user: config.db.user,
-  password: config.db.password,
-  database: config.db.database,
-
-  // Максимальное количество клиентов в пуле.
-  // Значение 20 оптимально для большинства средних нагрузок.
-  max: 20,
-
-  // Время простоя клиента (в миллисекундах) перед его закрытием.
-  idleTimeoutMillis: 30000,
-
-  // Время ожидания (в миллисекундах) при попытке подключения.
-  connectionTimeoutMillis: 2000,
+  // Используем готовую строку со всеми данными
+  connectionString: config.db.connectionString, 
+  
+  // SSL настройки для продакшена
+  ssl: config.db.ssl, 
+  
+  max: config.db.max || 20,
+  idleTimeoutMillis: config.db.idleTimeoutMillis || 30000,
+  connectionTimeoutMillis: config.db.connectionTimeoutMillis || 5000,
 };
 
 // Создаем единственный экземпляр пула на все приложение (Singleton)
