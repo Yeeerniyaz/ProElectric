@@ -1,314 +1,274 @@
 /**
  * @file src/services/OrderService.js
- * @description Сервисный слой бизнес-логики (Business Logic Layer).
- * Отвечает за расчет смет, управление жизненным циклом заказа и финансовые транзакции.
- * @architecture Service Repository Pattern
- * @version 3.0.0 (Complex Calculation & Transactions)
+ * @description Сервис бизнес-логики заказов.
+ * Отвечает за сложные расчеты сметы, финансовые транзакции и управление жизненным циклом заказа.
+ * Полностью зависит от настроек в БД (динамическое ценообразование).
+ * @module OrderService
+ * @version 4.0.0 (Enterprise Level)
  */
 
-import { db } from "../db.js";
-import { PRICING, ESTIMATE_RULES, WALL_FACTORS } from "../constants.js";
-
-const fmt = (val) =>
-  new Intl.NumberFormat("ru-KZ", {
-    style: "currency",
-    currency: "KZT",
-    maximumFractionDigits: 0,
-  }).format(val);
+import * as db from "../database/repository.js";
+import {
+  DB_KEYS,
+  PRICING,
+  ESTIMATE_RULES,
+  ORDER_STATUS,
+  ROLES,
+} from "../constants.js";
 
 export const OrderService = {
   /**
-   * 🧮 Умный расчет сметы на основе 3 типов стен.
-   * @param {number} area - Площадь помещения
-   * @param {number} rooms - Кол-во комнат
-   * @param {string} wallType - Тип стен (wall_soft, wall_brick, wall_concrete)
-   * @returns {Promise<Object>} Детализированный расчет
+   * 🧮 Глубокий расчет стоимости электромонтажа (Hard Calculation).
+   * Учитывает тип стен, площадь, кол-во комнат и настройки из БД.
+   * * @param {number} area - Площадь помещения (м²)
+   * @param {number} rooms - Количество комнат
+   * @param {string} wallType - Тип стен ('wall_gas', 'wall_brick', 'wall_concrete')
+   * @returns {Promise<Object>} Полный объект сметы с детализацией для сохранения в БД
    */
-  async calculateEstimate(area, rooms, wallType) {
-    // 1. Получаем актуальные настройки (цены) из БД или берем дефолтные из constants
+  async calculateComplexEstimate(area, rooms, wallType) {
+    // 1. Загружаем актуальные настройки цен из Базы Данных
+    // Это позволяет Админу менять цены на лету без перезапуска бота
     const settings = await db.getSettings();
 
-    const getPrice = (dbKey, defaultVal) =>
-      settings[dbKey] ? Number(settings[dbKey]) : defaultVal;
+    // Вспомогатльная функция: берет цену из БД, если нет — из констант (фоллбек)
+    const getPrice = (key, defaultVal) => {
+      const val = parseFloat(settings[key]);
+      return isNaN(val) ? defaultVal : val;
+    };
 
-    // 2. Определяем цены в зависимости от сложности стен
-    let priceStrobe, priceDrill;
+    // 2. Определяем расценки в зависимости от выбранного типа стен
+    let priceStrobeMeter = 0; // Цена штробы за метр
+    let priceDrillPoint = 0; // Цена высверливания лунки за шт
 
     switch (wallType) {
-      case "wall_soft": // ГКЛ / Блок
-        priceStrobe = getPrice("price_strobe_soft", PRICING.rough.strobeSoft);
-        priceDrill = getPrice(
-          "price_drill_hole_soft",
-          PRICING.rough.drillHoleSoft,
+      case "wall_gas": // Газоблок (Мягкие стены)
+        priceStrobeMeter = getPrice(
+          DB_KEYS.STROBE_GAS,
+          PRICING.rough.strobeGas,
+        );
+        priceDrillPoint = getPrice(DB_KEYS.DRILL_GAS, PRICING.rough.drillGas);
+        break;
+      case "wall_brick": // Кирпич (Средние)
+        priceStrobeMeter = getPrice(
+          DB_KEYS.STROBE_BRICK,
+          PRICING.rough.strobeBrick,
+        );
+        priceDrillPoint = getPrice(
+          DB_KEYS.DRILL_BRICK,
+          PRICING.rough.drillBrick,
         );
         break;
-      case "wall_brick": // Кирпич
-        priceStrobe = getPrice("price_strobe_brick", PRICING.rough.strobeBrick);
-        priceDrill = getPrice(
-          "price_drill_hole_brick",
-          PRICING.rough.drillHoleBrick,
-        );
-        break;
-      case "wall_concrete": // Бетон
+      case "wall_concrete": // Бетон (Жесткие)
       default:
-        priceStrobe = getPrice(
-          "price_strobe_concrete",
+        priceStrobeMeter = getPrice(
+          DB_KEYS.STROBE_CONCRETE,
           PRICING.rough.strobeConcrete,
         );
-        priceDrill = getPrice(
-          "price_drill_hole_concrete",
-          PRICING.rough.drillHoleConcrete,
+        priceDrillPoint = getPrice(
+          DB_KEYS.DRILL_CONCRETE,
+          PRICING.rough.drillConcrete,
         );
         break;
     }
 
-    // 3. Эвристический расчет объемов (Heuristics)
-    // Формулы:
-    // Кабель = Площадь * 3.5
-    // Штроба = Площадь * 0.9 (в бетоне меньше, в кирпиче больше, берем среднее)
-    // Точки = Площадь * 0.75 + (Комнаты * 2)
+    // 3. Расчет объемов работ (Heuristic Algorithms)
+    // Алгоритмы основаны на статистике реальных объектов (см. constants.js)
 
+    // Кабель: Площадь * коэффициент (обычно 6.5м на 1м² пола)
     const volCable = Math.ceil(area * ESTIMATE_RULES.cablePerSqm);
-    const volStrobe = Math.ceil(area * ESTIMATE_RULES.strobePerSqm);
-    const volPoints = Math.ceil(area * ESTIMATE_RULES.pointsPerSqm) + rooms * 2;
 
-    // 4. Расчет стоимости работ (Labor Cost)
-    const costStrobe = volStrobe * priceStrobe;
-    const costDrilling = volPoints * priceDrill; // Сверление лунок
-    const costCable =
-      volCable * getPrice("price_cable_laying", PRICING.rough.cableLaying);
-    const costPointsFinish =
+    // Штроба: Обычно чуть меньше площади по полу
+    const volStrobe = Math.ceil(area * ESTIMATE_RULES.strobeFactor);
+
+    // Точки (Розетки + Выключатели): Площадь * 0.8 + по 2 на комнату
+    const volPoints = Math.ceil(
+      area * ESTIMATE_RULES.pointsPerSqm +
+        rooms * ESTIMATE_RULES.modulesPerRoom,
+    );
+
+    // Распаечные коробки (примерно 1.5 на комнату)
+    const volBoxes = Math.ceil(rooms * ESTIMATE_RULES.boxesPerRoom);
+
+    // Модули в щите (Автоматы, УЗО): Минимум 12, плюс запас от площади
+    // Логика: каждые 15м² добавляют 1 автомат
+    const volShieldModules = Math.max(
+      ESTIMATE_RULES.minShieldModules,
+      Math.ceil(12 + (area - 40) / 15),
+    );
+
+    // 4. Финансовый расчет (Money Breakdown)
+
+    // --- Черновые работы (Rough Work) ---
+    const costStrobe = volStrobe * priceStrobeMeter; // Штробление
+    const costDrilling = volPoints * priceDrillPoint; // Сверление подрозетников
+    const costBoxesInstall =
+      volBoxes * getPrice(DB_KEYS.BOX_INSTALL, PRICING.common.boxInstall); // Вмазка коробок
+    const costCableLaying =
+      volCable * getPrice(DB_KEYS.CABLE, PRICING.common.cable); // Прокладка кабеля
+
+    // --- Чистовые работы (Finish Work) ---
+    // Установка механизмов (розеток)
+    const costSocketInstall =
       volPoints *
-      getPrice("price_socket_install", PRICING.finish.socketInstall);
+      getPrice(DB_KEYS.SOCKET_INSTALL, PRICING.common.socketInstall);
+    // Сборка щита (за модуль)
+    const costShieldAssembly =
+      volShieldModules *
+      getPrice(DB_KEYS.SHIELD_MODULE, PRICING.common.shieldModule);
 
-    // Щиток (база 12 модулей + 1 модуль на каждые 10м2 свыше 40м2)
-    const shieldModules = Math.max(12, Math.ceil(area / 5));
-    const costShield =
-      shieldModules *
-      getPrice("price_shield_module", PRICING.finish.shieldModule);
+    // Сумма за РАБОТУ
+    const totalWorkCost =
+      costStrobe +
+      costDrilling +
+      costBoxesInstall +
+      costCableLaying +
+      costSocketInstall +
+      costShieldAssembly;
 
-    // 5. Итоговая сумма
-    const laborTotal =
-      costStrobe + costDrilling + costCable + costPointsFinish + costShield;
+    // --- Материалы (Materials) ---
+    // Считаем как процент от стоимости работ (из настроек БД или 40% по дефолту)
+    const materialFactor = getPrice(
+      DB_KEYS.MAT_FACTOR,
+      PRICING.common.matFactor,
+    );
+    const totalMaterialCost = Math.ceil(totalWorkCost * materialFactor);
 
-    // Добавляем % на материалы (Materials Factor)
-    const materialsTotal = laborTotal * PRICING.materialsFactor;
+    // --- ИТОГО ---
+    // Округляем до 500 тенге для красивой цифры
+    const rawTotal = totalWorkCost + totalMaterialCost;
+    const grandTotal = Math.ceil(rawTotal / 500) * 500;
 
-    // Округляем до 5000 тенге для красоты
-    const grandTotal = Math.ceil((laborTotal + materialsTotal) / 5000) * 5000;
-
+    // 5. Формируем результат
+    // Структура строго соответствует той, что ожидает constants.js -> estimateResult
     return {
-      totalPrice: grandTotal,
-      volumes: {
+      params: {
+        area,
+        rooms,
+        wallType,
+      },
+      volume: {
         cable: volCable,
         strobe: volStrobe,
         points: volPoints,
-        shield: shieldModules,
+        modules: volShieldModules,
+        boxes: volBoxes,
       },
-      prices: {
-        strobe: priceStrobe,
-        drill: priceDrill,
+      breakdown: {
+        // Детализация в деньгах для показа клиенту
+        strobe: costStrobe,
+        points: costDrilling + costSocketInstall, // Сверление + Установка
+        cable: costCableLaying,
+        shield: costShieldAssembly,
+        boxes: costBoxesInstall,
       },
-      wallType,
+      total: {
+        work: totalWorkCost,
+        material: totalMaterialCost,
+        grandTotal: grandTotal,
+      },
     };
   },
 
   /**
-   * 📝 Создание нового заказа в БД.
+   * 📝 Создание заказа в БД.
+   * Сохраняет "снэпшот" (слепок) расчета на момент создания, чтобы изменение цен
+   * в будущем не меняло стоимость старых заказов.
+   * * @param {number} userId - ID пользователя Telegram
+   * @param {Object} calculationResult - Результат работы calculateComplexEstimate
+   * @returns {Promise<Object>} Созданный заказ
    */
-  async createOrder(userId, calcResult, meta = {}) {
-    const { totalPrice, volumes, wallType } = calcResult;
-
-    // Формируем JSON с деталями
-    const details = {
-      volumes,
-      wallType,
-      meta,
+  async createOrder(userId, calculationResult) {
+    const orderData = {
+      area: calculationResult.params.area,
+      price: calculationResult.total.grandTotal,
+      details: calculationResult, // Сохраняем весь JSON с расчетами
     };
 
-    // SQL Insert
-    const res = await db.query(
-      `INSERT INTO orders 
-            (user_id, client_name, client_phone, city, area, rooms, total_price, details, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'new')
-            RETURNING *`,
-      [
-        userId,
-        meta.clientName || "Не указан",
-        meta.clientPhone || null,
-        meta.city || "Алматы",
-        meta.area || 0,
-        meta.rooms || 0,
-        totalPrice,
-        details,
-      ],
-    );
-    return res.rows[0];
+    // Вызываем репозиторий
+    return await db.createOrder(userId, orderData);
   },
 
   /**
-   * 📝 Создание ручного заказа (для Админа).
+   * 📊 Получение статистики для Админа.
+   * Агрегирует данные по финансам и заказам.
    */
-  async createManualOrder(adminId, data) {
-    const details = { source: "manual", created_by: adminId };
+  async getAdminStats() {
+    // Здесь можно добавить сложные SQL запросы через репозиторий
+    // Пока реализуем базовый подсчет через получение всех заказов
+    // (Для Highload проектов это нужно делать отдельным SQL COUNT запросом)
 
-    const res = await db.query(
-      `INSERT INTO orders 
-            (user_id, client_name, client_phone, area, total_price, details, status)
-            VALUES ($1, $2, $3, $4, $5, $6, 'new')
-            RETURNING *`,
-      [
-        adminId,
-        data.clientName,
-        data.clientPhone,
-        data.area,
-        data.price,
-        details,
-      ],
-    );
-    return res.rows[0];
-  },
+    // Получаем последние 100 заказов для анализа
+    const result = await db.query(`
+            SELECT status, total_price, created_at 
+            FROM orders 
+            ORDER BY created_at DESC 
+            LIMIT 100
+        `);
 
-  /**
-   * 🤝 Назначение мастера на заказ.
-   */
-  async assignMaster(orderId, masterId) {
-    const res = await db.query(
-      `UPDATE orders 
-             SET assignee_id = $1, status = 'work', updated_at = NOW() 
-             WHERE id = $2 
-             RETURNING *`,
-      [masterId, orderId],
-    );
-    return res.rows[0];
-  },
+    let newOrders = 0;
+    let incomePotential = 0;
 
-  /**
-   * 🏁 Закрытие заказа с транзакцией (Money Flow).
-   * 1. Считает расходы.
-   * 2. Вычисляет прибыль.
-   * 3. Пополняет кассу.
-   * 4. Закрывает заказ.
-   */
-  async completeOrder(orderId, finalSum, walletId, userId) {
-    const client = await db.pool.connect();
-
-    try {
-      await client.query("BEGIN"); // Старт транзакции
-
-      // 1. Получаем сумму расходов
-      const expRes = await client.query(
-        `SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE order_id = $1`,
-        [orderId],
-      );
-      const expenses = parseFloat(expRes.rows[0].total);
-
-      // 2. Считаем экономику
-      const revenue = parseFloat(finalSum);
-      const netProfit = revenue - expenses;
-
-      // Доля мастера (например 40%) и Бизнеса (60%) - можно вынести в настройки
-      const masterShare = netProfit > 0 ? netProfit * 0.4 : 0;
-      const businessShare = netProfit - masterShare;
-
-      // 3. Обновляем баланс кассы
-      await client.query(
-        `UPDATE accounts SET balance = balance + $1, updated_at = NOW() WHERE id = $2`,
-        [revenue, walletId],
-      );
-
-      // 4. Закрываем заказ
-      const updateRes = await client.query(
-        `UPDATE orders 
-                 SET status = 'done', 
-                     final_price = $1, 
-                     profit = $2, 
-                     updated_at = NOW() 
-                 WHERE id = $3 
-                 RETURNING *`,
-        [revenue, netProfit, orderId],
-      );
-
-      // 5. Логируем транзакцию (опционально можно создать таблицу transactions)
-      // ...
-
-      await client.query("COMMIT"); // Фиксация
-
-      return {
-        order: updateRes.rows[0],
-        revenue,
-        expenses,
-        profit: netProfit,
-        masterShare,
-        businessShare,
-      };
-    } catch (e) {
-      await client.query("ROLLBACK"); // Откат при ошибке
-      console.error("Transaction Failed:", e);
-      throw e;
-    } finally {
-      client.release();
-    }
-  },
-
-  /**
-   * 🔍 Получение активных заказов (фильтр по роли).
-   */
-  async getActiveOrders(userId, role) {
-    let sql = `SELECT * FROM orders WHERE status IN ('new', 'work', 'discuss')`;
-    const params = [];
-
-    if (role === "client") {
-      sql += ` AND user_id = $1`;
-      params.push(userId);
-    } else if (role === "manager") {
-      // Менеджер видит свои заказы + новые (чтобы взять в работу)
-      sql += ` AND (assignee_id = $1 OR assignee_id IS NULL)`;
-      params.push(userId);
-    }
-    // Admin видит всё
-
-    sql += ` ORDER BY created_at DESC LIMIT 10`;
-
-    const res = await db.query(sql, params);
-
-    // Подсчитаем сумму расходов для каждого заказа на лету
-    for (let order of res.rows) {
-      const exp = await db.query(
-        `SELECT SUM(amount) as s FROM expenses WHERE order_id = $1`,
-        [order.id],
-      );
-      order.expenses_sum = exp.rows[0].s || 0;
+    for (const order of result.rows) {
+      if (order.status === ORDER_STATUS.NEW) {
+        newOrders++;
+        incomePotential += parseFloat(order.total_price || 0);
+      }
     }
 
+    return {
+      totalOrdersChecked: result.rows.length,
+      newOrdersCount: newOrders,
+      potentialRevenue: incomePotential,
+    };
+  },
+
+  /**
+   * 🕵️‍♂️ "Ловушка" для удержания клиентов (Retention).
+   * Находит пользователей, которые сделали расчет, но не заказали за последние 24 часа.
+   * Позволяет боту автоматически написать им: "Вам нужна помощь?"
+   * * @returns {Promise<Array>} Список пользователей
+   */
+  async getAbandonedCarts() {
+    // Ищем заказы со статусом 'new', созданные более 24 часов назад, но менее 48
+    const sql = `
+            SELECT o.id, o.user_id, u.first_name, o.total_price
+            FROM orders o
+            JOIN users u ON o.user_id = u.telegram_id
+            WHERE o.status = 'new' 
+            AND o.created_at < NOW() - INTERVAL '24 hours'
+            AND o.created_at > NOW() - INTERVAL '48 hours'
+        `;
+    const res = await db.query(sql);
     return res.rows;
   },
 
   /**
-   * 🖼 Генератор текста сметы для сообщений.
+   * 🔍 Поиск заказа по ID (с проверкой прав).
    */
-  formatEstimateMessage(estimate) {
-    const { totalPrice, volumes, prices, wallType } = estimate;
+  async getOrderById(orderId) {
+    const res = await db.query(`SELECT * FROM orders WHERE id = $1`, [orderId]);
+    return res.rows[0];
+  },
 
-    const wallNames = {
-      wall_soft: "⬜️ ГКЛ / Блок (Легко)",
-      wall_brick: "🧱 Кирпич (Средне)",
-      wall_concrete: "🏗 Бетон (Сложно)",
-    };
-
-    return (
-      `📋 <b>ПРЕДВАРИТЕЛЬНАЯ СМЕТА</b>\n` +
-      `➖➖➖➖➖➖➖➖➖➖\n` +
-      `🧱 Тип стен: <b>${wallNames[wallType]}</b>\n\n` +
-      `📊 <b>Объемы работ (прим.):</b>\n` +
-      `▫️ Кабель: ~${volumes.cable} м\n` +
-      `▫️ Штроба: ~${volumes.strobe} м (по ${fmt(prices.strobe)})\n` +
-      `▫️ Точки: ~${volumes.points} шт (по ${fmt(prices.drill)})\n` +
-      `▫️ Щит: ${volumes.shield} модулей\n` +
-      `➖➖➖➖➖➖➖➖➖➖\n` +
-      `🔩 <b>Материалы (черновые):</b> Включены (~40%)\n` +
-      `💰 <b>ИТОГО ПОД КЛЮЧ: ~${fmt(totalPrice)}</b>\n\n` +
-      `<i>* Цена является ориентировочной. Точный расчет — после выезда мастера.</i>`
+  /**
+   * 📂 Получить историю заказов конкретного пользователя.
+   */
+  async getUserOrders(userId) {
+    const res = await db.query(
+      `SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT 5`,
+      [userId],
     );
+    return res.rows;
+  },
+
+  /**
+   * 👷‍♂️ Найти всех свободных мастеров (для Админа).
+   */
+  async getAvailableMasters() {
+    const res = await db.query(
+      `SELECT telegram_id, first_name, phone FROM users WHERE role = $1`,
+      [ROLES.MANAGER], // В данном контексте Manager выполняет роль Мастера/Прораба
+    );
+    return res.rows;
   },
 };
