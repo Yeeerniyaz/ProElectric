@@ -2,8 +2,9 @@
  * @file src/handlers/AdminHandler.js
  * @description Обработчик административных функций.
  * Управление бизнесом: статистика, кадры (роли), настройки цен и рассылки.
+ * Логика полностью отделена от текстового контента.
  * @module AdminHandler
- * @version 4.0.0 (Enterprise Level)
+ * @version 4.1.0 (Refactored)
  */
 
 import { UserService } from "../services/UserService.js";
@@ -23,16 +24,11 @@ export const AdminHandler = {
     // 1. Strict Security Check (Строгая проверка безопасности)
     const isAdmin = await UserService.isAdmin(userId);
     if (!isAdmin) {
-      // Если пытается зайти обычный юзер — игнорируем или мягко отказываем
-      return ctx.reply("⛔ У вас нет доступа к этому разделу.");
+      return ctx.reply(MESSAGES.ADMIN.ACCESS_DENIED);
     }
 
     // 2. Отображаем меню управления
-    await ctx.reply(
-      "👨‍💼 **Панель управления бизнесом**\n\n" +
-        "Выберите действие из меню ниже:",
-      KEYBOARDS.ADMIN_MENU,
-    );
+    await ctx.reply(MESSAGES.ADMIN.PANEL_WELCOME, KEYBOARDS.ADMIN_MENU);
   },
 
   /**
@@ -40,59 +36,48 @@ export const AdminHandler = {
    * Использует агрегированные данные из OrderService.
    */
   async showStatistics(ctx) {
-    // Проверка прав (Security Layer)
     if (!(await UserService.isAdmin(ctx.from.id))) return;
 
-    await ctx.reply("⏳ Собираю данные по базе...");
+    await ctx.reply(MESSAGES.ADMIN.LOADING_STATS);
 
     try {
-      // Получаем данные из сервиса
-      const stats = await OrderService.getAdminStats();
-      const usersCount = await UserService.getAllUsers(1, 0); // Получаем кол-во юзеров (упрощенно)
+      // Parallel execution for performance (Optimization)
+      const [stats, usersList] = await Promise.all([
+        OrderService.getAdminStats(),
+        UserService.getAllUsers(1, 0) // count check hack
+      ]);
 
-      // Формируем красивый отчет
-      const report =
-        `📊 **Статистика ProElectric**\n\n` +
-        `👥 **Клиенты:**\n` +
-        `Всего в базе: ${usersCount.length} (загружено)\n\n` +
-        `💰 **Финансы (Потенциал):**\n` +
-        `Новых заявок: ${stats.newOrdersCount}\n` +
-        `В деньгах: ${stats.potentialRevenue.toLocaleString()} ₸\n\n` +
-        `📉 **Конверсия:**\n` +
-        `Обработано заказов: ${stats.totalOrdersChecked}\n` +
-        `\n_Данные актуальны на: ${new Date().toLocaleTimeString()}_`;
+      // Формируем отчет через функцию-генератор из констант
+      const report = MESSAGES.ADMIN.statsReport(
+        usersList.length,
+        stats.newOrdersCount,
+        stats.potentialRevenue.toLocaleString(),
+        stats.totalOrdersChecked
+      );
 
       await ctx.replyWithMarkdown(report);
     } catch (error) {
       console.error("Stats Error:", error);
-      await ctx.reply("⚠️ Ошибка при генерации отчета. Проверьте логи.");
+      await ctx.reply(MESSAGES.ADMIN.STATS_ERROR);
     }
   },
 
   /**
    * 👥 Управление персоналом (Добавление админов).
-   * Реализует твой запрос: "Я тоже могу добавить админа".
    * Работает через команду: /setrole <ID> <admin/manager/user>
    */
   async promoteUser(ctx) {
     // Только Владелец может назначать роли
     const initiatorUser = await db.getUserByTelegramId(ctx.from.id);
     if (initiatorUser.role !== ROLES.OWNER) {
-      return ctx.reply("⛔ Назначать администраторов может только Владелец.");
+      return ctx.reply(MESSAGES.ADMIN.ONLY_OWNER);
     }
 
-    // Парсим аргументы команды
-    // Ожидаемый формат: /setrole 123456789 admin
     const args = ctx.message.text.split(" ");
 
+    // Валидация аргументов
     if (args.length !== 3) {
-      return ctx.reply(
-        "⚠️ **Ошибка формата команды**\n\n" +
-          "Используйте: `/setrole ID_ПОЛЬЗОВАТЕЛЯ РОЛЬ`\n" +
-          "Пример: `/setrole 123456789 admin`\n\n" +
-          "Роли: `admin`, `manager`, `user`",
-        { parse_mode: "Markdown" },
-      );
+      return ctx.replyWithMarkdown(MESSAGES.ADMIN.ROLE_FORMAT_ERROR);
     }
 
     const targetId = parseInt(args[1]);
@@ -107,21 +92,20 @@ export const AdminHandler = {
       );
 
       await ctx.reply(
-        `✅ **Успешно!**\n` +
-          `Пользователь ${updatedUser.first_name} (ID: ${targetId}) теперь имеет роль: **${newRole.toUpperCase()}**`,
+        MESSAGES.ADMIN.roleSuccess(updatedUser.first_name, targetId, newRole)
       );
 
       // Опционально: уведомить самого пользователя
       try {
         await ctx.telegram.sendMessage(
           targetId,
-          `🎉 Вам назначена новая роль: ${newRole.toUpperCase()}`,
+          MESSAGES.ADMIN.roleNotification(newRole)
         );
       } catch (e) {
         // Игнорируем, если у юзера заблокирован бот
       }
     } catch (error) {
-      await ctx.reply(`❌ Ошибка: ${error.message}`);
+      await ctx.reply(`❌ ${error.message}`);
     }
   },
 
@@ -140,86 +124,67 @@ export const AdminHandler = {
       const keysList = Object.values(DB_KEYS)
         .map((k) => `\`${k}\``)
         .join(", ");
-      return ctx.replyWithMarkdown(
-        `🛠 **Настройка Цен**\n\n` +
-          `Используйте: \`/setprice КЛЮЧ ЗНАЧЕНИЕ\`\n` +
-          `Пример: \`/setprice price_cable 250\`\n\n` +
-          `🔑 **Доступные ключи:**\n${keysList}`,
-      );
+        
+      return ctx.replyWithMarkdown(MESSAGES.ADMIN.PRICE_HELP(keysList));
     }
 
     const key = args[1];
     const value = args[2];
 
     try {
-      // Сохраняем новую настройку через репозиторий
       await db.saveSetting(key, value);
-      await ctx.reply(
-        `✅ Настройка **${key}** обновлена. Новое значение: **${value}**`,
-      );
+      await ctx.reply(MESSAGES.ADMIN.priceUpdated(key, value));
     } catch (error) {
-      await ctx.reply(
-        `❌ Не удалось обновить настройку. Проверьте правильность ключа.`,
-      );
+      await ctx.reply(MESSAGES.ADMIN.priceError);
     }
   },
 
   /**
-   * 📢 Рассылка сообщений всем пользователям (Retention Tool).
-   * Позволяет вернуть клиентов, отправив им акцию или новость.
+   * 📢 Рассылка сообщений всем пользователям.
    */
   async broadcastMessage(ctx) {
     if (!(await UserService.isAdmin(ctx.from.id))) return;
 
-    // В этом примере мы просто запрашиваем текст.
-    // В полной версии здесь нужна машина состояний (Scene), чтобы не отправить случайно.
-    // Для Senior уровня реализуем безопасную заглушку-пример:
-
     const messageParts = ctx.message.text.split(" ");
     if (messageParts.length < 2) {
-      return ctx.reply(
-        "⚠️ Напишите текст рассылки после команды `/broadcast Ваше сообщение`",
-      );
+      return ctx.replyWithMarkdown(MESSAGES.ADMIN.BROADCAST_HELP);
     }
 
     const textToSend = messageParts.slice(1).join(" ");
 
-    await ctx.reply("⏳ Начинаю рассылку...");
+    await ctx.reply(MESSAGES.ADMIN.BROADCAST_START);
 
     // Получаем всех пользователей (пачками)
-    const allUsers = await UserService.getAllUsers(1000, 0); // Лимит 1000 для примера
+    const allUsers = await UserService.getAllUsers(1000, 0);
     let successCount = 0;
     let failCount = 0;
+
+    const fullMessage = MESSAGES.ADMIN.broadcastHeader(textToSend);
 
     for (const user of allUsers) {
       try {
         await ctx.telegram.sendMessage(
           user.telegram_id,
-          `📢 **Новости ProElectric**\n\n${textToSend}`,
+          fullMessage,
           { parse_mode: "Markdown" },
         );
         successCount++;
       } catch (e) {
-        failCount++; // Юзер заблокировал бота
+        failCount++;
       }
     }
 
     await ctx.reply(
-      `📢 **Рассылка завершена**\n` +
-        `✅ Доставлено: ${successCount}\n` +
-        `❌ Недоставлено (блок): ${failCount}`,
+        MESSAGES.ADMIN.broadcastResult(successCount, failCount)
     );
   },
 
   /**
    * 📂 Получение файла базы данных (Backup).
-   * Админ может скачать актуальную версию DB_SETTINGS или логов.
    */
   async downloadDatabase(ctx) {
     if (!(await UserService.isAdmin(ctx.from.id))) return;
 
-    // Здесь можно реализовать выгрузку данных в Excel или JSON
-    // Для примера выгружаем текущие настройки цен
     const settings = await db.getSettings();
     const jsonString = JSON.stringify(settings, null, 2);
 
