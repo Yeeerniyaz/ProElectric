@@ -54,12 +54,22 @@ bot.use(async (ctx, next) => {
 // --- Маршрутизация команд (Bot Routing) ---
 
 // Админские команды
-bot.command("admin", (ctx) => AdminHandler.showAdminMenu(ctx));
-bot.hears(/^\/setrole/, (ctx) => AdminHandler.promoteUser(ctx));
-bot.hears(/^\/setprice/, (ctx) => AdminHandler.updatePriceSetting(ctx));
-bot.hears(/^\/broadcast/, (ctx) => AdminHandler.broadcastMessage(ctx));
-bot.hears("📊 Статистика", (ctx) => AdminHandler.showStatistics(ctx));
-bot.hears("💾 Скачать БД", (ctx) => AdminHandler.downloadDatabase(ctx));
+bot.hears(/^\/setrole/, (ctx) => AdminHandler.processSetRole(ctx)); // Было promoteUser
+bot.hears(/^\/setprice/, (ctx) => AdminHandler.processSetPrice(ctx)); // Было updatePriceSetting
+bot.hears(/^\/broadcast/, (ctx) => AdminHandler.processBroadcast(ctx)); // Было broadcastMessage
+bot.hears(/^\/backup/, (ctx) => AdminHandler.processBackup(ctx)); // Было downloadDatabase
+
+// Новые мощные команды (реализуем их ниже)
+bot.hears(/^\/status/, (ctx) => AdminHandler.processSetStatus(ctx)); // Смена статуса заказа
+bot.hears(/^\/ban/, (ctx) => AdminHandler.processBanUser(ctx)); // Бан пользователя
+bot.hears(/^\/sql/, (ctx) => AdminHandler.processSQL(ctx)); // SQL запрос напрямую
+
+// Кнопки меню админа
+bot.hears(BUTTONS.ADMIN_STATS, (ctx) => AdminHandler.showDashboard(ctx)); // Было showStatistics
+bot.hears(BUTTONS.ADMIN_SETTINGS, (ctx) =>
+  AdminHandler.showSettingsInstruction(ctx),
+);
+bot.hears(BUTTONS.ADMIN_STAFF, (ctx) => AdminHandler.showStaffInstruction(ctx));
 
 // Пользовательские команды
 bot.command("start", (ctx) => UserHandler.startCommand(ctx));

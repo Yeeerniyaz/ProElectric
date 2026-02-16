@@ -279,10 +279,13 @@ export const BUTTONS = Object.freeze({
   MANAGER_OBJECTS: "👷‍♂️ Мои объекты",
   MANAGER_CASH: "💵 Моя Касса",
 
+  // Добавляем новые для Админа
   ADMIN_PANEL: "👑 Админ-панель",
   ADMIN_STATS: "📊 Статистика",
-  ADMIN_SETTINGS: "⚙️ Настройки цен",
+  ADMIN_SETTINGS: "⚙️ Цены и Конфиг",
   ADMIN_STAFF: "👥 Сотрудники",
+  ADMIN_ORDERS: "📦 Управление заказами", // Новая
+  ADMIN_SQL: "👨‍💻 SQL Консоль", // Новая
 
   BACK: "🏠 Главное меню", // Иконка обновлена
   CANCEL: "❌ Отмена",
@@ -340,8 +343,9 @@ export const KEYBOARDS = {
   // 4. Меню админа
   ADMIN_MENU: {
     keyboard: [
-      [{ text: BUTTONS.ADMIN_STATS }, { text: BUTTONS.ADMIN_SETTINGS }],
-      [{ text: BUTTONS.ADMIN_STAFF }, { text: BUTTONS.BACK }],
+      [{ text: BUTTONS.ADMIN_STATS }, { text: BUTTONS.ADMIN_ORDERS }],
+      [{ text: BUTTONS.ADMIN_SETTINGS }, { text: BUTTONS.ADMIN_STAFF }],
+      [{ text: BUTTONS.ADMIN_SQL }, { text: BUTTONS.BACK }],
     ],
     resize_keyboard: true,
   },
