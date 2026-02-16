@@ -46,6 +46,7 @@ export const getSettings = async () => {
  * @param {string} phone - Номер телефона (может быть null)
  * @returns {Promise<Object>} Обновленный объект пользователя
  */
+
 export const upsertUser = async (telegramId, firstName, username, phone) => {
   // Используем конструкцию ON CONFLICT для реализации логики "Вставь или Обнови"
   const sql = `

@@ -32,7 +32,12 @@ export const UserService = {
     };
 
     // Вызываем репозиторий для создания или обновления (Upsert)
-    const user = await db.upsertUser(userData);
+    const user = await db.upsertUser(
+      userData.telegram_id,
+      userData.first_name,
+      userData.username,
+      userData.phone,
+    );
 
     return user;
   },
