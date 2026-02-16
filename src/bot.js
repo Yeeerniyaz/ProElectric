@@ -1,156 +1,177 @@
 /**
  * @file src/bot.js
  * @description Bot Orchestrator (Controller).
- * Управляет жизненным циклом Telegram-бота, стратегией запуска (Polling/Webhook),
- * регистрацией middleware и глобальной обработкой ошибок.
- * @version 5.0.0 (Enterprise Architecture)
+ * Архитектурное решение уровня Enterprise.
+ * Реализует паттерны: Singleton, Failover Strategy, Middleware Pipeline.
+ * * @author Erniyaz & AI Partner
+ * @version 6.0.0 (God Mode)
  */
 
 import { bot } from "./core.js";
 import { config } from "./config.js";
 
-// Импорт слоев обработки (Layers)
-import { setupAuthHandlers } from "./handlers/auth.js"; // Layer 1: Security & Identity
-import { setupAdminHandlers } from "./handlers/admin.js"; // Layer 2: Administrative Control
-import { setupCallbackHandlers } from "./handlers/callbacks.js"; // Layer 3: Interactive UI
-import { setupMessageHandlers } from "./handlers/messages.js"; // Layer 4: Business Logic & Wizard
+// Импорт слоев обработки (Business Logic Layers)
+import { setupAuthHandlers } from "./handlers/auth.js";      // Layer 1: Security
+import { setupAdminHandlers } from "./handlers/admin.js";    // Layer 2: Administration
+import { setupCallbackHandlers } from "./handlers/callbacks.js"; // Layer 3: Interaction
+import { setupMessageHandlers } from "./handlers/messages.js";   // Layer 4: General Logic
 
 // =============================================================================
-// 🛡 GLOBAL ERROR BOUNDARY
+// 🛡 SECURITY & STABILITY BOUNDARIES
 // =============================================================================
 
 const setupErrorHandling = () => {
-  // Перехват ошибок поллинга (сеть, токен и т.д.)
+  // Обработка критических ошибок поллинга
   bot.on("polling_error", (error) => {
-    // Игнорируем частые ошибки сети, чтобы не засорять логи
-    if (error.code === "EFATAL" || error.code === "ETIMEDOUT") return;
-    console.error(`💥 [BOT POLLING ERROR] ${error.code}: ${error.message}`);
+    // Подавляем шум в логах от сетевых сбоев
+    const ignoreCodes = ["EFATAL", "ETIMEDOUT", "ECONNRESET"];
+    if (ignoreCodes.includes(error.code)) return;
+    
+    console.error(`💥 [BOT POLLING] ${error.code || 'Unknown'}: ${error.message}`);
   });
 
-  // Перехват ошибок вебхука
+  // Обработка ошибок вебхука
   bot.on("webhook_error", (error) => {
-    console.error(`💥 [BOT WEBHOOK ERROR] ${error.code}: ${error.message}`);
+    console.error(`💥 [BOT WEBHOOK] Error: ${error.message}`);
   });
 
-  // Глобальный перехват необработанных ошибок внутри хендлеров
+  // Глобальный catch для асинхронных ошибок внутри хендлеров
   bot.on("error", (error) => {
-    console.error(`💥 [BOT GENERAL ERROR]`, error);
+    console.error(`☠️ [BOT CRITICAL] Uncaught exception inside bot instance:`, error);
   });
 };
 
 // =============================================================================
-// 🚀 LAUNCH STRATEGIES
+// 🚀 LAUNCH STRATEGIES (STRATEGY PATTERN)
 // =============================================================================
 
 /**
- * Стратегия запуска: Long Polling (для разработки)
+ * Запуск через Long Polling.
+ * Используется для Dev-режима или как Fallback для Prod.
  */
-const launchPolling = async () => {
+const launchPolling = async (reason = "Direct request") => {
   try {
-    // Обязательно удаляем вебхук перед поллингом, иначе Telegram не будет отдавать апдейты
+    // 1. Очищаем вебхук (Telegram не даст полить, если висит хук)
     await bot.deleteWebHook();
-    console.log("🧹 [BOT] Вебхуки очищены. Запуск Long Polling...");
+    console.log(`🧹 [BOT] Вебхук удален. Причина: ${reason}`);
 
-    // В библиотеке node-telegram-bot-api поллинг запускается автоматически,
-    // если в конструкторе (core.js) polling: true.
-    // Если там false, можно вызвать bot.startPolling() здесь.
+    // 2. Оптимизированные параметры поллинга
+    const pollingOptions = {
+      polling: {
+        interval: 300,      // Задержка между запросами (мс)
+        autoStart: true,    // Авто-старт
+        params: {
+          timeout: 10       // Long polling timeout (сек)
+        }
+      }
+    };
+
+    // 3. 🔥 ФИКС: Явный запуск поллинга, так как в core.js polling: false
+    await bot.startPolling(pollingOptions);
+    
+    console.log("🚀 [BOT] Long Polling успешно запущен и слушает эфир...");
   } catch (e) {
-    console.warn("⚠️ [BOT] Warning during webhook cleanup:", e.message);
+    console.error("☠️ [BOT FATAL] Не удалось запустить Polling:", e.message);
+    process.exit(1); // Если даже поллинг не встал — тушим свет
   }
 };
 
 /**
- * Стратегия запуска: Webhook (для продакшена)
- * @note Требует HTTPS и настройки домена в config.js
+ * Запуск через Webhook.
+ * @returns {Promise<boolean>} Успешно ли запустился
  */
 const launchWebhook = async () => {
-  const { url, port, path } = config.bot.webhook || {};
-  if (!url) {
-    console.error(
-      "❌ [BOT FATAL] Webhook URL not configured. Falling back to polling.",
-    );
-    return launchPolling();
+  const { url, port, path, enabled } = config.bot.webhook || {};
+  
+  if (!enabled || !url) {
+    console.warn("⚠️ [BOT] Webhook конфиг не найден или выключен.");
+    return false; 
   }
 
   try {
-    await bot.setWebHook(`${url}${path}`);
-    console.log(`🚀 [BOT] Webhook установлен: ${url}${path}`);
+    // Формируем полный URL
+    const webhookUrl = `${url}${path}`;
+    await bot.setWebHook(webhookUrl);
+    console.log(`🚀 [BOT] Webhook активирован: ${webhookUrl}`);
+    return true;
   } catch (e) {
-    console.error("💥 [BOT FATAL] Failed to set webhook:", e.message);
+    console.error(`⚠️ [BOT] Ошибка установки Webhook: ${e.message}`);
+    return false; // Возвращаем false для активации Fallback
   }
 };
 
 // =============================================================================
-// 🧠 INITIALIZATION PIPELINE
+// 🧠 BOT CONTROLLER (SINGLETON)
 // =============================================================================
 
 export const BotController = {
   /**
-   * Инициализация и запуск бота.
+   * Главная точка входа.
+   * Инициализирует пайплайн обработки и выбирает стратегию запуска.
    */
   async init() {
-    console.log("🤖 [BOT] Starting initialization sequence...");
+    console.log("\n🤖 [BOT] System initialization sequence started...");
     const start = Date.now();
 
-    // 1. Setup Error Boundaries
+    // 1. Установка ловушек ошибок (First Line of Defense)
     setupErrorHandling();
 
-    // 2. Register Handlers (Middleware Pipeline)
-    // Порядок критически важен: от специфичного к общему.
+    // 2. Регистрация Middleware (Важен порядок!)
     try {
-      console.log("📦 [BOT] Registering handlers...");
-
-      setupAuthHandlers(); // 1. Проверка прав (/login, /assign)
-      setupAdminHandlers(); // 2. Админка (/admin, /broadcast)
-      setupCallbackHandlers(); // 3. Инлайн кнопки (действия)
-      setupMessageHandlers(); // 4. Текст, меню и визарды (все остальное)
-
-      console.log("✅ [BOT] Handlers registered successfully.");
+      setupAuthHandlers();     // Кто ты?
+      setupAdminHandlers();    // Ты босс?
+      setupCallbackHandlers(); // Куда тыкнул?
+      setupMessageHandlers();  // Чё написал?
+      
+      console.log("📦 [BOT] Все модули (Handlers) загружены.");
     } catch (e) {
-      console.error("💥 [BOT FATAL] Handler registration failed:", e);
-      process.exit(1); // Не запускаемся, если логика сломана
+      console.error("❌ [BOT] Ошибка при регистрации хендлеров:", e);
+      process.exit(1);
     }
 
-    // 3. Channel Post Bridging
-    // Позволяет боту обрабатывать команды в каналах так же, как в личке
+    // 3. Мост для каналов (Channel Post Bridging)
+    // Превращает посты в каналах в обычные сообщения (с осторожностью)
     bot.on("channel_post", (msg) => {
-      // Защита от бесконечного цикла (если бот пишет сам себе)
-      if (msg.from && msg.from.id === config.bot.id) return;
+      if (msg.from?.id === config.bot.id) return; // Игнор самоспама
+      // Можно добавить проверку ID канала, если нужно
       bot.emit("message", msg);
     });
 
-    // 4. Launch Strategy Execution
-    // Если в конфиге NODE_ENV = production, можно включать вебхук.
-    // Для текущей задачи по умолчанию используем Polling.
-    const useWebhook =
-      config.system?.env === "production" && config.bot.webhook?.enabled;
+    // 4. Выбор стратегии запуска (Smart Launch)
+    const isProduction = config.system?.env === "production";
+    let launchSuccess = false;
 
-    if (useWebhook) {
-      await launchWebhook();
+    if (isProduction) {
+      console.log("🌍 [BOT] Обнаружен Production environment.");
+      launchSuccess = await launchWebhook();
+      
+      if (!launchSuccess) {
+        console.warn("🔄 [BOT] Переключение на Polling (Fallback Strategy)...");
+        await launchPolling("Webhook failed or disabled");
+      }
     } else {
-      await launchPolling();
+      console.log("👨‍💻 [BOT] Обнаружен Dev/Local environment.");
+      await launchPolling("Dev Mode");
     }
 
-    const duration = Date.now() - start;
-    console.log(
-      `✅ [BOT] System Online (${duration}ms). Mode: ${useWebhook ? "Webhook" : "Polling"}`,
-    );
+    const duration = ((Date.now() - start) / 1000).toFixed(2);
+    console.log(`✅ [BOT] System Online. Ready to serve. (${duration}s)\n`);
   },
 
   /**
-   * Graceful Shutdown
-   * Останавливает получение обновлений.
+   * Мягкая остановка (Graceful Shutdown)
    */
   async stop() {
-    console.log("🛑 [BOT] Stopping...");
+    console.log("🛑 [BOT] Получен сигнал остановки...");
     try {
       await bot.stopPolling();
-      console.log("🛑 [BOT] Polling stopped.");
+      // Если был вебхук, его можно удалить, но обычно это не обязательно при рестарте
+      console.log("💤 [BOT] Бот ушел в спящий режим.");
     } catch (e) {
-      // Игнорируем ошибки при остановке
+      console.error("⚠️ [BOT] Ошибка при остановке:", e.message);
     }
-  },
+  }
 };
 
-// Экспортируем метод init для совместимости с index.js
+// Экспорт для index.js
 export const initBot = BotController.init;
