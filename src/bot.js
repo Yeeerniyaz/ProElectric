@@ -1,51 +1,41 @@
 /**
  * @file src/bot.js
- * @description Инициализация Telegram бота.
- * Исправлена работа Polling и Webhook.
+ * @description Настройка обработчиков событий.
  */
 
-import TelegramBot from 'node-telegram-bot-api';
-import { config } from './config.js';
+// 🔥 ИСПРАВЛЕНИЕ: Импортируем бота из core.js, а не создаем нового
+import { bot } from './core.js'; 
 import { setupAuthHandlers } from './handlers/auth.js';
 import { setupMessageHandlers } from './handlers/messages.js';
 import { setupCallbackHandlers } from './handlers/callbacks.js';
 
-// Polling параметрлерін күшейтеміз
-export const bot = new TelegramBot(config.bot.token, { 
-    polling: {
-        interval: 300,      // Жиі тексереміз
-        autoStart: true,
-        params: { timeout: 10 }
-    }
-});
-
 export const initBot = async () => {
-    console.log('🤖 [BOT] Инициализация...');
+    console.log('🤖 [BOT] Подключение логики...');
 
-    // Webhook қатесін болдырмау үшін try-catch
+    // Очистка вебхуков (важно при переходе на polling)
     try {
         await bot.deleteWebHook();
-        console.log('🧹 [BOT] Вебхук тазаланды.');
+        console.log('🧹 [BOT] Вебхук сброшен (переход на polling).');
     } catch (e) {
-        // Егер вебхук болмаса, қате емес
+        console.error('⚠️ Ошибка сброса вебхука:', e.message);
     }
 
-    // Хендлерлерді қосу
+    // Подключаем логику (Хендлеры)
     setupMessageHandlers();
     setupCallbackHandlers();
     setupAuthHandlers();
 
-    // Каналдарды қолдау
+    // Обработка постов в каналах
     bot.on('channel_post', (msg) => {
         bot.emit('message', msg);
     });
 
-    // Қателерден құлап қалмау
+    // Логирование ошибок polling
     bot.on('polling_error', (error) => {
         if (error.code !== 'EFATAL' && error.code !== 'ETIMEDOUT') {
-            console.error(`⚠️ [BOT] Polling: ${error.message}`);
+            console.error(`⚠️ [BOT] Ошибка связи: ${error.message}`);
         }
     });
 
-    console.log('✅ [BOT] Система активна!');
+    console.log('✅ [BOT] Логика подключена и работает!');
 };
