@@ -2,7 +2,7 @@
  * @file src/db.js
  * @description Ядро Базы Данных (PostgreSQL).
  * Enterprise-level архитектура для финансового учета, управления заказами и мульти-касс.
- * @version 8.0.0 (ProElectro Ultimate)
+ * @version 8.1.0 (Detailed Pricing Support)
  */
 
 import pg from "pg";
@@ -317,18 +317,27 @@ export const initDB = async () => {
         );
       `);
 
-      // --- SEEDING (Начальное заполнение) ---
-      
-      // Базовые цены
+      // --- SEEDING (Начальное заполнение цен) ---
+      // Здесь добавлены все новые пункты из вашего прайса
       const prices = [
+        // Черновые
         ["price_strobe_concrete", 1750], 
         ["price_strobe_brick", 1100], 
-        ["price_strobe_gasblock", 800], 
-        ["price_point_concrete", 1500], 
-        ["price_point_brick", 1000], 
-        ["price_point_gasblock", 800], 
-        ["price_shield_module", 1750], 
-        ["price_cable_m", 400], 
+        ["price_cable_laying", 400],         // Прокладка кабеля
+        ["price_drill_hole_concrete", 1500], // Сверление лунки (Бетон)
+        ["price_drill_hole_brick", 1000],    // Сверление лунки (Кирпич)
+        ["price_socket_box_install", 600],   // Вмазка подрозетника
+        ["price_junction_box_assembly", 3000], // Сборка распредкоробки
+        
+        // Чистовые
+        ["price_socket_install", 1000],      // Розетка/выкл
+        ["price_shield_module", 1750],       // Модуль щита
+        ["price_lamp_install", 5000],        // Люстра
+        ["price_led_strip", 2000],           // Лента
+        
+        // Система
+        ["material_factor", 0.45],           // Материалы 45%
+        ["percent_business", 20]             // Доля бизнеса 20%
       ];
 
       for (const [k, v] of prices) {
