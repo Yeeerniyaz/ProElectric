@@ -1,8 +1,8 @@
 /**
  * @file src/db.js
  * @description Ядро Базы Данных (PostgreSQL).
- * Enterprise-level архитектура для финансового учета и управления заказами.
- * @version 7.0.0 (ProElectro Ultimate)
+ * Enterprise-level архитектура для финансового учета, управления заказами и мульти-касс.
+ * @version 8.0.0 (ProElectro Ultimate)
  */
 
 import pg from "pg";
@@ -83,11 +83,16 @@ export const db = {
 
   /**
    * Создать или Обновить пользователя (Upsert)
+   * Автоматически выдает админку владельцу.
    */
   upsertUser: async (telegramId, firstName, username, phone = null) => {
+    // Если это Владелец, роль всегда admin
+    let role = 'client';
+    if (telegramId === config.bot.ownerId) role = 'admin';
+
     const sql = `
-            INSERT INTO users (telegram_id, first_name, username, phone, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, NOW(), NOW())
+            INSERT INTO users (telegram_id, first_name, username, phone, role, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
             ON CONFLICT (telegram_id) DO UPDATE SET 
                 first_name = EXCLUDED.first_name,
                 username = EXCLUDED.username,
@@ -95,17 +100,42 @@ export const db = {
                 updated_at = NOW()
             RETURNING telegram_id, role, first_name, username, phone;
         `;
-    const res = await query(sql, [telegramId, firstName, username, phone]);
+    const res = await query(sql, [telegramId, firstName, username, phone, role]);
     return res.rows[0];
   },
 
   /**
+   * Назначить роль пользователю + Создать личную кассу
+   */
+  promoteUser: async (targetId, newRole, name) => {
+      // 1. Обновляем роль
+      await query("UPDATE users SET role = $1 WHERE telegram_id = $2", [newRole, targetId]);
+      
+      // 2. Если роль admin/manager — создаем личную кассу (если нет)
+      if (['admin', 'manager'].includes(newRole)) {
+          const accRes = await query("SELECT id FROM accounts WHERE owner_id = $1", [targetId]);
+          if (accRes.rows.length === 0) {
+              await query(
+                  "INSERT INTO accounts (name, type, balance, owner_id) VALUES ($1, 'cash', 0, $2)",
+                  [`Касса: ${name}`, targetId]
+              );
+          }
+      }
+  },
+
+  /**
+   * Получить список сотрудников
+   */
+  getEmployees: async () => {
+      const res = await query("SELECT * FROM users WHERE role IN ('admin', 'manager') ORDER BY role");
+      return res.rows;
+  },
+
+  /**
    * Создать новый ЗАКАЗ (Лид + Объект)
-   * Используется для Калькулятора
    */
   createOrder: async (userId, orderData) => {
     const { area, rooms, wallType, estimatedPrice } = orderData;
-    // Создаем сразу в orders, минуя лишнюю таблицу leads (оптимизация)
     const sql = `
         INSERT INTO orders (
             user_id, status, area, rooms, wall_type, 
@@ -125,7 +155,6 @@ export const db = {
 
   /**
    * Добавить расход ПО ОБЪЕКТУ (Материал, Такси)
-   * Влияет на чистую прибыль объекта.
    */
   addObjectExpense: async (orderId, amount, category, comment) => {
     const sql = `
@@ -138,16 +167,38 @@ export const db = {
 
   /**
    * Получить список кошельков (Кассы)
+   * Админ видит всё, Менеджер — только свои.
    */
-  getAccounts: async () => {
-    const res = await query("SELECT * FROM accounts ORDER BY id ASC");
+  getAccounts: async (userId = null, role = 'admin') => {
+    let sql = "SELECT * FROM accounts";
+    let params = [];
+
+    if (role !== 'admin' && userId) {
+        sql += " WHERE owner_id = $1"; // Личная касса
+        params.push(userId);
+    }
+    
+    sql += " ORDER BY id ASC";
+    const res = await query(sql, params);
     return res.rows;
   },
 
   /**
+   * Получить KPI (для админки)
+   */
+  getKPI: async () => {
+    const rev = await query("SELECT SUM(final_price) as val FROM orders WHERE status='done'");
+    const prof = await query("SELECT SUM(final_profit) as val FROM orders WHERE status='done'");
+    const active = await query("SELECT COUNT(*) as val FROM orders WHERE status IN ('work','discuss')");
+    return {
+        revenue: parseFloat(rev.rows[0].val || 0),
+        profit: parseFloat(prof.rows[0].val || 0),
+        active: parseInt(active.rows[0].val || 0)
+    };
+  },
+
+  /**
    * 💰 ГЛАВНАЯ ФИНАНСОВАЯ ОПЕРАЦИЯ
-   * Изменяет баланс кошелька + пишет лог в историю транзакций.
-   * Атомарная операция.
    */
   updateBalance: async ({
     accountId,
@@ -168,7 +219,7 @@ export const db = {
 
       if (updateRes.rowCount === 0) throw new Error("Account not found");
 
-      // 2. Пишем в историю (Audit Log)
+      // 2. Пишем в историю
       await client.query(
         `INSERT INTO transactions (account_id, user_id, amount, type, category, comment, created_at)
              VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
@@ -188,7 +239,7 @@ export const initDB = async () => {
   console.log("⏳ [DB] Verifying Schema Integrity...");
   try {
     await transaction(async (client) => {
-      // 1. Users (Сотрудники и Клиенты)
+      // 1. Users
       await client.query(`
         CREATE TABLE IF NOT EXISTS users (
             telegram_id BIGINT PRIMARY KEY,
@@ -201,71 +252,63 @@ export const initDB = async () => {
         );
       `);
 
-      // 2. Orders (Заказы / Объекты)
-      // Хранит всю инфу для расчета и аналитики
+      // 2. Orders
       await client.query(`
         CREATE TABLE IF NOT EXISTS orders (
             id SERIAL PRIMARY KEY,
             user_id BIGINT REFERENCES users(telegram_id),
-            assignee_id BIGINT, -- Ответственный мастер
-            status TEXT DEFAULT 'new', -- new, discuss, work, done, cancel
-            
-            -- Технические данные
+            assignee_id BIGINT, 
+            status TEXT DEFAULT 'new',
             area NUMERIC,
             rooms INTEGER,
-            wall_type TEXT, -- concrete, brick, gasblock
-            
-            -- Финансы
-            total_price NUMERIC DEFAULT 0, -- Общая сумма договора
-            final_profit NUMERIC DEFAULT 0, -- Чистая прибыль (Факт - Расходы)
-            
-            -- Даты
-            start_date TIMESTAMP,
-            end_date TIMESTAMP,
+            wall_type TEXT, 
+            total_price NUMERIC DEFAULT 0,
+            final_price NUMERIC DEFAULT 0,
+            final_profit NUMERIC DEFAULT 0,
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW()
         );
       `);
 
-      // 3. Object Expenses (Расходы Объекта)
-      // Вычитаются из прибыли конкретного заказа
+      // 3. Expenses
       await client.query(`
         CREATE TABLE IF NOT EXISTS object_expenses (
             id SERIAL PRIMARY KEY,
             order_id INTEGER REFERENCES orders(id) ON DELETE CASCADE,
             amount NUMERIC NOT NULL,
-            category TEXT, -- material, taxi, delivery, consumables
+            category TEXT,
             comment TEXT,
             created_at TIMESTAMP DEFAULT NOW()
         );
       `);
 
-      // 4. Accounts (Кассы)
+      // 4. Accounts (С полем owner_id!)
       await client.query(`
         CREATE TABLE IF NOT EXISTS accounts (
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             balance NUMERIC DEFAULT 0,
-            type TEXT DEFAULT 'cash', -- cash, bank, safe
+            type TEXT DEFAULT 'cash',
+            owner_id BIGINT, -- Привязка к сотруднику
             updated_at TIMESTAMP DEFAULT NOW()
         );
       `);
 
-      // 5. Transactions (Общие расходы бизнеса + ЗП + История)
+      // 5. Transactions
       await client.query(`
         CREATE TABLE IF NOT EXISTS transactions (
             id SERIAL PRIMARY KEY,
             account_id INTEGER REFERENCES accounts(id),
-            user_id BIGINT, -- Кто совершил (необязательно)
+            user_id BIGINT,
             amount NUMERIC NOT NULL,
-            type TEXT NOT NULL, -- income, expense
-            category TEXT, -- salary, tools, rent, food, transfer
+            type TEXT NOT NULL, 
+            category TEXT,
             comment TEXT,
             created_at TIMESTAMP DEFAULT NOW()
         );
       `);
 
-      // 6. Settings (Цены на работы)
+      // 6. Settings
       await client.query(`
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -275,39 +318,17 @@ export const initDB = async () => {
       `);
 
       // --- SEEDING (Начальное заполнение) ---
-
-      // Кошельки
-      const accs = await client.query("SELECT COUNT(*) FROM accounts");
-      if (accs.rows[0].count == 0) {
-        await client.query(`
-            INSERT INTO accounts (name, type) VALUES 
-            ('Kaspi Gold', 'bank'), 
-            ('Наличные', 'cash'), 
-            ('Сейф (Офис)', 'safe')
-        `);
-        console.log("🌱 [DB] Created default accounts");
-      }
-
-      // Цены (Based on your Provided Table)
-      // Используем средние значения для калькулятора
+      
+      // Базовые цены
       const prices = [
-        ["price_strobe_concrete", 1750], // Штроба бетон (1500-2000)
-        ["price_strobe_brick", 1100], // Штроба кирпич (1000-1200)
-        ["price_strobe_gasblock", 800], // Штроба легкая
-
-        ["price_point_concrete", 1500], // Лунка бетон
-        ["price_point_brick", 1000], // Лунка кирпич
-        ["price_point_gasblock", 800], // Лунка легкая
-
-        ["price_box_install", 600], // Вмазка подрозетника (500-700)
-        ["price_box_assembly", 3000], // Сборка распред. коробки (2500-3500)
-        ["price_shield_module", 1750], // Модуль щита (1500-2000)
-        ["price_socket_install", 1000], // Установка розетки (800-1200)
-        ["price_cable_m", 400], // Кабель (300-500)
-
-        // Проценты распределения
-        ["percent_business", 20],
-        ["percent_staff", 80],
+        ["price_strobe_concrete", 1750], 
+        ["price_strobe_brick", 1100], 
+        ["price_strobe_gasblock", 800], 
+        ["price_point_concrete", 1500], 
+        ["price_point_brick", 1000], 
+        ["price_point_gasblock", 800], 
+        ["price_shield_module", 1750], 
+        ["price_cable_m", 400], 
       ];
 
       for (const [k, v] of prices) {
