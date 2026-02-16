@@ -27,18 +27,22 @@ export const UserHandler = {
    */
   async startCommand(ctx) {
     try {
-      // 1. Регистрация/Обновление пользователя (Upsert)
-      await UserService.registerOrUpdateUser(ctx.from);
+      // 1. Сначала получаем юзера из БД, чтобы узнать его РОЛЬ
+      const user = await UserService.registerOrUpdateUser(ctx.from);
+
+      // Если по какой-то причине user null, ставим роль 'user'
+      const userRole = user ? user.role : "user";
 
       // 2. Сброс состояния
       this.clearSession(ctx);
 
-      // 3. Приветствие из констант
+      // 3. Приветствие
       const userName = ctx.from.first_name || "Гость";
-      await ctx.replyWithMarkdown(
-        MESSAGES.USER.WELCOME(userName),
-        KEYBOARDS.MAIN_MENU,
-      );
+
+      // ВАЖНО: Вызываем функцию MAIN_MENU(userRole)
+      await ctx.replyWithMarkdown(MESSAGES.USER.WELCOME(userName), {
+        reply_markup: KEYBOARDS.MAIN_MENU(userRole),
+      });
     } catch (error) {
       console.error("[UserHandler] Start Error:", error);
     }
@@ -51,10 +55,9 @@ export const UserHandler = {
     ctx.session.state = USER_STATES.CALC_WAIT_AREA;
     ctx.session.calcData = {}; // Инициализация буфера данных
 
-    await ctx.replyWithMarkdown(
-      MESSAGES.USER.WIZARD_STEP_1_AREA,
-      KEYBOARDS.CANCEL_MENU,
-    );
+    await ctx.replyWithMarkdown(MESSAGES.USER.WIZARD_STEP_1_AREA, {
+      reply_markup: KEYBOARDS.CANCEL_MENU,
+    });
   },
 
   /**
@@ -108,10 +111,11 @@ export const UserHandler = {
     // Переход к следующему состоянию
     ctx.session.state = USER_STATES.CALC_WAIT_WALL;
 
-    await ctx.replyWithMarkdown(
-      MESSAGES.USER.WIZARD_STEP_2_WALL,
-      KEYBOARDS.WALL_TYPES, // Inline клавиатура
-    );
+    // Было: KEYBOARDS.WALL_TYPES
+    // Стало:
+    await ctx.replyWithMarkdown(MESSAGES.USER.WIZARD_STEP_2_WALL, {
+      reply_markup: KEYBOARDS.WALL_TYPES,
+    });
   },
 
   /**
@@ -179,7 +183,11 @@ export const UserHandler = {
         result.total.grandTotal.toLocaleString(),
       );
 
-      await ctx.replyWithMarkdown(invoiceText, KEYBOARDS.ESTIMATE_ACTIONS);
+      // 🔥 ВАЖНОЕ ИЗМЕНЕНИЕ:
+      // Мы оборачиваем KEYBOARDS.ESTIMATE_ACTIONS в объект { reply_markup: ... }
+      await ctx.replyWithMarkdown(invoiceText, {
+        reply_markup: KEYBOARDS.ESTIMATE_ACTIONS,
+      });
     } catch (error) {
       console.error("[UserHandler] Calc Error:", error);
       await ctx.replyWithMarkdown(MESSAGES.USER.CALCULATION_ERROR);
@@ -303,11 +311,22 @@ export const UserHandler = {
   /**
    * 🏠 Возврат в главное меню.
    */
-  returnToMainMenu(ctx) {
+  async returnToMainMenu(ctx) {
     this.clearSession(ctx);
+
+    // Пытаемся быстро узнать роль (можно кэшировать в сессии, но через БД надежнее)
+    let role = "user";
+    try {
+      // Просто берем текущие данные (это быстрый запрос)
+      const user = await UserService.registerOrUpdateUser(ctx.from);
+      if (user) role = user.role;
+    } catch (e) {
+      console.error("Menu Role Error", e);
+    }
+
     return ctx.replyWithMarkdown(
       MESSAGES.USER.RETURN_MAIN,
-      KEYBOARDS.MAIN_MENU,
+      { reply_markup: KEYBOARDS.MAIN_MENU(role) }, // Передаем роль!
     );
   },
 

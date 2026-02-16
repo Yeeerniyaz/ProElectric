@@ -289,25 +289,35 @@ export const BUTTONS = Object.freeze({
 // =============================================================================
 // 6. ГЕНЕРАТОРЫ КЛАВИАТУР
 // =============================================================================
+// ... (предыдущий код в файле остается)
+
 export const KEYBOARDS = {
-  main: (role) => {
+  // 1. Главное меню (Функция!)
+  MAIN_MENU: (role) => {
     const btns = [
       [{ text: BUTTONS.CALCULATOR }, { text: BUTTONS.ORDERS }],
       [{ text: BUTTONS.PRICE_LIST }, { text: BUTTONS.CONTACTS }],
     ];
-    if (role === ROLES.MANAGER || role === ROLES.ADMIN) {
+    // Добавляем кнопки для Менеджера/Админа/Владельца
+    if ([ROLES.MANAGER, ROLES.ADMIN, ROLES.OWNER].includes(role)) {
       btns.unshift([
         { text: BUTTONS.MANAGER_OBJECTS },
         { text: BUTTONS.MANAGER_CASH },
       ]);
     }
-    if (role === ROLES.ADMIN) {
+    // Добавляем кнопки только для Админа/Владельца
+    if ([ROLES.ADMIN, ROLES.OWNER].includes(role)) {
       btns.unshift([{ text: BUTTONS.ADMIN_PANEL }]);
     }
-    return { keyboard: btns, resize_keyboard: true };
+
+    return {
+      keyboard: btns,
+      resize_keyboard: true,
+    };
   },
 
-  walls: {
+  // 2. Выбор стен (Inline)
+  WALL_TYPES: {
     inline_keyboard: [
       [{ text: "🧱 Газоблок / ГКЛ", callback_data: "wall_gas" }],
       [{ text: "🧱 Кирпич", callback_data: "wall_brick" }],
@@ -315,18 +325,38 @@ export const KEYBOARDS = {
     ],
   },
 
-  cancel: {
+  // 3. Кнопка отмены
+  CANCEL_MENU: {
     keyboard: [[{ text: BUTTONS.CANCEL }]],
     resize_keyboard: true,
     one_time_keyboard: true,
   },
 
-  admin: {
+  // 4. Меню админа
+  ADMIN_MENU: {
     keyboard: [
       [{ text: BUTTONS.ADMIN_STATS }, { text: BUTTONS.ADMIN_SETTINGS }],
       [{ text: BUTTONS.ADMIN_STAFF }, { text: BUTTONS.BACK }],
     ],
     resize_keyboard: true,
+  },
+
+  // 5. 🔥 ДОБАВЛЕНО: Действия после расчета (этого не хватало)
+  ESTIMATE_ACTIONS: {
+    inline_keyboard: [
+      [
+        {
+          text: BUTTONS.ACTION_SAVE || "✅ Оформить заявку",
+          callback_data: "action_save_order",
+        },
+      ],
+      [
+        {
+          text: BUTTONS.ACTION_CONTACT || "💬 Задать вопрос",
+          callback_data: "action_contact",
+        },
+      ],
+    ],
   },
 };
 
