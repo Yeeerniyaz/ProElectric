@@ -11,6 +11,7 @@
 
 import fs from "fs";
 import path from "path";
+import os from "os"; // Добавляем модуль OS
 import { fileURLToPath } from "url";
 import { UserService } from "../services/UserService.js";
 import { OrderService } from "../services/OrderService.js";
@@ -26,10 +27,35 @@ import {
 // --- КОНФИГУРАЦИЯ И УТИЛИТЫ ---
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BACKUP_DIR = path.join(__dirname, "../../backups");
 
-// Создаем папку бэкапов, если нет
-if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+// 🛡 БЕЗОПАСНАЯ ИНИЦИАЛИЗАЦИЯ ПУТЕЙ
+let BACKUP_DIR;
+try {
+  // Попытка 1: Используем папку внутри проекта
+  const projectBackupDir = path.join(__dirname, "../../backups");
+  if (!fs.existsSync(projectBackupDir)) {
+    fs.mkdirSync(projectBackupDir, { recursive: true });
+  }
+  // Проверяем права на запись (создаем и удаляем тестовый файл)
+  const testFile = path.join(projectBackupDir, ".test");
+  fs.writeFileSync(testFile, "ok");
+  fs.unlinkSync(testFile);
+
+  BACKUP_DIR = projectBackupDir;
+} catch (e) {
+  console.warn(
+    `⚠️ [WARNING] Не удалось создать папку бэкапов в проекте: ${e.message}`,
+  );
+  console.warn(`⚠️ Переключаюсь на системную временную папку.`);
+
+  // Попытка 2: Используем временную папку системы (она всегда доступна)
+  BACKUP_DIR = path.join(os.tmpdir(), "proelectric_backups");
+  if (!fs.existsSync(BACKUP_DIR)) {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  }
+}
+
+console.log(`✅ Папка бэкапов установлена: ${BACKUP_DIR}`);
 
 // Утилиты форматирования
 const format = {
