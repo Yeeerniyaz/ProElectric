@@ -9,7 +9,7 @@
 
 import { getClient } from "./connection.js";
 import { createTables } from "./schema.js";
-import { seedData } from "./seeds.js";
+import { seedDatabase } from "./seeds.js";
 
 // =============================================================================
 // ЭКСПОРТ ПУБЛИЧНОГО API (PUBLIC INTERFACE)
@@ -59,8 +59,7 @@ export const initDB = async () => {
     // 3. Сидинг данных (Data Seeding)
     // Наполняем таблицу settings ценами из constants.js.
     // Использует ON CONFLICT DO NOTHING, чтобы не перезаписать ручные изменения.
-    await seedData(client);
-
+    await seedDatabase();
     // 4. Фиксация изменений
     // Если код дошел до этой строчки, значит ошибок не было.
     // Сохраняем все изменения на диск.
