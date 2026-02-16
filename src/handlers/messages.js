@@ -1,7 +1,8 @@
 /**
  * @file src/handlers/messages.js
- * @description Обработчик текстовых сообщений.
- * Исправлена работа в каналах и ошибка с reset().
+ * @description Обработчик текстовых сообщений (Router & Wizard).
+ * Реализует сценарии: Калькулятор, Закрытие сделки, Меню навигации.
+ * @version 7.2.0 (Full Flow)
  */
 
 import { bot } from "../core.js";
@@ -9,22 +10,26 @@ import { db } from "../db.js";
 import { config } from "../config.js";
 import { OrderService } from "../services/OrderService.js";
 
-// Хранилище сессий (RAM)
+// Хранилище сессий (RAM). Экспортируется для доступа из callbacks.
 export const sessions = new Map();
 
-// Мәзір (Динамикалық)
+// =============================================================================
+// 🎛 UI КОМПОНЕНТЫ (КЛАВИАТУРЫ)
+// =============================================================================
+
 const getMainMenu = (role) => {
   const buttons = [
     [{ text: "🧮 Рассчитать стоимость" }, { text: "📂 Мои заказы" }],
     [{ text: "💰 Прайс-лист" }, { text: "📞 Контакты" }],
   ];
+  // Панель сотрудника
   if (["admin", "manager"].includes(role)) {
     buttons.unshift([{ text: "👷‍♂️ Мои объекты (Активные)" }]);
   }
   return { keyboard: buttons, resize_keyboard: true };
 };
 
-export const KB = {
+const KB = {
   CONTACT: {
     keyboard: [
       [{ text: "📱 Отправить номер", request_contact: true }],
@@ -32,8 +37,9 @@ export const KB = {
     ],
     resize_keyboard: true,
   },
-  ADMIN: {
-    inline_keyboard: [[{ text: "📊 Воронка", callback_data: "adm_stats" }]],
+  CANCEL: {
+    keyboard: [[{ text: "❌ Отмена" }]],
+    resize_keyboard: true,
   },
 };
 
@@ -43,55 +49,67 @@ const formatKZT = (num) =>
     currency: "KZT",
     maximumFractionDigits: 0,
   }).format(num);
-const getStatusLabel = (s) =>
-  ({
-    new: "🆕 Новый",
-    work: "🛠 В работе",
-    done: "✅ Выполнен",
-    cancel: "❌ Отменен",
-  })[s] || s;
+
+// =============================================================================
+// 🧠 ЛОГИКА ОБРАБОТКИ (HANDLERS)
+// =============================================================================
 
 export const setupMessageHandlers = () => {
-  // 1. /start
+  // 1. КОМАНДА /START
   bot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id;
     try {
-      // Каналда 'from' болмауы мүмкін, сондықтан тексереміз
-      const userId = msg.from ? msg.from.id : msg.chat.id;
-      const userName = msg.from
-        ? msg.from.first_name
-        : msg.chat.title || "Гость";
-      const userLogin = msg.from ? msg.from.username : "channel";
+      const userId = msg.from ? msg.from.id : chatId;
+      const userName = msg.from ? msg.from.first_name : "Гость";
+      const userLogin = msg.from ? msg.from.username : null;
 
+      // Регистрация / Обновление данных
       const user = await db.upsertUser(userId, userName, userLogin);
 
       await bot.sendMessage(
-        msg.chat.id,
-        `Салам, <b>${userName}</b>! 👋\nЯ бот <b>ProElectro</b>. Готов к работе!\nВаш статус: <b>${user.role}</b>`,
-        { parse_mode: "HTML", reply_markup: getMainMenu(user.role) },
+        chatId,
+        `Салам, <b>${userName}</b>! 👋\n` +
+          `Я цифровой помощник <b>ProElectro</b>.\n` +
+          `Готов помочь с расчетом электрики или управлением заказами.\n\n` +
+          `<i>Ваш статус: ${user.role}</i>`,
+        {
+          parse_mode: "HTML",
+          reply_markup: getMainMenu(user.role),
+        },
       );
+
+      sessions.delete(chatId);
     } catch (e) {
       console.error("Start Error:", e);
     }
   });
 
-  // 2. Admin
-  bot.onText(/\/admin/, async (msg) => {
-    const userId = msg.from ? msg.from.id : msg.chat.id;
-    // Канал болса немесе Админ болса рұқсат береміз
-    const isAdmin =
-      String(userId) === String(config.bot.bossUsername) ||
-      String(msg.chat.id) === String(config.bot.workGroupId) ||
-      msg.chat.type === "channel"; // Каналға рұқсат
+  // 2. КОМАНДА /CLOSE (ЗАКРЫТИЕ ЗАКАЗА)
+  bot.onText(/\/close_(\d+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const orderId = match[1];
 
-    if (!isAdmin) return bot.sendMessage(msg.chat.id, "⛔️ Доступ запрещен.");
+    // Проверка прав (через БД)
+    const user = await db.upsertUser(msg.from.id, msg.from.first_name);
+    if (!["admin", "manager"].includes(user.role)) {
+      return bot.sendMessage(chatId, "⛔️ У вас нет прав на закрытие заказов.");
+    }
 
-    await bot.sendMessage(msg.chat.id, "👨‍💻 <b>Админ-панель:</b>", {
-      parse_mode: "HTML",
-      reply_markup: KB.ADMIN,
+    // Инициализация сессии закрытия
+    sessions.set(chatId, {
+      step: "FINISH_SUM",
+      data: { orderId: orderId },
     });
+
+    await bot.sendMessage(
+      chatId,
+      `💰 <b>ЗАКРЫТИЕ ЗАКАЗА #${orderId}</b>\n\n` +
+        `Введите итоговую сумму, которую <b>фактически</b> заплатил клиент (цифрами):`,
+      { parse_mode: "HTML", reply_markup: KB.CANCEL },
+    );
   });
 
-  // 3. Contact
+  // 3. ОБРАБОТКА КОНТАКТА
   bot.on("contact", async (msg) => {
     if (!msg.from || msg.contact.user_id !== msg.from.id) return;
     const user = await db.upsertUser(
@@ -100,136 +118,225 @@ export const setupMessageHandlers = () => {
       msg.from.username,
       msg.contact.phone_number,
     );
-    await bot.sendMessage(msg.chat.id, "✅ Номер сохранен!", {
+    await bot.sendMessage(msg.chat.id, "✅ Номер успешно сохранен!", {
       reply_markup: getMainMenu(user.role),
     });
   });
 
-  // 4. Messages
+  // 4. ТЕКСТОВЫЕ СООБЩЕНИЯ (WIZARD & COMMANDS)
   bot.on("message", async (msg) => {
     if (!msg.text || msg.text.startsWith("/")) return;
+
     const chatId = msg.chat.id;
     const text = msg.text;
-    const userId = msg.from ? msg.from.id : chatId; // Канал үшін ID
+    const userId = msg.from ? msg.from.id : chatId;
 
-    try {
-      // --- МЕНЕДЖЕР ---
-      if (text === "👷‍♂️ Мои объекты (Активные)") {
-        const orders = await OrderService.getManagerActiveOrders(userId);
-        if (orders.length === 0)
-          return bot.sendMessage(chatId, "📭 Активті объектілер жоқ.");
+    // --- ОТМЕНА ОПЕРАЦИИ ---
+    if (text === "❌ Отмена" || text === "🔙 Назад") {
+      sessions.delete(chatId);
+      const user = await db.upsertUser(userId, msg.from.first_name);
+      return bot.sendMessage(chatId, "Операция отменена.", {
+        reply_markup: getMainMenu(user.role),
+      });
+    }
 
-        let response = "<b>👷‍♂️ ЖҰМЫСТАҒЫ ОБЪЕКТІЛЕР:</b>\n\n";
-        orders.forEach((o) => {
-          const date = new Date(o.created_at).toLocaleDateString();
-          response += `🔌 <b>#${o.id}</b> | ${o.client_name}\n💰 ${formatKZT(o.total_work_cost)}\n➖➖➖➖➖\n`;
-        });
-        return bot.sendMessage(chatId, response, { parse_mode: "HTML" });
-      }
+    // --- INIT: КАЛЬКУЛЯТОР ---
+    if (text === "🧮 Рассчитать стоимость") {
+      sessions.set(chatId, { step: "AREA", data: {} });
+      // Таймер "Брошенная корзина"
+      setTimeout(() => checkAbandonedSession(chatId), 15 * 60 * 1000);
 
-      // --- КАЛЬКУЛЯТОР ---
-      if (text === "🧮 Рассчитать стоимость") {
-        // 🔥 ТҮЗЕТІЛДІ: Ескі сессияны өшіру (delete)
-        sessions.delete(chatId);
-        sessions.set(chatId, { step: "WALLS", data: {} });
-        return bot.sendMessage(chatId, "Введите <b>площадь (м²)</b> цифрами:", {
+      return bot.sendMessage(
+        chatId,
+        "1️⃣ Введите <b>площадь помещения (м²)</b>:",
+        {
           parse_mode: "HTML",
-          reply_markup: { remove_keyboard: true },
-        });
-      }
+          reply_markup: KB.CANCEL,
+        },
+      );
+    }
 
-      // Калькулятор логикасы
-      const session = sessions.get(chatId);
-      if (session && session.step === "WALLS") {
+    // --- WIZARD PROCESSOR ---
+    const session = sessions.get(chatId);
+    if (session) {
+      // ШАГ 1: ПЛОЩАДЬ -> КОМНАТЫ
+      if (session.step === "AREA") {
         const area = parseInt(text);
-        if (isNaN(area) || area < 5 || area > 5000)
-          return bot.sendMessage(chatId, "⚠️ Введите число от 5 до 5000.");
-
+        if (isNaN(area) || area < 5 || area > 5000) {
+          return bot.sendMessage(
+            chatId,
+            "⚠️ Введите корректное число (от 5 до 5000).",
+          );
+        }
         session.data.area = area;
-        session.step = "TYPE";
+        session.step = "ROOMS";
 
         return bot.sendMessage(
           chatId,
-          `✅ ${area} м². <b>Выберите стены:</b>`,
+          "2️⃣ Введите <b>количество комнат</b> (числом):",
+          {
+            parse_mode: "HTML",
+          },
+        );
+      }
+
+      // ШАГ 2: КОМНАТЫ -> СТЕНЫ (КНОПКИ)
+      if (session.step === "ROOMS") {
+        const rooms = parseInt(text);
+        if (isNaN(rooms) || rooms < 1 || rooms > 50) {
+          return bot.sendMessage(
+            chatId,
+            "⚠️ Введите корректное число комнат (1-50).",
+          );
+        }
+        session.data.rooms = rooms;
+        session.step = "WALLS"; // Ожидаем нажатие Inline-кнопки (в callbacks.js)
+
+        return bot.sendMessage(
+          chatId,
+          `✅ Принято: ${session.data.area} м², ${rooms} комн.\n\n` +
+            `3️⃣ <b>Выберите материал стен:</b>\n` +
+            `<i>Это влияет на сложность и стоимость штробления.</i>`,
           {
             parse_mode: "HTML",
             reply_markup: {
               inline_keyboard: [
                 [{ text: "🧱 Газоблок / ГКЛ", callback_data: "wall_light" }],
-                [{ text: "🧱 Кирпич", callback_data: "wall_medium" }],
-                [{ text: "🏗 Бетон / Монолит", callback_data: "wall_heavy" }],
+                [{ text: "🧱 Кирпич", callback_data: "wall_brick" }],
+                [
+                  {
+                    text: "🏗 Бетон / Монолит",
+                    callback_data: "wall_concrete",
+                  },
+                ],
               ],
             },
           },
         );
       }
 
-      // --- БАСҚАЛАРЫ ---
-      if (text === "📂 Мои заказы") {
-        const orders = await OrderService.getUserOrders(userId);
-        if (!orders.length)
-          return bot.sendMessage(chatId, "📭 Тапсырыстар жоқ.");
+      // ШАГ: ЗАКРЫТИЕ ЗАКАЗА -> ВЫБОР КОШЕЛЬКА
+      if (session.step === "FINISH_SUM") {
+        const sum = parseInt(text.replace(/[^0-9]/g, ""));
+        if (isNaN(sum) || sum <= 0) {
+          return bot.sendMessage(
+            chatId,
+            "⚠️ Введите корректную сумму цифрами.",
+          );
+        }
 
-        let response = "<b>📂 ВАШИ ЗАКАЗЫ:</b>\n\n";
-        orders.forEach((o) => {
-          response += `🔹 <b>#${o.id}</b> (${new Date(o.created_at).toLocaleDateString()}) — ${formatKZT(o.total_work_cost)}\nСтатус: ${getStatusLabel(o.status)}\n➖➖➖➖➖\n`;
-        });
-        return bot.sendMessage(chatId, response, { parse_mode: "HTML" });
-      }
+        session.data.finalSum = sum;
+        // Переходим к выбору кошелька. Обработка нажатия будет в callbacks.js (wallet_*)
 
-      // Прайс
-      if (text === "💰 Прайс-лист") {
-        const p = await OrderService.getPublicPriceList();
+        const accounts = await db.getAccounts();
+        const btns = accounts.map((a) => [
+          {
+            text: `${a.type === "bank" ? "💳" : "💵"} ${a.name}`,
+            callback_data: `wallet_${a.id}`,
+          },
+        ]);
+
         return bot.sendMessage(
           chatId,
-          `📋 <b>ПРАЙС:</b>\n🧱 Газоблок: ${p.wall_light} ₸\n🧱 Кирпич: ${p.wall_medium} ₸\n🏗 Бетон: ${p.wall_heavy} ₸`,
-          { parse_mode: "HTML" },
+          `💰 Сумма к закрытию: <b>${formatKZT(sum)}</b>\n\n` +
+            `Выберите кассу, куда поступили деньги:`,
+          {
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: btns },
+          },
+        );
+      }
+    }
+
+    // --- МЕНЕДЖЕР: АКТИВНЫЕ ОБЪЕКТЫ ---
+    if (text === "👷‍♂️ Мои объекты (Активные)") {
+      const orders = await OrderService.getManagerActiveOrders(userId);
+
+      if (orders.length === 0) {
+        return bot.sendMessage(
+          chatId,
+          "📭 У вас нет активных объектов в работе.",
         );
       }
 
-      if (text === "📞 Контакты") {
-        return bot.sendMessage(
-          chatId,
-          `📞 <b>Связь:</b>\n👤 Ернияз: +7 (706) 606-63-23`,
-          { parse_mode: "HTML", reply_markup: KB.CONTACT },
-        );
-      }
-    } catch (e) {
-      console.error("Msg Error:", e);
+      let msgText = "<b>👷‍♂️ ВАШИ АКТИВНЫЕ ОБЪЕКТЫ:</b>\n\n";
+      orders.forEach((o) => {
+        msgText +=
+          `🔌 <b>Заказ #${o.id}</b> | ${getStatusEmoji(o.status)}\n` +
+          `👤 Клиент: ${o.client_name || "Гость"} (${o.client_phone || "нет номера"})\n` +
+          `🏠 Объект: ${o.area} м² | ${o.wall_type || "-"}\n` +
+          `💰 Смета: ${formatKZT(o.total_price)}\n` +
+          `👉 <b>Закрыть заказ:</b> /close_${o.id}\n` +
+          `➖➖➖➖➖➖➖➖\n`;
+      });
+
+      return bot.sendMessage(chatId, msgText, { parse_mode: "HTML" });
+    }
+
+    // --- КЛИЕНТ: МОИ ЗАКАЗЫ ---
+    if (text === "📂 Мои заказы") {
+      const orders = await OrderService.getUserOrders(userId);
+      if (!orders.length)
+        return bot.sendMessage(chatId, "📭 История заказов пуста.");
+
+      let msgText = "<b>📂 ВАШИ ЗАКАЗЫ:</b>\n\n";
+      orders.forEach((o) => {
+        msgText += `🔹 <b>#${o.id}</b> — ${formatKZT(o.total_price)}\nСтатус: ${getStatusEmoji(o.status)}\n\n`;
+      });
+      return bot.sendMessage(chatId, msgText, { parse_mode: "HTML" });
+    }
+
+    // --- ИНФО ---
+    if (text === "💰 Прайс-лист") {
+      const p = await OrderService.getPublicPriceList();
+      return bot.sendMessage(
+        chatId,
+        `📋 <b>БАЗОВЫЙ ПРАЙС 2026:</b>\n\n` +
+          `🧱 Газоблок (точка): ${p.wall_light} ₸\n` +
+          `🧱 Кирпич (точка): ${p.wall_medium} ₸\n` +
+          `🏗 Бетон (точка): ${p.wall_heavy} ₸\n\n` +
+          `<i>*Точная стоимость работ определяется мастером после замера.</i>`,
+        { parse_mode: "HTML" },
+      );
+    }
+
+    if (text === "📞 Контакты") {
+      return bot.sendMessage(
+        chatId,
+        `📞 <b>Наши контакты:</b>\n\n` +
+          `👤 Ернияз: +7 (706) 606-63-23\n` +
+          `📍 Алматы, ProElectro HQ`,
+        { parse_mode: "HTML", reply_markup: KB.CONTACT },
+      );
     }
   });
 };
 
-export const handleAdminCommand = async (msg, match) => {
-  const chatId = msg.chat.id;
-  if (match[1] === "stats") {
-    const stats = await OrderService.getGlobalStats();
-    let report = `📊 <b>ВОРОНКА:</b>\n`;
-    stats.funnel.forEach(
-      (row) => (report += `${getStatusLabel(row.status)}: ${row.count} шт.\n`),
-    );
-    await bot.sendMessage(chatId, report, { parse_mode: "HTML" });
-  }
-};
+// =============================================================================
+// 🔧 ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+// =============================================================================
 
-export const notifyAdmin = async (text, orderId = null) => {
-  if (!config.bot.workGroupId) return;
-  const opts = {
-    parse_mode: "HTML",
-    reply_markup: orderId
-      ? {
-          inline_keyboard: [
-            [
-              {
-                text: "🙋‍♂️ Взять в работу",
-                callback_data: `take_order_${orderId}`,
-              },
-            ],
-          ],
-        }
-      : undefined,
+function getStatusEmoji(status) {
+  const map = {
+    new: "🆕 Новый",
+    discuss: "🗣 Обсуждение",
+    work: "🛠 В работе",
+    done: "✅ Сдан",
+    cancel: "❌ Отмена",
   };
-  await bot
-    .sendMessage(config.bot.workGroupId, text, opts)
-    .catch((e) => console.error("Notify Error:", e.message));
-};
+  return map[status] || status;
+}
+
+function checkAbandonedSession(chatId) {
+  const session = sessions.get(chatId);
+  if (session && ["AREA", "ROOMS"].includes(session.step)) {
+    bot
+      .sendMessage(
+        chatId,
+        "🤔 <b>Вы не закончили расчет.</b>\n" +
+          "Если возникли вопросы, вы всегда можете связаться с нами через раздел Контакты.",
+        { parse_mode: "HTML" },
+      )
+      .catch(() => {});
+  }
+}
