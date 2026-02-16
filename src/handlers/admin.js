@@ -11,6 +11,9 @@ import { config } from "../config.js";
 import { KEYBOARDS, ROLES } from "../constants.js";
 import { OrderService } from "../services/OrderService.js";
 
+// Форматтер денег (KZT)
+const formatMoney = (num) => new Intl.NumberFormat('ru-KZ', { style: 'currency', currency: 'KZT', maximumFractionDigits: 0 }).format(num);
+
 // =============================================================================
 // 🛡 MIDDLEWARE (Проверка прав)
 // =============================================================================
@@ -49,21 +52,33 @@ export const setupAdminHandlers = () => {
     bot.onText(/\/admin/, openAdminPanel);
     bot.onText(/👑 Админ-панель/, openAdminPanel);
 
-    // 2. СТАТИСТИКА (KPI)
+    // 2. СТАТИСТИКА (KPI + КАССЫ)
     // -------------------------------------------------------------------------
     bot.onText(/📊 Статистика \(KPI\)/, async (msg) => {
         if (!await checkAdmin(msg)) return;
 
+        // 1. Общие цифры (Прибыль по закрытым заказам)
         const kpi = await db.getKPI();
-        const activeOrders = await OrderService.getActiveOrders(null, 'admin'); // null = all managers
+        const activeOrders = await OrderService.getActiveOrders(null, 'admin'); 
         
+        // 2. Деньги на руках (Сумма всех кошельков)
+        const accounts = await db.getAccounts(null, 'admin');
+        const totalCash = accounts.reduce((sum, acc) => sum + parseFloat(acc.balance), 0);
+        
+        let cashText = "";
+        accounts.forEach(acc => {
+            cashText += `▫️ ${acc.name}: <b>${formatMoney(acc.balance)}</b>\n`;
+        });
+
         const text = 
             `📊 <b>ФИНАНСОВЫЙ ОТЧЕТ</b>\n` +
             `➖➖➖➖➖➖➖➖➖➖\n` +
-            `💰 <b>Оборот (Грязными):</b> ${new Intl.NumberFormat('ru-KZ', { style: 'currency', currency: 'KZT', maximumFractionDigits: 0 }).format(kpi.revenue)}\n` +
-            `📈 <b>Чистая прибыль:</b> ${new Intl.NumberFormat('ru-KZ', { style: 'currency', currency: 'KZT', maximumFractionDigits: 0 }).format(kpi.profit)}\n` +
+            `💰 <b>Оборот (Грязными):</b> ${formatMoney(kpi.revenue)}\n` +
+            `📈 <b>Чистая прибыль:</b> ${formatMoney(kpi.profit)}\n` +
             `🔨 <b>Объектов в работе:</b> ${activeOrders.length}\n` +
             `➖➖➖➖➖➖➖➖➖➖\n` +
+            `🏦 <b>ДЕНЬГИ В КАССАХ (ВСЕГО: ${formatMoney(totalCash)}):</b>\n` +
+            `${cashText}\n` +
             `<i>Данные обновлены: ${new Date().toLocaleTimeString()}</i>`;
 
         await bot.sendMessage(msg.chat.id, text, { parse_mode: "HTML" });
@@ -105,15 +120,14 @@ export const setupAdminHandlers = () => {
         const newRole = match[2];
         
         try {
-            // Пытаемся найти имя пользователя (если он уже писал боту)
-            // Если нет, ставим заглушку
+            // Имя для кассы (если создается)
             const name = `Sotrudnik_${targetId}`; 
             
             await db.promoteUser(targetId, newRole, name);
             
             await bot.sendMessage(msg.chat.id, `✅ Роль обновлена!\nID: <code>${targetId}</code> → <b>${newRole.toUpperCase()}</b>`, { parse_mode: "HTML" });
             
-            // Уведомляем сотрудника (если бот не заблокирован им)
+            // Уведомляем сотрудника
             try {
                 await bot.sendMessage(targetId, 
                     `🎉 <b>Обновление прав доступа!</b>\n` +
@@ -121,9 +135,7 @@ export const setupAdminHandlers = () => {
                     `Перезапустите бота командой /start, чтобы обновить меню.`, 
                     { parse_mode: "HTML" }
                 );
-            } catch (e) {
-                // Игнорируем ошибку, если юзер заблокировал бота
-            }
+            } catch (e) { /* Игнор блока */ }
 
         } catch (e) {
             console.error(e);
@@ -133,13 +145,10 @@ export const setupAdminHandlers = () => {
 
     // 5. РАССЫЛКА (Broadcast)
     // -------------------------------------------------------------------------
-    // Работает как State Machine: Админ нажимает кнопку -> Бот ждет текст -> Админ пишет -> Рассылка
-    // Для простоты сделаем через команду /broadcast Текст
     bot.onText(/\/broadcast (.+)/, async (msg, match) => {
         if (!await checkAdmin(msg)) return;
 
         const text = match[1];
-        // Получаем всех пользователей (нужен метод db.getAllUsers, добавим простой query)
         const res = await db.query("SELECT telegram_id FROM users");
         const users = res.rows;
 
@@ -150,15 +159,12 @@ export const setupAdminHandlers = () => {
             try {
                 await bot.sendMessage(u.telegram_id, `📢 <b>НОВОСТИ PROELECTRO:</b>\n\n${text}`, { parse_mode: "HTML" });
                 success++;
-            } catch (e) {
-                // Юзер заблокировал бота
-            }
+            } catch (e) { /* Блок */ }
         }
 
         await bot.sendMessage(msg.chat.id, `✅ Рассылка завершена. Доставлено: ${success}/${users.length}`);
     });
     
-    // Кнопка в меню просто подсказывает команду
     bot.onText(/📣 Рассылка/, async (msg) => {
         if (!await checkAdmin(msg)) return;
         await bot.sendMessage(msg.chat.id, "✍️ Чтобы сделать рассылку, напишите:\n<code>/broadcast Ваш текст новости</code>", { parse_mode: "HTML" });
@@ -166,7 +172,6 @@ export const setupAdminHandlers = () => {
 
     // 6. СОЗДАНИЕ ЗАКАЗА ВРУЧНУЮ (Manual Order)
     // -------------------------------------------------------------------------
-    // Команда: /neworder +77001234567 50 150000 (Телефон, Площадь, Цена)
     bot.onText(/\/neworder ([+]?\d+) (\d+) (\d+)/, async (msg, match) => {
         if (!await checkAdmin(msg)) return;
 
@@ -187,7 +192,7 @@ export const setupAdminHandlers = () => {
                 `✅ <b>Заказ #${order.id} создан!</b>\n` +
                 `👤 Клиент: ${phone}\n` +
                 `🏠 Площадь: ${area} м²\n` +
-                `💰 Сумма: ${new Intl.NumberFormat('ru-KZ', { style: 'currency', currency: 'KZT' }).format(price)}`, 
+                `💰 Сумма: ${formatMoney(price)}`, 
                 { parse_mode: "HTML" }
             );
 
@@ -197,7 +202,7 @@ export const setupAdminHandlers = () => {
         }
     });
 
-    // Подсказка по ручному созданию
+    // Подсказка
     bot.onText(/\/help_admin/, async (msg) => {
         if (!await checkAdmin(msg)) return;
         await bot.sendMessage(msg.chat.id,
