@@ -20,7 +20,7 @@ import { Telegraf, session as telegrafSession } from "telegraf";
 // Импорт конфигурации и ядра
 import { config } from "./config.js";
 import { initDB, closePool } from "./database/index.js";
-import { MESSAGES } from "./constants.js";
+import { MESSAGES, BUTTONS } from "./constants.js";
 
 // Импорт бизнес-логики
 import { UserHandler } from "./handlers/UserHandler.js";
