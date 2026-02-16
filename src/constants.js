@@ -72,7 +72,9 @@ export const ESTIMATE_RULES = Object.freeze({
 // =============================================================================
 // 4. РОЛИ И СТАТУСЫ
 // =============================================================================
+
 export const ROLES = Object.freeze({
+  OWNER: "owner", // <--- ДОБАВЬ ВОТ ЭТУ СТРОКУ
   ADMIN: "admin",
   MANAGER: "manager",
   CLIENT: "client",
