@@ -10,6 +10,7 @@ import { OrderService } from "../services/OrderService.js";
 import { UserService } from "../services/UserService.js";
 import { AdminHandler } from "./AdminHandler.js";
 import { KEYBOARDS, MESSAGES, BUTTONS, TEXTS, ROLES } from "../constants.js";
+import { getSettings } from "../database/repository.js";
 
 // =============================================================================
 // 🏗 СОСТОЯНИЯ (FINITE STATE MACHINE)
@@ -44,13 +45,12 @@ export const UserHandler = {
 
       // 3. Приветствие
       const userName = ctx.from.first_name || "Гость";
-      
+
       // Используем HTML для жирного текста
       await ctx.replyWithHTML(
-        TEXTS.welcome(userName), 
-        KEYBOARDS.MAIN_MENU(userRole)
+        TEXTS.welcome(userName),
+        KEYBOARDS.MAIN_MENU(userRole),
       );
-
     } catch (error) {
       console.error("[UserHandler] Start Error:", error);
       await ctx.reply("⚠️ Произошла ошибка при запуске. Попробуйте позже.");
@@ -63,7 +63,8 @@ export const UserHandler = {
    */
   async handleTextMessage(ctx) {
     const text = ctx.message.text;
-    const state = ctx.session.state || USER_STATES.IDLE;
+    const session = ctx.session || {};
+    const state = session.state || USER_STATES.IDLE;
 
     try {
       // 1. ГЛОБАЛЬНЫЕ ПЕРЕХВАТЧИКИ (Global Interceptors)
@@ -74,11 +75,17 @@ export const UserHandler = {
 
       // 2. АДМИНСКИЕ КНОПКИ (Admin Router Delegation)
       // Если нажата кнопка из админ-панели, передаем управление в AdminHandler
-      if ([
-        BUTTONS.ADMIN_PANEL, BUTTONS.ADMIN_STATS, 
-        BUTTONS.ADMIN_SETTINGS, BUTTONS.ADMIN_STAFF, 
-        BUTTONS.MANAGER_OBJECTS, BUTTONS.MANAGER_CASH
-      ].includes(text) || text.startsWith("/")) {
+      if (
+        [
+          BUTTONS.ADMIN_PANEL,
+          BUTTONS.ADMIN_STATS,
+          BUTTONS.ADMIN_SETTINGS,
+          BUTTONS.ADMIN_STAFF,
+          BUTTONS.MANAGER_OBJECTS,
+          BUTTONS.MANAGER_CASH,
+        ].includes(text) ||
+        text.startsWith("/")
+      ) {
         return AdminHandler.handleMessage(ctx);
       }
 
@@ -87,19 +94,19 @@ export const UserHandler = {
         switch (text) {
           case BUTTONS.CALCULATOR:
             return this.enterCalculationMode(ctx);
-          
+
           case BUTTONS.ORDERS:
             return this.showMyOrders(ctx);
-          
+
           case BUTTONS.PRICE_LIST:
             return this.showPriceList(ctx);
-          
+
           case BUTTONS.CONTACTS:
             return this.showContacts(ctx); // Новая функция без адреса
 
           // Дополнительные "мелкие" функции, если текст совпадет
-          case "ℹ️ О нас": 
-             return this.showAbout(ctx);
+          case "ℹ️ О нас":
+            return this.showAbout(ctx);
         }
       }
 
@@ -141,7 +148,7 @@ export const UserHandler = {
       if (data === "action_save_order") {
         return this.saveOrderAction(ctx);
       }
-      
+
       if (data === "action_contact") {
         return this.enterContactMode(ctx);
       }
@@ -194,7 +201,9 @@ export const UserHandler = {
 
     // Защита от старых нажатий (если сессия истекла)
     if (ctx.session.state !== USER_STATES.CALC_WAIT_WALL) {
-      return ctx.answerCbQuery(MESSAGES.USER.SESSION_EXPIRED, { show_alert: true });
+      return ctx.answerCbQuery(MESSAGES.USER.SESSION_EXPIRED, {
+        show_alert: true,
+      });
     }
 
     ctx.session.calcData.wallType = wallType;
@@ -202,7 +211,9 @@ export const UserHandler = {
 
     // UX: Редактируем сообщение с кнопками, чтобы нельзя было нажать повторно
     const wallName = this.getWallLabel(wallType);
-    await ctx.editMessageText(`✅ Стены: <b>${wallName}</b>`, { parse_mode: 'HTML' });
+    await ctx.editMessageText(`✅ Стены: <b>${wallName}</b>`, {
+      parse_mode: "HTML",
+    });
 
     await ctx.reply(MESSAGES.USER.WIZARD_STEP_3_ROOMS, KEYBOARDS.CANCEL_MENU);
     await ctx.answerCbQuery();
@@ -219,7 +230,7 @@ export const UserHandler = {
     }
 
     ctx.session.calcData.rooms = rooms;
-    
+
     // Показываем "думаю..."
     await ctx.sendChatAction("typing");
     const processingMsg = await ctx.reply(MESSAGES.USER.CALCULATION_PROCESS);
@@ -228,7 +239,11 @@ export const UserHandler = {
       const { area, wallType } = ctx.session.calcData;
 
       // Вызов сервиса (Business Logic)
-      const result = await OrderService.calculateComplexEstimate(area, rooms, wallType);
+      const result = await OrderService.calculateComplexEstimate(
+        area,
+        rooms,
+        wallType,
+      );
 
       // Сохраняем результат в сессию (чтобы можно было оформить заказ)
       ctx.session.lastResult = result;
@@ -239,7 +254,7 @@ export const UserHandler = {
       const invoiceText = TEXTS.estimateResult(
         "PREVIEW", // ID заказа пока нет
         result,
-        wallType
+        wallType,
       );
 
       // Удаляем сообщение "Считаю..."
@@ -247,7 +262,6 @@ export const UserHandler = {
 
       // Отправляем результат с кнопками действий
       await ctx.replyWithHTML(invoiceText, KEYBOARDS.ESTIMATE_ACTIONS);
-
     } catch (error) {
       console.error("[UserHandler] Calc Logic Error:", error);
       await ctx.reply(MESSAGES.USER.CALCULATION_ERROR);
@@ -266,7 +280,9 @@ export const UserHandler = {
     const result = ctx.session.lastResult;
 
     if (!result) {
-      return ctx.answerCbQuery(MESSAGES.USER.SESSION_EXPIRED, { show_alert: true });
+      return ctx.answerCbQuery(MESSAGES.USER.SESSION_EXPIRED, {
+        show_alert: true,
+      });
     }
 
     try {
@@ -279,15 +295,14 @@ export const UserHandler = {
       await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
 
       await ctx.replyWithMarkdown(MESSAGES.USER.SAVE_ORDER_SUCCESS(order.id));
-      
+
       // Уведомление админам (Observer)
       this.notifyAdminsNewOrder(ctx, order, result.total.grandTotal);
-
     } catch (error) {
       console.error("[UserHandler] Save Order Error:", error);
       await ctx.reply(MESSAGES.USER.SAVE_ORDER_ERROR);
     }
-    
+
     await ctx.answerCbQuery();
   },
 
@@ -297,7 +312,7 @@ export const UserHandler = {
   async enterContactMode(ctx) {
     ctx.session.state = USER_STATES.CONTACT_WAIT_MSG;
     await ctx.reply(MESSAGES.USER.CONTACT_PROMPT, KEYBOARDS.CANCEL_MENU);
-    if(ctx.callbackQuery) await ctx.answerCbQuery();
+    if (ctx.callbackQuery) await ctx.answerCbQuery();
   },
 
   /**
@@ -305,22 +320,25 @@ export const UserHandler = {
    */
   async processSupportMessage(ctx, text) {
     if (text.length < 5) {
-      return ctx.reply("⚠️ Сообщение слишком короткое. Опишите вопрос подробнее.");
+      return ctx.reply(
+        "⚠️ Сообщение слишком короткое. Опишите вопрос подробнее.",
+      );
     }
 
     try {
       const adminIds = await UserService.getAdminIdsForNotification();
-      const userLink = ctx.from.username ? `@${ctx.from.username}` : `ID:${ctx.from.id}`;
+      const userLink = ctx.from.username
+        ? `@${ctx.from.username}`
+        : `ID:${ctx.from.id}`;
       const msg = MESSAGES.USER.SUPPORT_MSG_ADMIN(userLink, text);
 
       // Рассылка всем админам
       for (const adminId of adminIds) {
-          await ctx.telegram.sendMessage(adminId, msg).catch(() => {});
+        await ctx.telegram.sendMessage(adminId, msg).catch(() => {});
       }
 
       await ctx.reply(MESSAGES.USER.CONTACT_SENT);
       this.returnToMainMenu(ctx);
-
     } catch (e) {
       await ctx.reply("Ошибка отправки сообщения.");
     }
@@ -336,14 +354,17 @@ export const UserHandler = {
   async showPriceList(ctx) {
     await ctx.sendChatAction("typing");
     try {
-       // Получаем актуальные настройки из БД, чтобы прайс был свежим
-       const settings = await OrderService.getSettings ? await OrderService.getSettings() : {};
-       
-       // Используем шаблон TEXTS.priceList
-       await ctx.replyWithHTML(TEXTS.priceList(settings));
+      // Получаем актуальные настройки из БД, чтобы прайс был свежим
+      // Вместо await OrderService.getSettings()
+      const settings = (await getSettings())
+        ? await OrderService.getSettings()
+        : {};
+
+      // Используем шаблон TEXTS.priceList
+      await ctx.replyWithHTML(TEXTS.priceList(settings));
     } catch (e) {
-       // Если ошибка, выводим дефолтный
-       await ctx.replyWithHTML(TEXTS.priceList({})); 
+      // Если ошибка, выводим дефолтный
+      await ctx.replyWithHTML(TEXTS.priceList({}));
     }
   },
 
@@ -352,13 +373,13 @@ export const UserHandler = {
    */
   async showContacts(ctx) {
     // Формируем кастомное сообщение без адреса, как ты просил
-    const contactMsg = 
-        `📞 <b>Наши контакты:</b>\n\n` +
-        `👤 Главный инженер: @yeeerniyaz\n` +
-        `📱 Телефон: +7 (777) 123-45-67\n` +
-        `🕒 Режим работы: 09:00 - 20:00\n` +
-        `💬 <i>Пишите в любое время!</i>`;
-        
+    const contactMsg =
+      `📞 <b>Наши контакты:</b>\n\n` +
+      `👤 Главный инженер: @yeeerniyaz\n` +
+      `📱 Телефон: +7 (777) 123-45-67\n` +
+      `🕒 Режим работы: 09:00 - 20:00\n` +
+      `💬 <i>Пишите в любое время!</i>`;
+
     await ctx.replyWithHTML(contactMsg);
   },
 
@@ -384,8 +405,9 @@ export const UserHandler = {
     orders.forEach((order, index) => {
       const date = new Date(order.created_at).toLocaleDateString();
       const price = parseInt(order.total_price).toLocaleString();
-      const statusIcon = order.status === 'new' ? '🆕' : (order.status === 'done' ? '✅' : '⚙️');
-      
+      const statusIcon =
+        order.status === "new" ? "🆕" : order.status === "done" ? "✅" : "⚙️";
+
       msg += `${index + 1}. ${statusIcon} <b>${date}</b> — ${price} ₸\n`;
     });
 
@@ -406,12 +428,12 @@ export const UserHandler = {
     // Быстрый запрос роли
     let role = ROLES.CLIENT;
     try {
-        const user = await UserService.registerOrUpdateUser(ctx.from);
-        if (user) role = user.role;
-    } catch(e) {}
+      const user = await UserService.registerOrUpdateUser(ctx.from);
+      if (user) role = user.role;
+    } catch (e) {}
 
     const text = customMessage || MESSAGES.USER.RETURN_MAIN;
-    
+
     // Если сообщение вызвано callback-ом, используем reply, иначе обычный ответ
     await ctx.reply(text, KEYBOARDS.MAIN_MENU(role));
   },
@@ -443,22 +465,29 @@ export const UserHandler = {
    */
   async notifyAdminsNewOrder(ctx, order, totalSum) {
     try {
-        const adminIds = await UserService.getAdminIdsForNotification();
-        const userLink = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
-        
-        // Пытаемся получить телефон из профиля
-        const profile = await UserService.getUserProfile(ctx.from.id);
-        const phone = profile?.phone || "Не указан";
+      const adminIds = await UserService.getAdminIdsForNotification();
+      const userLink = ctx.from.username
+        ? `@${ctx.from.username}`
+        : ctx.from.first_name;
 
-        const msg = MESSAGES.USER.NEW_ORDER_ADMIN(
-          order.id, userLink, phone, totalSum.toLocaleString()
-        );
+      // Пытаемся получить телефон из профиля
+      const profile = await UserService.getUserProfile(ctx.from.id);
+      const phone = profile?.phone || "Не указан";
 
-        for (const adminId of adminIds) {
-          await ctx.telegram.sendMessage(adminId, msg).catch(e => console.error("Admin send error", e));
-        }
+      const msg = MESSAGES.USER.NEW_ORDER_ADMIN(
+        order.id,
+        userLink,
+        phone,
+        totalSum.toLocaleString(),
+      );
+
+      for (const adminId of adminIds) {
+        await ctx.telegram
+          .sendMessage(adminId, msg)
+          .catch((e) => console.error("Admin send error", e));
+      }
     } catch (e) {
-        console.error("Notify Error", e);
+      console.error("Notify Error", e);
     }
-  }
+  },
 };

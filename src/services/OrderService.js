@@ -7,7 +7,7 @@
  * @version 4.0.0 (Enterprise Level)
  */
 
-import * as db from "../database/repository.js";
+import * as db from "../database/index.js";
 import {
   DB_KEYS,
   PRICING,

@@ -54,7 +54,7 @@ bot.use(async (ctx, next) => {
 // --- Маршрутизация команд (Bot Routing) ---
 
 // Админские команды
-bot.command("admin", (ctx) => AdminHandler.enterAdminPanel(ctx));
+bot.command("admin", (ctx) => AdminHandler.showAdminMenu(ctx));
 bot.hears(/^\/setrole/, (ctx) => AdminHandler.promoteUser(ctx));
 bot.hears(/^\/setprice/, (ctx) => AdminHandler.updatePriceSetting(ctx));
 bot.hears(/^\/broadcast/, (ctx) => AdminHandler.broadcastMessage(ctx));
