@@ -1,36 +1,64 @@
 /**
- * @file src/bot.js
- * @description Оркестратор хендлеров и цикла обновлений.
+ * @file src/core.js
+ * @description Ядро системы. Исправлен экспорт и контекст EventEmitter.
+ * @version 6.2.0 (Stable Export)
  */
 
-import { bot } from './core.js';
-import { setupAuthHandlers } from './handlers/auth.js';
-import { setupAdminHandlers } from './handlers/admin.js';
-import { setupCallbackHandlers } from './handlers/callbacks.js';
-import { setupMessageHandlers } from './handlers/messages.js';
+import TelegramBot from 'node-telegram-bot-api';
+import { EventEmitter } from 'events';
+import { config } from './config.js';
 
-export const initBot = async () => {
-    console.log('🤖 [BOT] Регистрация модулей...');
+// ПРОВЕРКА КОНФИГУРАЦИИ
+if (!config.bot?.token) {
+    throw new Error('SYSTEM_HALT: BOT_TOKEN is missing in config.');
+}
 
-    // 1. Очистка старых соединений (Critical!)
-    try {
-        await bot.deleteWebHook();
-    } catch (e) {
-        console.warn('⚠️ [BOT] Webhook cleanup failed.');
+console.log(`🏗 [CORE] Инициализация Engine... Окружение: ${config.system.env}`);
+
+/**
+ * ИНИЦИАЛИЗАЦИЯ ИНСТАНСА
+ * Мы экспортируем 'bot' как константу (Named Export), чтобы 'auth.js' мог его найти.
+ */
+export const bot = new TelegramBot(config.bot.token, {
+    polling: false, // Управляется контроллером в src/bot.js
+    request: {
+        agentOptions: {
+            keepAlive: true,
+            maxSockets: 50
+        }
     }
+});
 
-    // 2. Регистрация хендлеров (ПОРЯДОК ВАЖЕН)
-    setupAuthHandlers();     // Проверка прав
-    setupAdminHandlers();    // Админ-команды
-    setupCallbackHandlers(); // Кнопки
-    setupMessageHandlers();  // Текстовые команды и визарды
+/**
+ * FIX: bot.setMaxListeners is not a function
+ * Принудительно вызываем метод базового класса EventEmitter в контексте инстанса бота.
+ */
+try {
+    EventEmitter.prototype.setMaxListeners.call(bot, 100);
+} catch (e) {
+    console.warn('⚠️ [CORE] Предупреждение: Не удалось изменить лимит слушателей событий.');
+}
 
-    // 3. ЗАПУСК ЦИКЛА ПРИЕМА КОМАНД
-    // Без этого метода бот будет молчать
-    bot.startPolling({
-        restart: true,
-        params: { timeout: 10 }
+// ГЛОБАЛЬНАЯ ОБРАБОТКА СИСТЕМНЫХ ОШИБОК (SAFETY LAYER)
+const setupSafetyLayer = () => {
+    // Ошибки сети Telegram
+    bot.on('polling_error', (err) => {
+        if (['EFATAL', 'ETIMEDOUT', 'ECONNRESET'].includes(err.code)) return;
+        console.error(`📡 [POLLING ERROR] ${err.code}: ${err.message}`);
     });
 
-    console.log('✅ [BOT] Бот запущен и слушает команды!');
+    // Ошибки промисов
+    process.on('unhandledRejection', (reason) => {
+        console.error('🔥 [CRITICAL] Unhandled Rejection:', reason);
+    });
+
+    // Критические исключения
+    process.on('uncaughtException', (err) => {
+        console.error('🔥 [CRITICAL] Uncaught Exception:', err);
+        setTimeout(() => process.exit(1), 500);
+    });
 };
+
+setupSafetyLayer();
+
+console.log(`✅ [CORE] Ядро успешно экспортировано.`);
