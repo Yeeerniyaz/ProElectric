@@ -6,7 +6,7 @@
  * @version 4.0.0 (Enterprise Level)
  */
 
-import * as db from "../database/repository.js";
+import * as db from "../database/index.js";
 import { ROLES, MESSAGES } from "../constants.js";
 
 export const UserService = {
@@ -48,13 +48,20 @@ export const UserService = {
    * * @param {number} userId - Telegram ID пользователя
    * @returns {Promise<boolean>} True, если пользователь имеет права админа
    */
+  /**
+   * 🛡️ Проверка прав доступа.
+   */
   async isAdmin(userId) {
-    const user = await db.getUserByTelegramId(userId);
+    // Используем прямой SQL, так как это надежнее
+    const res = await db.query(
+      "SELECT role FROM users WHERE telegram_id = $1",
+      [userId],
+    );
 
-    if (!user) return false;
+    if (res.rows.length === 0) return false;
 
-    // Проверяем вхождение роли в список разрешенных
-    return [ROLES.ADMIN, ROLES.OWNER, ROLES.MANAGER].includes(user.role);
+    const userRole = res.rows[0].role;
+    return [ROLES.ADMIN, ROLES.OWNER, ROLES.MANAGER].includes(userRole);
   },
 
   /**
