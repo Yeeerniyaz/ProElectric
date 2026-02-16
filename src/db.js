@@ -274,14 +274,36 @@ export const db = {
 };
 
 // =============================================================================
-// 🔥 MIGRATION SYSTEM
+// 🏗 SENIOR MIGRATION SYSTEM
 // =============================================================================
 
+// 1. Конфигурация дефолтных значений (вынесли из логики)
+const DEFAULT_SETTINGS = {
+  // Черновые работы
+  price_strobe_concrete: 1750,
+  price_strobe_brick: 1100,
+  price_cable_laying: 400,
+  price_drill_hole_concrete: 1500,
+  price_drill_hole_brick: 1000,
+  price_socket_box_install: 600,
+  price_junction_box_assembly: 3000,
+  // Чистовые работы
+  price_socket_install: 1000,
+  price_shield_module: 1750,
+  price_lamp_install: 5000,
+  price_led_strip: 2000,
+  // Коэффициенты
+  material_factor: 0.45,
+};
+
+// 2. Сама функция инициализации
 export const initDB = async () => {
-  console.log("⏳ [DB] Starting Schema Synchronization...");
+  console.log("🚀 [DB] Starting Senior Schema Synchronization...");
 
   try {
     await transaction(async (client) => {
+      // --- A. Создание базовых таблиц (Core Schema) ---
+
       // 1. Users
       await client.query(`
                 CREATE TABLE IF NOT EXISTS users (
@@ -289,28 +311,13 @@ export const initDB = async () => {
                     username TEXT,
                     first_name TEXT,
                     phone TEXT,
-                    role TEXT DEFAULT 'client', -- client, admin, manager
+                    role TEXT DEFAULT 'client',
                     created_at TIMESTAMP DEFAULT NOW(),
                     updated_at TIMESTAMP DEFAULT NOW()
                 );
             `);
 
-      // 2. Orders (Updated structure for Granular Pricing)
-      await client.query(`
-                CREATE TABLE IF NOT EXISTS orders (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT REFERENCES users(telegram_id),
-                    city TEXT,
-                    service_type TEXT,
-                    details JSONB, -- Хранит breakdown, points, meters
-                    status TEXT DEFAULT 'new', -- new, in_progress, completed, canceled
-                    total_price NUMERIC DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW()
-                );
-            `);
-
-      // 3. Accounts (Кассы)
+      // 2. Accounts (Финансы)
       await client.query(`
                 CREATE TABLE IF NOT EXISTS accounts (
                     id SERIAL PRIMARY KEY,
@@ -322,21 +329,21 @@ export const initDB = async () => {
                 );
             `);
 
-      // 4. Transactions
+      // 3. Transactions (Движение средств)
       await client.query(`
                 CREATE TABLE IF NOT EXISTS transactions (
                     id SERIAL PRIMARY KEY,
                     account_id INTEGER REFERENCES accounts(id),
                     user_id BIGINT,
                     amount NUMERIC NOT NULL,
-                    type TEXT NOT NULL, -- income, expense
+                    type TEXT NOT NULL,
                     category TEXT,
                     comment TEXT,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
             `);
 
-      // 5. Settings (Dynamic Pricing)
+      // 4. Settings (Динамические цены)
       await client.query(`
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
@@ -345,37 +352,64 @@ export const initDB = async () => {
                 );
             `);
 
-      // --- SEEDING (Дефолтные цены) ---
-      const defaultPrices = {
-        // Черновые
-        price_strobe_concrete: 1750,
-        price_strobe_brick: 1100,
-        price_cable_laying: 400,
-        price_drill_hole_concrete: 1500,
-        price_drill_hole_brick: 1000,
-        price_socket_box_install: 600,
-        price_junction_box_assembly: 3000,
-        // Чистовые
-        price_socket_install: 1000,
-        price_shield_module: 1750,
-        price_lamp_install: 5000,
-        price_led_strip: 2000,
-        // Система
-        material_factor: 0.45,
-      };
+      // 5. Products (Склад - добавляем сразу, пригодится)
+      await client.query(`
+                CREATE TABLE IF NOT EXISTS products (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    price NUMERIC(10, 2) NOT NULL,
+                    stock_quantity INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+            `);
 
-      for (const [key, value] of Object.entries(defaultPrices)) {
-        await client.query(
-          "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING",
-          [key, value],
-        );
-      }
+      // --- B. Сложные таблицы с миграциями (Orders) ---
+
+      // Шаг 1: Создаем таблицу, если её вообще нет
+      await client.query(`
+                CREATE TABLE IF NOT EXISTS orders (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(telegram_id),
+                    status TEXT DEFAULT 'new',
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            `);
+
+      // Шаг 2: Schema Evolution (Добавляем колонки, если их нет)
+      // Это решает твою ошибку "column client_name does not exist"
+      const orderColumns = [
+        "ADD COLUMN IF NOT EXISTS city TEXT",
+        "ADD COLUMN IF NOT EXISTS service_type TEXT",
+        "ADD COLUMN IF NOT EXISTS details JSONB",
+        "ADD COLUMN IF NOT EXISTS total_price NUMERIC DEFAULT 0",
+        "ADD COLUMN IF NOT EXISTS client_name TEXT", // <--- Фикс
+        "ADD COLUMN IF NOT EXISTS client_phone TEXT", // <--- Фикс
+        "ADD COLUMN IF NOT EXISTS area NUMERIC DEFAULT 0", // <--- Фикс
+        "ADD COLUMN IF NOT EXISTS rooms INTEGER DEFAULT 0", // <--- Фикс
+      ];
+
+      await client.query(`ALTER TABLE orders ${orderColumns.join(", ")}`);
+
+      // --- C. Seeding (Заполнение данными) ---
+
+      // Используем Promise.all для параллельной вставки (быстрее)
+      const seedPromises = Object.entries(DEFAULT_SETTINGS).map(
+        ([key, value]) =>
+          client.query(
+            "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING",
+            [key, value],
+          ),
+      );
+      await Promise.all(seedPromises);
     });
 
-    console.log("✅ [DB] Schema Synced & Ready.");
+    console.log("✅ [DB] Schema Synced. System Ready.");
   } catch (e) {
     console.error("💥 [DB FATAL] Migration Failed:", e);
-    process.exit(1);
+    // Не убиваем процесс жестко, даем шанс логам записаться, но выбрасываем ошибку выше
+    throw e;
   }
 };
 
