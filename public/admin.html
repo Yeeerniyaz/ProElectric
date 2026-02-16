@@ -14,8 +14,8 @@
         <div class="login-box">
             <h2>🔐 Вход в систему</h2>
             <form id="login-form">
-                <input type="password" id="password" placeholder="Введите пароль администратора" required>
-                <button type="submit">Войти</button>
+                <input type="password" id="password" placeholder="Пароль администратора" required>
+                <button type="submit" class="btn primary full">Войти</button>
             </form>
             <p id="login-error" class="error-msg"></p>
         </div>
@@ -29,20 +29,22 @@
             </div>
             <nav class="menu">
                 <button class="menu-item active" data-tab="dashboard">
-                    <i data-feather="pie-chart"></i> Дашборд
+                    <i data-feather="pie-chart"></i> <span>Дашборд</span>
                 </button>
                 <button class="menu-item" data-tab="orders">
-                    <i data-feather="list"></i> Заказы
+                    <i data-feather="layers"></i> <span>Заказы</span>
                 </button>
                 <button class="menu-item" data-tab="finance">
-                    <i data-feather="dollar-sign"></i> Финансы
+                    <i data-feather="dollar-sign"></i> <span>Финансы</span>
                 </button>
                 <button class="menu-item" data-tab="settings">
-                    <i data-feather="settings"></i> Настройки
+                    <i data-feather="sliders"></i> <span>Настройки</span>
                 </button>
             </nav>
             <div class="sidebar-footer">
-                <button id="logout-btn"><i data-feather="log-out"></i> Выход</button>
+                <button id="logout-btn" class="btn-text-danger">
+                    <i data-feather="log-out"></i> Выйти
+                </button>
             </div>
         </aside>
 
@@ -51,8 +53,9 @@
             <header class="top-bar">
                 <h1 id="page-title">Обзор</h1>
                 <div class="user-info">
+                    <div id="loading-indicator" class="loader hidden"></div>
                     <span class="badge admin">Admin</span>
-                    <span id="date-display"></span>
+                    <span id="date-display" class="date-text"></span>
                 </div>
             </header>
 
@@ -82,49 +85,52 @@
                     <div class="card kpi-card">
                         <div class="kpi-icon purple"><i data-feather="trending-up"></i></div>
                         <div class="kpi-info">
-                            <h3>Чистая прибыль</h3>
+                            <h3>Прибыль</h3>
                             <p id="kpi-profit">-</p>
                         </div>
                     </div>
                 </div>
 
                 <div class="section-header">
-                    <h2>Быстрые действия</h2>
+                    <h2>🔥 Быстрые действия</h2>
                 </div>
                 <div class="actions-grid">
                     <button class="btn primary" onclick="openModal('modal-create-order')">
-                        <i data-feather="plus"></i> Создать заказ
+                        <i data-feather="plus-circle"></i> Новый заказ
                     </button>
                     <button class="btn secondary" onclick="app.refreshData()">
-                        <i data-feather="refresh-cw"></i> Обновить данные
+                        <i data-feather="refresh-cw"></i> Обновить
                     </button>
                 </div>
             </section>
 
             <section id="tab-orders" class="tab-content">
-                <div class="filters">
-                    <button class="filter-btn active" onclick="app.loadOrders('all')">Все</button>
-                    <button class="filter-btn" onclick="app.loadOrders('new')">Новые</button>
-                    <button class="filter-btn" onclick="app.loadOrders('work')">В работе</button>
-                    <button class="filter-btn" onclick="app.loadOrders('done')">Закрытые</button>
+                <div class="filters-bar">
+                    <div class="filters">
+                        <button class="filter-btn active" onclick="app.loadOrders('all')">Все</button>
+                        <button class="filter-btn" onclick="app.loadOrders('new')">Новые</button>
+                        <button class="filter-btn" onclick="app.loadOrders('work')">В работе</button>
+                        <button class="filter-btn" onclick="app.loadOrders('done')">Архив</button>
+                    </div>
+                    <button class="btn primary small" onclick="openModal('modal-create-order')">
+                        <i data-feather="plus"></i>
+                    </button>
                 </div>
                 
                 <div class="card table-container">
                     <table class="data-table">
                         <thead>
                             <tr>
-                                <th>ID</th>
-                                <th>Клиент</th>
-                                <th>Статус</th>
-                                <th>Мастер</th>
-                                <th>Смета</th>
-                                <th>Расходы</th>
-                                <th>Прибыль</th>
-                                <th>Действия</th>
+                                <th width="5%">ID</th>
+                                <th width="20%">Клиент</th>
+                                <th width="15%">Статус</th>
+                                <th width="15%">Мастер</th>
+                                <th width="15%">Финансы</th>
+                                <th width="15%">Профит</th>
+                                <th width="15%" style="text-align: right;">Действия</th>
                             </tr>
                         </thead>
-                        <tbody id="orders-table-body">
-                            </tbody>
+                        <tbody id="orders-table-body"></tbody>
                     </table>
                 </div>
             </section>
@@ -132,9 +138,11 @@
             <section id="tab-finance" class="tab-content">
                 <div class="finance-grid">
                     <div class="card">
-                        <h3>💰 Кассы и Счета</h3>
-                        <div id="accounts-list" class="accounts-list">
-                            </div>
+                        <div class="card-header">
+                            <h3>💰 Кассы</h3>
+                            <button class="btn-icon small" onclick="app.loadFinance()"><i data-feather="refresh-cw"></i></button>
+                        </div>
+                        <div id="accounts-list" class="accounts-list"></div>
                     </div>
                     <div class="card">
                         <h3>📊 История операций</h3>
@@ -143,14 +151,13 @@
                                 <thead>
                                     <tr>
                                         <th>Дата</th>
-                                        <th>Касса</th>
+                                        <th>Счет</th>
                                         <th>Тип</th>
                                         <th>Сумма</th>
-                                        <th>Комментарий</th>
+                                        <th>Инфо</th>
                                     </tr>
                                 </thead>
-                                <tbody id="transactions-body">
-                                    </tbody>
+                                <tbody id="transactions-body"></tbody>
                             </table>
                         </div>
                     </div>
@@ -159,10 +166,9 @@
 
             <section id="tab-settings" class="tab-content">
                 <div class="card">
-                    <h3>🛠 Прайс-лист (Цены)</h3>
-                    <p class="hint">Измените значение и нажмите Enter, чтобы сохранить.</p>
-                    <div id="settings-grid" class="settings-grid">
-                        </div>
+                    <h3>🛠 Настройки цен</h3>
+                    <p class="hint">Изменения сохраняются автоматически при нажатии Enter.</p>
+                    <div id="settings-grid" class="settings-grid"></div>
                 </div>
             </section>
 
@@ -171,21 +177,23 @@
 
     <div id="modal-create-order" class="modal hidden">
         <div class="modal-content">
-            <span class="close-modal" onclick="closeModal('modal-create-order')">&times;</span>
-            <h2>Новый заказ (Вручную)</h2>
+            <div class="modal-header">
+                <h2>Новый заказ</h2>
+                <button class="close-btn" onclick="closeModal('modal-create-order')"><i data-feather="x"></i></button>
+            </div>
             <form id="create-order-form">
                 <div class="form-group">
                     <label>Имя клиента</label>
-                    <input type="text" name="clientName" required>
+                    <input type="text" name="clientName" placeholder="Иван Иванов" required>
                 </div>
                 <div class="form-group">
                     <label>Телефон</label>
-                    <input type="text" name="clientPhone" placeholder="+7..." required>
+                    <input type="text" name="clientPhone" placeholder="+7 700 000 00 00" required>
                 </div>
                 <div class="row">
                     <div class="form-group">
                         <label>Площадь (м²)</label>
-                        <input type="number" name="area" required>
+                        <input type="number" name="area" placeholder="50" required>
                     </div>
                     <div class="form-group">
                         <label>Комнат</label>
@@ -193,52 +201,58 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>Стены</label>
+                    <label>Тип стен</label>
                     <select name="wallType">
-                        <option value="light">Газоблок / ГКЛ</option>
-                        <option value="brick">Кирпич</option>
-                        <option value="concrete">Бетон / Монолит</option>
+                        <option value="light">🧱 Газоблок / ГКЛ</option>
+                        <option value="brick">🧱 Кирпич</option>
+                        <option value="concrete">🏗 Бетон / Монолит</option>
                     </select>
                 </div>
-                <button type="submit" class="btn primary full">Создать</button>
+                <div class="modal-footer">
+                    <button type="button" class="btn secondary" onclick="closeModal('modal-create-order')">Отмена</button>
+                    <button type="submit" class="btn primary">Создать заказ</button>
+                </div>
             </form>
         </div>
     </div>
 
     <div id="modal-add-expense" class="modal hidden">
         <div class="modal-content">
-            <span class="close-modal" onclick="closeModal('modal-add-expense')">&times;</span>
-            <h2>Добавить расход</h2>
-            <p id="expense-order-info" class="hint"></p>
+            <div class="modal-header">
+                <h2>Добавить расход</h2>
+                <button class="close-btn" onclick="closeModal('modal-add-expense')"><i data-feather="x"></i></button>
+            </div>
+            <p id="expense-order-info" class="hint-box"></p>
             <form id="add-expense-form">
                 <input type="hidden" id="expense-order-id" name="orderId">
                 <div class="form-group">
                     <label>Сумма (₸)</label>
-                    <input type="number" name="amount" required>
+                    <input type="number" name="amount" placeholder="0" required>
                 </div>
                 <div class="form-group">
                     <label>Категория</label>
                     <select name="category">
-                        <option value="material">Материал</option>
-                        <option value="taxi">Такси / Логистика</option>
-                        <option value="food">Питание</option>
-                        <option value="tools">Инструмент</option>
-                        <option value="other">Прочее</option>
+                        <option value="material">🔌 Материал (Докупка)</option>
+                        <option value="taxi">🚕 Такси / Доставка</option>
+                        <option value="food">🍔 Питание</option>
+                        <option value="tools">🛠 Инструмент</option>
+                        <option value="other">📦 Прочее</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <label>Комментарий</label>
-                    <input type="text" name="comment">
+                    <input type="text" name="comment" placeholder="Например: кабель 3х2.5">
                 </div>
-                <button type="submit" class="btn danger full">Списать</button>
+                <div class="modal-footer">
+                    <button type="button" class="btn secondary" onclick="closeModal('modal-add-expense')">Отмена</button>
+                    <button type="submit" class="btn danger">Списать средства</button>
+                </div>
             </form>
         </div>
     </div>
 
     <script src="js/api.js"></script>
     <script src="js/app.js"></script>
-    <script>
-        feather.replace();
-    </script>
+    <script>feather.replace();</script>
 </body>
 </html>
