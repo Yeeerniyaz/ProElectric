@@ -2,7 +2,8 @@
  * @file src/handlers/messages.js
  * @description Обработчик текстовых сообщений (Router & Wizard).
  * Реализует сценарии: Калькулятор, Закрытие сделки, Внесение расходов.
- * @version 7.3.0 (Expenses & New Menu)
+ * Исправлено: Добавлена функция notifyAdmin.
+ * @version 7.4.0 (Hotfix: Missing Export)
  */
 
 import { bot } from "../core.js";
@@ -347,3 +348,32 @@ function checkAbandonedSession(chatId) {
         ).catch(() => {});
     }
 }
+
+/**
+ * 🔔 NOTIFY ADMINS
+ * Рассылает уведомление всем пользователям с ролью admin/manager
+ */
+export const notifyAdmin = async (text, orderId = null) => {
+    try {
+        // 1. Получаем всех админов и менеджеров
+        const res = await db.query("SELECT telegram_id FROM users WHERE role IN ('admin', 'manager')");
+        const admins = res.rows;
+
+        if (admins.length === 0) return;
+
+        // 2. Кнопка "Взять в работу" (если есть ID заказа)
+        const opts = {
+            parse_mode: "HTML",
+            reply_markup: orderId ? {
+                inline_keyboard: [[{ text: "🙋‍♂️ Взять в работу", callback_data: `take_order_${orderId}` }]]
+            } : undefined
+        };
+
+        // 3. Рассылаем
+        for (const admin of admins) {
+            await bot.sendMessage(admin.telegram_id, text, opts).catch(() => {});
+        }
+    } catch (e) {
+        console.error("Notify Admin Error:", e.message);
+    }
+};
