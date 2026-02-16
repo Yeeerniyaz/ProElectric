@@ -19,7 +19,7 @@ import { Telegraf, session as telegrafSession } from "telegraf";
 
 // Импорт конфигурации и ядра
 import { config } from "./config.js";
-import { initDatabase, closeDatabase } from "./database/index.js";
+import { initDB, closePool } from "./database/index.js";
 import { MESSAGES } from "./constants.js";
 
 // Импорт бизнес-логики
@@ -211,8 +211,7 @@ const startServer = async () => {
     console.log("==================================================");
 
     // 1. Инициализация Базы Данных (ожидание подключения)
-    await initDatabase();
-
+    await initDB();
     // 2. Запуск Телеграм Бота (Polling Mode)
     // В продакшене для высокой нагрузки лучше использовать Webhook,
     // но для старта Polling надежнее и проще.
@@ -258,7 +257,7 @@ const setupGracefulShutdown = (httpServer) => {
     }
 
     // 3. Закрываем соединения с БД
-    await closeDatabase();
+    await closePool();
 
     console.log("👋 Goodbye!");
     process.exit(0);
