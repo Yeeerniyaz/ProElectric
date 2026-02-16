@@ -68,8 +68,8 @@ export const UserHandler = {
     const text = ctx.message.text;
     const state = ctx.session.state || USER_STATES.IDLE;
 
-    // Глобальные перехватчики (Кнопки меню и отмена)
-    if (Object.values(BUTTONS.common).includes(text) || text === "/cancel") {
+    // 1. ИСПРАВЛЕНИЕ: Убрали Object.values(), работаем с массивом напрямую
+    if (BUTTONS.common.includes(text) || text === "/cancel") {
       return this.returnToMainMenu(ctx);
     }
 
@@ -86,9 +86,11 @@ export const UserHandler = {
 
       case USER_STATES.IDLE:
       default:
+        // 2. ИСПРАВЛЕНИЕ: Вызываем MAIN_MENU как функцию.
+        // Передаем 'user' как дефолтную роль, чтобы меню точно отрисовалось
         return ctx.replyWithMarkdown(
           MESSAGES.USER.UNKNOWN_COMMAND,
-          KEYBOARDS.MAIN_MENU,
+          KEYBOARDS.MAIN_MENU("user"),
         );
     }
   },
