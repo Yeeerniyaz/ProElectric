@@ -47,10 +47,9 @@ export const UserHandler = {
       const userName = ctx.from.first_name || "Гость";
 
       // Используем HTML для жирного текста
-      await ctx.replyWithHTML(
-        TEXTS.welcome(userName),
-        KEYBOARDS.MAIN_MENU(userRole),
-      );
+      await ctx.replyWithHTML(TEXTS.welcome(userName), {
+        reply_markup: KEYBOARDS.MAIN_MENU(userRole),
+      });
     } catch (error) {
       console.error("[UserHandler] Start Error:", error);
       await ctx.reply("⚠️ Произошла ошибка при запуске. Попробуйте позже.");
@@ -172,7 +171,9 @@ export const UserHandler = {
     ctx.session.state = USER_STATES.CALC_WAIT_AREA;
     ctx.session.calcData = {}; // Инициализируем буфер
 
-    await ctx.reply(MESSAGES.USER.WIZARD_STEP_1_AREA, KEYBOARDS.CANCEL_MENU);
+    await ctx.reply(MESSAGES.USER.WIZARD_STEP_1_AREA, {
+      reply_markup: KEYBOARDS.CANCEL_MENU,
+    });
   },
 
   /**
@@ -190,7 +191,9 @@ export const UserHandler = {
     ctx.session.calcData.area = area;
     ctx.session.state = USER_STATES.CALC_WAIT_WALL;
 
-    await ctx.reply(MESSAGES.USER.WIZARD_STEP_2_WALL, KEYBOARDS.WALL_TYPES);
+    await ctx.reply(MESSAGES.USER.WIZARD_STEP_2_WALL, {
+      reply_markup: KEYBOARDS.WALL_TYPES,
+    });
   },
 
   /**
@@ -215,7 +218,9 @@ export const UserHandler = {
       parse_mode: "HTML",
     });
 
-    await ctx.reply(MESSAGES.USER.WIZARD_STEP_3_ROOMS, KEYBOARDS.CANCEL_MENU);
+    await ctx.reply(MESSAGES.USER.WIZARD_STEP_3_ROOMS, {
+      reply_markup: KEYBOARDS.CANCEL_MENU,
+    });
     await ctx.answerCbQuery();
   },
 
@@ -261,7 +266,9 @@ export const UserHandler = {
       await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
 
       // Отправляем результат с кнопками действий
-      await ctx.replyWithHTML(invoiceText, KEYBOARDS.ESTIMATE_ACTIONS);
+      await ctx.replyWithHTML(invoiceText, {
+        reply_markup: KEYBOARDS.ESTIMATE_ACTIONS,
+      });
     } catch (error) {
       console.error("[UserHandler] Calc Logic Error:", error);
       await ctx.reply(MESSAGES.USER.CALCULATION_ERROR);
@@ -311,7 +318,9 @@ export const UserHandler = {
    */
   async enterContactMode(ctx) {
     ctx.session.state = USER_STATES.CONTACT_WAIT_MSG;
-    await ctx.reply(MESSAGES.USER.CONTACT_PROMPT, KEYBOARDS.CANCEL_MENU);
+    await ctx.reply(MESSAGES.USER.CONTACT_PROMPT, {
+      reply_markup: KEYBOARDS.CANCEL_MENU,
+    });
     if (ctx.callbackQuery) await ctx.answerCbQuery();
   },
 
@@ -428,7 +437,9 @@ export const UserHandler = {
     // Быстрый запрос роли
     let role = ROLES.CLIENT;
     try {
-      const user = await UserService.registerOrUpdateUser(ctx.from);
+      const user = await ctx.reply(text, {
+        reply_markup: KEYBOARDS.MAIN_MENU(role),
+      });
       if (user) role = user.role;
     } catch (e) {}
 
