@@ -1,11 +1,9 @@
 /**
  * @file src/handlers/UserHandler.js
  * @description Обработчик действий пользователя (Client Side Controller).
- * Реализует полный цикл взаимодействия с акцентом на продажу услуг (Labor Only).
- * Цены теперь полностью динамические и берутся из базы данных через Service Layer.
- *
- * @author ProElectric Team
- * @version 6.2.0 (Senior Architect Edition)
+ * Исправлена критическая ошибка инициализации клавиатуры (Markup API v4).
+ * * @author ProElectric Team
+ * @version 6.2.1 (Hotfix)
  */
 
 import { Markup } from "telegraf";
@@ -16,14 +14,8 @@ import { OrderService } from "../services/OrderService.js";
 // 🔧 INTERNAL CONFIGURATION & CONSTANTS
 // =============================================================================
 
-/**
- * ID Владельца для критических уведомлений.
- */
 const OWNER_ID = process.env.OWNER_ID || 123456789;
 
-/**
- * Машина состояний (FSM).
- */
 const USER_STATES = Object.freeze({
   IDLE: "IDLE",
   WAIT_PHONE: "WAIT_PHONE",
@@ -32,9 +24,6 @@ const USER_STATES = Object.freeze({
   CALC_ROOMS: "CALC_WAIT_ROOMS",
 });
 
-/**
- * Тексты кнопок.
- */
 const BUTTONS = Object.freeze({
   CALCULATE: "🚀 Рассчитать стоимость",
   ORDERS: "📂 Мои заявки",
@@ -46,9 +35,6 @@ const BUTTONS = Object.freeze({
   SHARE_PHONE: "📱 Отправить мой номер телефона",
 });
 
-/**
- * Текстовые шаблоны.
- */
 const TEXTS = {
   welcome: (name) =>
     `👋 Привет, ${name}!\n\n` +
@@ -92,7 +78,8 @@ const Keyboards = {
     return Markup.keyboard(buttons).resize();
   },
 
-  requestPhone: Markup.keyboard([[Markup.button.contact(BUTTONS.SHARE_PHONE)]])
+  // FIX: Markup.button.contactRequest вместо Markup.button.contact
+  requestPhone: Markup.keyboard([[Markup.button.contactRequest(BUTTONS.SHARE_PHONE)]])
     .resize()
     .oneTime(),
 
@@ -373,13 +360,8 @@ export const UserHandler = {
     }
   },
 
-  /**
-   * 💰 ДИНАМИЧЕСКИЙ ПРАЙС-ЛИСТ
-   * Берет актуальные цены из OrderService (который берет их из БД).
-   */
   async showPriceList(ctx) {
     try {
-      // Запрашиваем публичный прайс у сервиса
       const prices = await OrderService.getPublicPricelist();
 
       await ctx.replyWithHTML(
