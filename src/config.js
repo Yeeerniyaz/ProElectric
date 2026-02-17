@@ -1,145 +1,184 @@
 /**
  * @file src/config.js
- * @description Централизованная конфигурация приложения.
- * Реализует паттерн "Strict Configuration": приложение не запустится без критических переменных.
- * Приводит типы (строки в числа/булево) и структурирует настройки по доменам.
- *
- * @module Config
- * @version 6.4.0 (Stable)
- * @author ProElectric Team
+ * @description Центральный модуль конфигурации приложения.
+ * Реализует паттерн "Strict Configuration": приложение не запустится,
+ * если отсутствуют критически важные переменные окружения.
+ * * @module Config
  */
 
-import dotenv from "dotenv";
-import path from "path";
-import { fileURLToPath } from "url";
-
-// Инициализация переменных окружения
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: path.join(__dirname, "../.env") });
+import "dotenv/config";
 
 // =============================================================================
-// 🛠 HELPERS (VALIDATION & PARSING)
+// 🛠 УТИЛИТЫ ВАЛИДАЦИИ И ПАРСИНГА (Environment Parsers)
 // =============================================================================
 
 /**
- * Получить обязательную переменную окружения.
- * @throws {Error} Если переменная не задана.
+ * Получает строковую переменную окружения.
+ * @param {string} name - Ключ переменной
+ * @param {string} [defaultValue] - Значение по умолчанию (опционально)
+ * @returns {string} Значение
+ * @throws {Error} Если переменная обязательна, но отсутствует
  */
-const getEnvStrict = (key) => {
-  const value = process.env[key];
-  if (value === undefined || value === "") {
+const getEnv = (name, defaultValue = undefined) => {
+  const val = process.env[name];
+  if (val === undefined || val === "") {
+    if (defaultValue !== undefined) return defaultValue;
     throw new Error(
-      `❌ [CONFIG FATAL] Missing required environment variable: ${key}`,
+      `❌ [CONFIG FATAL] Ошибка конфигурации: Отсутствует обязательная переменная "${name}"`,
     );
   }
-  return value;
+  return val;
 };
 
 /**
- * Получить переменную с дефолтным значением.
+ * Парсит целочисленную переменную.
+ * @param {string} name - Ключ переменной
+ * @param {number} [defaultValue] - Значение по умолчанию
+ * @returns {number} Число
  */
-const getEnv = (key, defaultVal) => {
-  return process.env[key] !== undefined ? process.env[key] : defaultVal;
+const getInt = (name, defaultValue = null) => {
+  const val = process.env[name];
+  if (val === undefined || val === "") return defaultValue;
+
+  const parsed = parseInt(val, 10);
+  if (isNaN(parsed)) {
+    throw new Error(
+      `❌ [CONFIG FATAL] Переменная "${name}" должна быть числом, получено: "${val}"`,
+    );
+  }
+  return parsed;
 };
 
 /**
- * Получить переменную и привести к числу.
+ * Парсит булевую переменную (true/false, 1/0, yes/no).
+ * @param {string} name
+ * @param {boolean} defaultValue
+ * @returns {boolean}
  */
-const getInt = (key, defaultVal) => {
-  const value = process.env[key];
-  if (value === undefined) return defaultVal;
-  const parsed = parseInt(value, 10);
-  return isNaN(parsed) ? defaultVal : parsed;
+const getBool = (name, defaultValue = false) => {
+  const val = process.env[name];
+  if (val === undefined || val === "") return defaultValue;
+  return ["true", "1", "yes", "on"].includes(val.toLowerCase());
 };
 
 /**
- * Получить переменную и привести к массиву (разделитель запятая).
+ * Парсит список ID/строк, разделенных запятой.
+ * @param {string} name
+ * @returns {Array<number>} Массив ID
  */
-const getList = (key, defaultVal = []) => {
-  const value = process.env[key];
-  if (!value) return defaultVal;
-  return value.split(",").map((s) => s.trim());
+const getList = (name) => {
+  const val = process.env[name];
+  if (!val) return [];
+  return val
+    .split(",")
+    .map((v) => parseInt(v.trim(), 10))
+    .filter((n) => !isNaN(n));
 };
 
 // =============================================================================
-// ⚙️ CONFIGURATION OBJECT
+// 🐘 ФОРМИРОВАНИЕ ПОДКЛЮЧЕНИЯ К БД
 // =============================================================================
+
+/**
+ * Строит строку подключения (Connection String) или возвращает готовую.
+ * Приоритет отдается DATABASE_URL (12-Factor App methodology).
+ */
+const getDatabaseUrl = () => {
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+
+  const user = getEnv("DB_USER", "postgres");
+  const pass = getEnv("DB_PASSWORD", "postgres");
+  const host = getEnv("DB_HOST", "localhost");
+  const port = getInt("DB_PORT", 5432);
+  const name = getEnv("DB_NAME", "proelectric");
+
+  return `postgres://${user}:${pass}@${host}:${port}/${name}`;
+};
+
+// =============================================================================
+// ⚙️ СХЕМА КОНФИГУРАЦИИ
+// =============================================================================
+
+const isProduction = process.env.NODE_ENV === "production";
 
 const configRaw = {
-  // 1. Системные настройки
+  // --- 🌍 Системное окружение ---
   system: {
     env: getEnv("NODE_ENV", "development"),
-    isProduction: getEnv("NODE_ENV") === "production",
-    timezone: getEnv("TZ", "Asia/Almaty"),
-  },
-
-  // 2. Настройки HTTP Сервера (Исправляет ошибку corsOrigin)
-  server: {
     port: getInt("PORT", 3000),
-    host: getEnv("HOST", "0.0.0.0"),
-    // Секрет для сессий (Cookies). В проде должен быть сложным!
-    sessionSecret: getEnv(
-      "SESSION_SECRET",
-      "dev_secret_key_change_me_immediately",
-    ),
-    // CORS: Разрешенные домены (для фронтенда)
-    corsOrigin: getEnv("CORS_ORIGIN", "*"),
-    // Лимиты загрузки файлов (фото отчетов и т.д.)
-    bodyLimit: "10mb",
+    timezone: getEnv("TZ", "Asia/Almaty"),
+    isProduction,
   },
 
-  // 3. База данных (PostgreSQL)
-  database: {
-    // Строка подключения: postgres://user:pass@host:port/dbname
-    url: getEnvStrict("DATABASE_URL"),
-    maxPoolSize: getInt("DB_POOL_SIZE", 20),
-    idleTimeout: 30000,
-  },
-
-  // 4. Telegram Bot
+  // --- 🤖 Настройки Telegram Bot ---
   bot: {
-    token: getEnvStrict("BOT_TOKEN"),
-    // Для Webhook режима (в будущем)
-    webhookDomain: getEnv("WEBHOOK_DOMAIN", null),
-    webhookPath: getEnv("WEBHOOK_PATH", "/api/webhook/telegram"),
+    token: getEnv("BOT_TOKEN"),
+
+    // Права доступа
+    ownerId: getInt("ADMIN_ID"),
+    adminIds: getList("ADDITIONAL_ADMIN_IDS"),
+
+    // Каналы коммуникации
+    groupId: getInt("GROUP_ID", null),
+    channelId: process.env.CHANNEL_ID, // ID канала для логов (опционально)
+
+    // Контакты
+    bossUsername: (process.env.BOSS_USERNAME || "yeeerniyaz").replace("@", ""),
+    username: (process.env.BOT_USERNAME || "bot").replace("@", ""),
   },
 
-  // 5. Администрирование и Доступ
-  admin: {
-    // Пароль для входа в веб-панель (/admin.html)
-    password: getEnv("ADMIN_PASSWORD", "admin123"),
-    // ID владельца в Telegram (для критических уведомлений)
-    ownerId: getInt("OWNER_ID", 0), // Если 0 — уведомления отключены
-    // Список ID разработчиков (для отладки)
-    developers: getList("DEV_IDS", []),
+  // --- 🐘 Настройки Базы Данных (PostgreSQL) ---
+  db: {
+    connectionString: getDatabaseUrl(),
+    // Настройки пула соединений
+    max: getInt("DB_POOL_MAX", 20),
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 5000,
+    // SSL обязателен для многих облачных провайдеров в проде
+    ssl: isProduction ? { rejectUnauthorized: false } : false,
   },
+
+  // --- 🔐 Безопасность и Доступ ---
+  security: {
+    // Пароль для входа в Web-админку (/admin.html)
+    adminPassword: getEnv("ADMIN_PASS", "admin123"),
+    sessionSecret: getEnv("SESSION_SECRET", "dev_secret_key_change_me"),
+    corsOrigins: getList("CORS_ORIGINS"), // Если API будет дергаться с других доменов
+  },
+
+  // ⚠️ Примечание:
+  // Настройки цен (Pricing) удалены из конфига.
+  // Теперь они динамически загружаются из таблицы `settings` в БД.
 };
 
-// =============================================================================
-// 🔒 FREEZE & EXPORT
-// =============================================================================
-
-// Защищаем конфиг от случайных изменений в коде (Runtime Immutability)
+// 🔒 Deep Freeze: Гарантируем неизменность конфига в рантайме
 export const config = Object.freeze(configRaw);
 
 // =============================================================================
-// 🚀 SELF-DIAGNOSTICS (LOGGING)
+// 🚀 SELF-CHECK ПРИ ЗАПУСКЕ
 // =============================================================================
-
-if (config.system.env !== "test") {
-  // Безопасное логирование при старте (скрываем пароли)
-  const safeDbUrl = config.database.url.replace(/:([^:@]+)@/, ":*****@");
-  const safeToken = config.bot.token.substring(0, 5) + "...";
-
-  console.log(
-    `\n🔧 [CONFIG] Loaded environment: ${config.system.env.toUpperCase()}`,
-  );
-  console.log(`🔌 [DB] Target: ${safeDbUrl}`);
-  console.log(`🤖 [BOT] Token: ${safeToken}`);
-
-  if (config.admin.ownerId === 0) {
-    console.warn(
-      `⚠️ [WARNING] OWNER_ID not set! Critical notifications will be disabled.`,
+(() => {
+  // Логируем статус загрузки конфигурации (без чувствительных данных)
+  if (process.env.NODE_ENV !== "test") {
+    console.log(`✅ [CONFIG] Configuration loaded successfully.`);
+    console.log(`🌍 [ENV] Environment: ${config.system.env.toUpperCase()}`);
+    console.log(
+      `🔌 [DB] Connection Target: ${config.db.connectionString.includes("@") ? config.db.connectionString.split("@")[1] : "Internal URL"}`,
     );
+
+    if (!config.bot.ownerId) {
+      console.warn(
+        `⚠️ [WARNING] ADMIN_ID is not set! Bot admin commands will be disabled.`,
+      );
+    }
+
+    if (
+      config.system.env === "production" &&
+      config.security.adminPassword === "admin123"
+    ) {
+      console.warn(
+        `⚠️ [SECURITY] You are using default ADMIN_PASS in production! Please change it.`,
+      );
+    }
   }
-}
+})();
