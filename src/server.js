@@ -147,7 +147,6 @@ app.use(express.static(path.join(__dirname, "../public")));
 
 // ... (после всех app.use и перед bot.launch)
 
-import { AdminHandler } from "./handlers/AdminHandler.js";
 
 // 🚀 ЕДИНЫЙ API ШЛЮЗ (Universal Route)
 // Вместо 100 роутов мы используем один, который вызывает методы контроллера
