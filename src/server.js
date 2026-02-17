@@ -1,287 +1,161 @@
 /**
  * @file src/server.js
- * @description Главная точка входа (Application Entry Point).
- * Реализует паттерн "Hybrid Monolith": объединяет HTTP REST API и Telegram Bot Long-Polling.
+ * @description Главная точка входа в приложение (Application Bootstrapper).
+ * Отвечает за оркестрацию запуска сервисов: Database -> Web Server -> Telegram Bot.
+ * Реализует Graceful Shutdown для безопасной остановки в Docker/Kubernetes.
  *
  * @module Server
- * @version 6.0.0 (Production Ready)
+ * @version 6.3.0 (Production Ready)
  * @author ProElectric Team
  */
 
-import express from "express";
-import session from "express-session";
-import cors from "cors";
-import helmet from "helmet";
-import rateLimit from "express-rate-limit";
-import path from "path";
-import { fileURLToPath } from "url";
-import { Telegraf, session as telegrafSession } from "telegraf";
-
-// Импорт конфигурации и ядра
+import http from "http";
 import { config } from "./config.js";
-import { initDB, closePool } from "./database/index.js";
-import { MESSAGES, BUTTONS } from "./constants.js";
+import * as db from "./database/index.js";
 
-// Импорт бизнес-логики
-import { UserHandler } from "./handlers/UserHandler.js";
-import { AdminHandler } from "./handlers/AdminHandler.js";
-import { OrderService } from "./services/OrderService.js";
-import { UserService } from "./services/UserService.js";
-
-// --- КОНФИГУРАЦИЯ ОКРУЖЕНИЯ ---
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const PORT = process.env.PORT || 3000;
-const IS_PROD = process.env.NODE_ENV === "production";
+// Импортируем настроенные экземпляры сервисов
+import app from "./app.js"; // Express App (без вызова .listen)
+import { bot } from "./bot.js"; // Telegraf Bot (без вызова .launch)
 
 // =============================================================================
-// 1. ИНИЦИАЛИЗАЦИЯ TELEGRAM БОТА
+// 🔧 PROCESS CONFIGURATION
 // =============================================================================
-const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// Middleware бота
-bot.use(telegrafSession()); // Включаем поддержку сессий (ctx.session)
+const PORT = config.server.port || 3000;
+const IS_PROD = config.system.isProduction;
 
-// Логгер входящих апдейтов (полезно для дебага)
-bot.use(async (ctx, next) => {
-  const start = Date.now();
-  await next();
-  const ms = Date.now() - start;
-  if (config.debug)
-    console.log(`[Bot] Update ${ctx.updateType} processed in ${ms}ms`);
+// Перехват необработанных ошибок (Global Exception Handlers)
+process.on("uncaughtException", (err) => {
+  console.error("🔥 FATAL: Uncaught Exception:", err);
+  // В продакшене здесь стоит отправлять алерт в Sentry
+  process.exit(1);
 });
 
-// --- Маршрутизация команд (Bot Routing) ---
-
-// Админские команды
-bot.hears(/^\/setrole/, (ctx) => AdminHandler.processSetRole(ctx)); // Было promoteUser
-bot.hears(/^\/setprice/, (ctx) => AdminHandler.processSetPrice(ctx)); // Было updatePriceSetting
-bot.hears(/^\/broadcast/, (ctx) => AdminHandler.processBroadcast(ctx)); // Было broadcastMessage
-bot.hears(/^\/backup/, (ctx) => AdminHandler.processBackup(ctx)); // Было downloadDatabase
-
-// Новые мощные команды (реализуем их ниже)
-bot.hears(/^\/status/, (ctx) => AdminHandler.processSetStatus(ctx)); // Смена статуса заказа
-bot.hears(/^\/ban/, (ctx) => AdminHandler.processBanUser(ctx)); // Бан пользователя
-bot.hears(/^\/sql/, (ctx) => AdminHandler.processSQL(ctx)); // SQL запрос напрямую
-
-// Кнопки меню админа
-bot.hears(BUTTONS.ADMIN_STATS, (ctx) => AdminHandler.showDashboard(ctx)); // Было showStatistics
-bot.hears(BUTTONS.ADMIN_SETTINGS, (ctx) =>
-  AdminHandler.showSettingsInstruction(ctx),
-);
-bot.hears(BUTTONS.ADMIN_STAFF, (ctx) => AdminHandler.showStaffInstruction(ctx));
-
-// Пользовательские команды
-bot.command("start", (ctx) => UserHandler.startCommand(ctx));
-bot.command("cancel", (ctx) => UserHandler.returnToMainMenu(ctx));
-
-// Actions (Inline кнопки)
-bot.action(/^wall_/, (ctx) => UserHandler.handleWallSelection(ctx));
-bot.action("action_save_order", (ctx) => UserHandler.saveOrderAction(ctx));
-bot.action("action_contact", (ctx) => UserHandler.enterContactMode(ctx));
-
-// Текстовое меню
-bot.hears(["🚀 Рассчитать стоимость", "🏠 Главное меню"], (ctx) =>
-  UserHandler.enterCalculationMode(ctx),
-);
-bot.hears("📂 Мои расчеты", (ctx) => UserHandler.showMyOrders(ctx));
-bot.hears("ℹ️ О нас", (ctx) => UserHandler.showAbout(ctx));
-bot.hears("📞 Контакты", (ctx) => UserHandler.enterContactMode(ctx));
-bot.hears("❌ Отмена", (ctx) => UserHandler.returnToMainMenu(ctx));
-
-// Глобальный обработчик текста (State Machine)
-bot.on("text", (ctx) => UserHandler.handleTextMessage(ctx));
-
-// Обработка ошибок бота
-bot.catch((err, ctx) => {
-  console.error(`🔥 [Bot Error] Update ${ctx.updateType}:`, err);
-  // Не роняем процесс, просто логируем
+process.on("unhandledRejection", (reason, promise) => {
+  console.error(
+    "🔥 FATAL: Unhandled Rejection at:",
+    promise,
+    "reason:",
+    reason,
+  );
 });
 
 // =============================================================================
-// 2. ИНИЦИАЛИЗАЦИЯ EXPRESS (WEB SERVER)
-// =============================================================================
-const app = express();
-
-// --- Безопасность и Middleware (Security Layer) ---
-app.use(
-  helmet({
-    contentSecurityPolicy: false, // Отключаем CSP для простоты работы инлайн-скриптов админки
-  }),
-);
-app.use(cors()); // Разрешаем CORS (если фронтенд будет на другом домене)
-app.use(express.json()); // Парсинг JSON body
-app.use(express.urlencoded({ extended: true })); // Парсинг Form data
-
-// Ограничение запросов (Rate Limiting)
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 минут
-  max: 100, // Лимит 100 запросов с одного IP
-  message: { error: "Too many requests, please try again later." },
-});
-
-// --- Настройка Сессий (Session Management) ---
-app.use(
-  session({
-    name: "pro_electric_sid", // Кастомное имя куки (безопасность через неясность)
-    secret: config.sessionSecret || "super_secret_dev_key_change_in_prod",
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: IS_PROD, // В продакшене (HTTPS) ставим true
-      httpOnly: true, // Запрещаем доступ к куке из JS
-      maxAge: 24 * 60 * 60 * 1000, // 24 часа
-    },
-  }),
-);
-
-// --- Раздача статики (Frontend) ---
-// Папка public доступна по адресу http://localhost:3000/
-app.use(express.static(path.join(__dirname, "../public")));
-
-// =============================================================================
-// 3. API ROUTES (REST API)
+// 🚀 BOOTSTRAP LOGIC
 // =============================================================================
 
-// src/server.js
-
-// ... (после всех app.use и перед bot.launch)
-
-
-// 🚀 ЕДИНЫЙ API ШЛЮЗ (Universal Route)
-// Вместо 100 роутов мы используем один, который вызывает методы контроллера
-app.post("/api/execute", async (req, res) => {
-  const { action, payload } = req.body;
-  const adminId = 12345; // В реале тут должна быть проверка сессии/токена
-
-  // Эмуляция контекста Telegraf для переиспользования AdminHandler
-  const mockCtx = {
-    from: { id: adminId },
-    message: { text: `/api ${action}` }, // Фейковая команда
-    reply: async (text) => text, // Заглушка
-    replyWithHTML: async (text) => text,
-    // ... другие методы по необходимости
-  };
-
-  try {
-    let result;
-    // Маппинг действий фронтенда на методы бэкенда
-    switch (action) {
-      case "get_stats":
-        // Тут нам нужно немного адаптировать AdminHandler,
-        // чтобы он возвращал данные, а не слал сообщения в телегу.
-        // Для простоты сейчас сделаем прямые SQL запросы здесь,
-        // но в идеале AdminHandler должен быть чистым.
-        const stats = await UserService.getDashboardStats();
-        result = stats;
-        break;
-
-      case "get_orders":
-        // Получаем заказы прямым запросом (быстрее)
-        const orders = await db.query(
-          "SELECT * FROM orders ORDER BY created_at DESC LIMIT 50",
-        );
-        result = orders.rows;
-        break;
-
-      case "update_status":
-        await db.query("UPDATE orders SET status = $1 WHERE id = $2", [
-          payload.status,
-          payload.id,
-        ]);
-        result = { success: true };
-        break;
-
-      case "get_users":
-        const users = await db.query(
-          "SELECT * FROM users ORDER BY created_at DESC LIMIT 50",
-        );
-        result = users.rows;
-        break;
-
-      default:
-        throw new Error("Unknown action");
-    }
-    res.json({ ok: true, data: result });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
 /**
- * Middleware для проверки авторизации админа
+ * Основная функция запуска системы.
+ * Выполняет инициализацию в строгом порядке зависимостей.
  */
+const bootstrap = async () => {
+  console.log(
+    `\n🚀 Starting ProElectric System [${IS_PROD ? "PROD" : "DEV"}]...`,
+  );
 
-// 📋 Получение списка пользователей
+  let server;
 
-// =============================================================================
-// 4. ЗАПУСК И ОРКЕСТРАЦИЯ (BOOTSTRAP)
-// =============================================================================
-
-const startServer = async () => {
   try {
-    console.clear();
-    console.log("==================================================");
-    console.log("🏗️  PRO ELECTRIC SYSTEM - STARTING UP");
-    console.log(`🌍 Environment: ${IS_PROD ? "PRODUCTION" : "DEVELOPMENT"}`);
-    console.log("==================================================");
+    // 1. Инициализация Базы Данных
+    // Приложение не должно стартовать, если БД недоступна
+    console.log("⏳ Connecting to Database...");
+    await db.initDB();
+    console.log("✅ Database connected successfully.");
 
-    // 1. Инициализация Базы Данных (ожидание подключения)
-    await initDB();
-    // 2. Запуск Телеграм Бота (Polling Mode)
-    // В продакшене для высокой нагрузки лучше использовать Webhook,
-    // но для старта Polling надежнее и проще.
-    bot.launch().then(() => {
-      console.log("🤖 Telegram Bot started successfully (Polling mode)");
+    // 2. Запуск HTTP Сервера
+    // Создаем нативный HTTP сервер, оборачивая Express, для гибкого управления
+    server = http.createServer(app);
+
+    await new Promise((resolve, reject) => {
+      server.listen(PORT, () => {
+        console.log(`🌍 Web Server is running on port: ${PORT}`);
+        console.log(`🔧 Admin Panel: http://localhost:${PORT}/admin.html`);
+        console.log(`📡 API Health: http://localhost:${PORT}/api/auth/check`);
+        resolve();
+      });
+      server.on("error", reject);
     });
 
-    // 3. Запуск HTTP Сервера
-    const server = app.listen(PORT, () => {
-      console.log(`🚀 Web Server running at: http://localhost:${PORT}`);
-      console.log(
-        `🔧 Admin Panel available at: http://localhost:${PORT}/admin.html`,
-      );
+    // 3. Запуск Telegram Бота
+    // Используем Webhook в проде (если настроен) или Long Polling в деве
+    console.log("⏳ Launching Telegram Bot...");
+
+    // В будущем здесь можно добавить логику webhook'а:
+    // if (IS_PROD) await bot.createWebhook({ domain: config.bot.webhookDomain ... });
+    // else await bot.launch();
+
+    await bot.launch(() => {
+      console.log(`🤖 Telegram Bot is online (@${bot.botInfo?.username})`);
     });
 
-    // Настройка Graceful Shutdown внутри функции
+    // 4. Финализация
+    console.log("\n✅ SYSTEM IS FULLY OPERATIONAL 🚀\n");
+
+    // Навешиваем обработчики завершения
     setupGracefulShutdown(server);
   } catch (error) {
-    console.error("🔥 Critical Startup Error:", error);
+    console.error("\n❌ CRITICAL STARTUP ERROR:");
+    console.error(error);
+
+    // Пытаемся закрыть пул БД, если он успел открыться
+    try {
+      await db.closePool();
+    } catch (e) {}
+
     process.exit(1);
   }
 };
 
+// =============================================================================
+// 🛑 GRACEFUL SHUTDOWN
+// =============================================================================
+
 /**
- * Настройка корректного завершения работы
- * @param {import('http').Server} httpServer
+ * Корректное завершение работы.
+ * Важно для сохранения данных и отсутствия 502 ошибок при деплое.
+ * * @param {http.Server} server - Экземпляр HTTP сервера
  */
-const setupGracefulShutdown = (httpServer) => {
+const setupGracefulShutdown = (server) => {
   const shutdown = async (signal) => {
-    console.log(`\n🛑 Received ${signal}. Starting graceful shutdown...`);
+    console.log(`\n🛑 Received signal: ${signal}. Shutting down gracefully...`);
 
-    // 1. Останавливаем прием новых HTTP запросов
-    httpServer.close(() => {
-      console.log("✅ HTTP Server closed.");
-    });
+    // Таймер принудительного убийства (если что-то зависнет)
+    const forceExitTimer = setTimeout(() => {
+      console.error("⚠️ Force shutdown due to timeout (10s).");
+      process.exit(1);
+    }, 10000);
 
-    // 2. Останавливаем бота
     try {
+      // 1. Останавливаем прием новых HTTP соединений
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+        console.log("💤 HTTP Server closed.");
+      }
+
+      // 2. Останавливаем Бота
       bot.stop(signal);
-      console.log("✅ Telegram Bot stopped.");
-    } catch (e) {
-      console.warn("⚠️ Bot was not running or failed to stop.");
+      console.log("💤 Telegram Bot stopped.");
+
+      // 3. Закрываем соединения с БД
+      await db.closePool();
+      console.log("💤 Database pool closed.");
+
+      console.log("✅ Goodbye.");
+      clearTimeout(forceExitTimer);
+      process.exit(0);
+    } catch (err) {
+      console.error("⚠️ Error during graceful shutdown:", err);
+      process.exit(1);
     }
-
-    // 3. Закрываем соединения с БД
-    await closePool();
-
-    console.log("👋 Goodbye!");
-    process.exit(0);
   };
 
-  process.once("SIGINT", () => shutdown("SIGINT"));
-  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  // Перехват сигналов ОС
+  process.once("SIGTERM", () => shutdown("SIGTERM")); // Docker stop
+  process.once("SIGINT", () => shutdown("SIGINT")); // Ctrl+C
 };
 
-// 🔥 Поехали!
-startServer();
+// =============================================================================
+// ▶️ EXECUTION
+// =============================================================================
+
+bootstrap();

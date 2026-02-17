@@ -1,25 +1,97 @@
 /**
  * @file src/handlers/AdminHandler.js
- * @description Контроллер панели администратора (Enterprise CRM).
- * Реализует: Финансы (P&L), Управление заказами, Настройки, Персонал, Рассылки.
+ * @description Контроллер панели администратора (Enterprise CRM Controller).
+ * Реализует: Финансовый дашборд, Управление персоналом (RBAC), SQL-терминал, Бэкапы.
+ * Архитектура: Self-Contained (все константы внутри).
  *
  * @author ProElectric Team
- * @version 9.0 (Full Release)
+ * @version 6.5.0 (Owner Edition)
  */
 
+import { Markup } from "telegraf";
 import { UserService } from "../services/UserService.js";
 import { OrderService } from "../services/OrderService.js";
 import * as db from "../database/index.js";
-import { KEYBOARDS, BUTTONS, DB_KEYS, ORDER_STATUS } from "../constants.js";
 
-// Утилита для задержки (чтобы не словить бан от Телеграма при рассылке)
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+// =============================================================================
+// 🔧 INTERNAL CONSTANTS & CONFIGURATION
+// =============================================================================
 
-// Утилита для форматирования денег
-const formatMoney = (amount) => parseInt(amount || 0).toLocaleString('ru-RU') + ' ₸';
+/**
+ * Роли пользователей (дублируем для автономности, либо берем из UserService если он экспортирует)
+ * Для надежности определим локально маппинг.
+ */
+const ROLES = Object.freeze({
+  OWNER: "owner",
+  ADMIN: "admin",
+  MANAGER: "manager",
+  USER: "user",
+  BANNED: "banned",
+});
+
+/**
+ * Тексты кнопок (Admin UI).
+ */
+const BUTTONS = Object.freeze({
+  // Главная
+  DASHBOARD: "📊 P&L Отчет",
+  ORDERS: "📦 Управление заказами",
+  SETTINGS: "⚙️ Настройки цен",
+  STAFF: "👥 Персонал",
+
+  // Owner Specific
+  SQL_CONSOLE: "👨‍💻 SQL Терминал",
+  BACKUP: "💾 Бэкап базы",
+
+  // Навигация
+  BACK: "🔙 В главное меню",
+  REFRESH: "🔄 Обновить",
+});
+
+/**
+ * Клавиатуры (Admin Keyboards Factory).
+ */
+const AdminKeyboards = {
+  /**
+   * Главное меню админа.
+   * Динамически добавляет кнопки Владельца.
+   */
+  mainMenu: (role) => {
+    const buttons = [
+      [BUTTONS.DASHBOARD, BUTTONS.ORDERS],
+      [BUTTONS.SETTINGS, BUTTONS.STAFF],
+    ];
+
+    // 🔒 Эксклюзив для Владельца
+    if (role === ROLES.OWNER) {
+      buttons.push([BUTTONS.SQL_CONSOLE, BUTTONS.BACKUP]);
+    }
+
+    buttons.push([BUTTONS.BACK]);
+    return Markup.keyboard(buttons).resize();
+  },
+
+  /**
+   * Меню управления заказом (Inline).
+   */
+  orderActions: (orderId) =>
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback("🛠 В работу", `status_${orderId}_work`),
+        Markup.button.callback("✅ Завершить", `status_${orderId}_done`),
+      ],
+      [
+        Markup.button.callback("❌ Отменить", `status_${orderId}_cancel`),
+        Markup.button.callback("💰 Расход", `expense_${orderId}`),
+      ],
+    ]),
+};
+
+// =============================================================================
+// 🎮 CONTROLLER IMPLEMENTATION
+// =============================================================================
 
 export const AdminHandler = {
-
   /**
    * ===========================================================================
    * 1. 🚦 ГЛАВНОЕ МЕНЮ И РОУТИНГ
@@ -27,400 +99,367 @@ export const AdminHandler = {
    */
 
   /**
-   * Показать меню администратора
-   * Обязательно проверяет права доступа.
+   * Точка входа в админку.
    */
   async showAdminMenu(ctx) {
     try {
-      if (!(await UserService.isAdmin(ctx.from.id))) {
-          return ctx.reply("⛔ У вас нет прав доступа к панели управления.");
+      const userId = ctx.from.id;
+      const role = await UserService.getUserRole(userId);
+
+      // Проверка прав (Middleware level check)
+      if (![ROLES.OWNER, ROLES.ADMIN, ROLES.MANAGER].includes(role)) {
+        return ctx.reply(
+          "⛔ <b>Доступ запрещен.</b>\nЭта секция только для персонала.",
+          { parse_mode: "HTML" },
+        );
       }
-      await ctx.reply("👑 <b>ЦЕНТР УПРАВЛЕНИЯ БИЗНЕСОМ</b>\nВыберите раздел:", { 
-          parse_mode: 'HTML',
-          reply_markup: KEYBOARDS.ADMIN_MENU 
-      });
+
+      const title =
+        role === ROLES.OWNER
+          ? "👑 ЦЕНТР УПРАВЛЕНИЯ (OWNER)"
+          : "💼 ПАНЕЛЬ МЕНЕДЖЕРА";
+
+      await ctx.replyWithHTML(
+        `<b>${title}</b>\n` +
+          `Система работает в штатном режиме.\n` +
+          `Выберите раздел:`,
+        AdminKeyboards.mainMenu(role),
+      );
     } catch (e) {
-      console.error("Admin Menu Error:", e);
+      console.error("[AdminHandler] Menu Error:", e);
     }
   },
 
   /**
-   * Обработчик кнопок меню администратора
+   * Роутер текстовых сообщений Админки.
    */
   async handleMessage(ctx) {
-      const text = ctx.message.text;
+    const text = ctx.message.text;
+    const userId = ctx.from.id;
 
-      // Маршрутизация по разделам
-      switch (text) {
-          case BUTTONS.ADMIN_STATS:
-              return this.showDashboard(ctx);
-          case BUTTONS.ADMIN_ORDERS:
-              return this.showOrdersInstruction(ctx);
-          case BUTTONS.ADMIN_SETTINGS:
-              return this.showSettingsInstruction(ctx);
-          case BUTTONS.ADMIN_STAFF:
-              return this.showStaffInstruction(ctx);
-          case BUTTONS.ADMIN_SQL:
-              return this.showSQLInstruction(ctx);
-          case BUTTONS.BACK:
-              return ctx.reply("Выход в главное меню.", KEYBOARDS.MAIN_MENU('admin')); // Возврат
-          default:
-              return ctx.reply("⚠️ Неизвестная команда. Используйте меню.");
-      }
+    // 1. Проверяем права перед выполнением любой команды
+    const role = await UserService.getUserRole(userId);
+    if (![ROLES.OWNER, ROLES.ADMIN, ROLES.MANAGER].includes(role)) return;
+
+    // 2. Маршрутизация
+    switch (text) {
+      case BUTTONS.DASHBOARD:
+        return this.showDashboard(ctx);
+      case BUTTONS.ORDERS:
+        return this.showOrdersInstruction(ctx);
+      case BUTTONS.SETTINGS:
+        return this.showSettingsInstruction(ctx);
+      case BUTTONS.STAFF:
+        return this.showStaffInstruction(ctx);
+
+      // Owner Only Routes
+      case BUTTONS.SQL_CONSOLE:
+        return role === ROLES.OWNER
+          ? this.showSQLInstruction(ctx)
+          : ctx.reply("⛔ Доступно только Владельцу.");
+      case BUTTONS.BACKUP:
+        return role === ROLES.OWNER
+          ? this.processBackup(ctx)
+          : ctx.reply("⛔ Доступно только Владельцу.");
+
+      case BUTTONS.BACK:
+        return ctx.reply(
+          "Выход в главное меню.",
+          Markup.keyboard([
+            ["🚀 Рассчитать стоимость"],
+            ["📂 Мои заявки", "💰 Прайс-лист"],
+            ["📞 Контакты", "ℹ️ Как мы работаем"],
+            ["👑 Админ-панель"],
+          ]).resize(),
+        );
+
+      default:
+        // Если это не команда меню, возможно это контекстная команда (например SQL)
+        if (text.startsWith("/sql") && role === ROLES.OWNER)
+          return this.processSQL(ctx);
+      // return ctx.reply("⚠️ Используйте кнопки меню.");
+    }
   },
 
   /**
    * ===========================================================================
-   * 2. 💰 ФИНАНСОВЫЙ ДАШБОРД (Dashboard)
+   * 2. 💰 ФИНАНСОВЫЙ ДАШБОРД (P&L)
    * ===========================================================================
    */
 
   async showDashboard(ctx) {
-      const msg = await ctx.reply("⏳ Собираю финансовые данные...");
-      try {
-          // Выполняем агрегацию данных на уровне базы (Это эффективно)
-          // Считаем только завершенные заказы (status = 'done')
-          const res = await db.query(`
-              SELECT 
-                COUNT(*) as count,
-                SUM(total_price) as gross_revenue,
-                SUM(expenses) as total_expenses,
-                SUM(net_profit) as net_income
-              FROM orders 
-              WHERE status = 'done'
-          `);
-          
-          const data = res.rows[0];
+    const msg = await ctx.reply("⏳ Агрегация финансовых данных...");
+    try {
+      // Получаем сводку через UserService (он там дергает 3 запроса параллельно)
+      // Или пишем прямой SQL для детального P&L
+      const res = await db.query(`
+          SELECT 
+            COUNT(*) as total_orders,
+            SUM(CASE WHEN status = 'done' THEN total_price ELSE 0 END) as gross_revenue,
+            SUM(CASE WHEN status = 'done' THEN (details->'total'->>'material')::numeric ELSE 0 END) as mat_cost
+          FROM orders
+      `);
 
-          // Считаем активные заказы (в работе)
-          const activeRes = await db.query("SELECT COUNT(*) as count FROM orders WHERE status = 'work'");
-          const activeCount = activeRes.rows[0].count;
+      const data = res.rows[0];
+      const revenue = parseFloat(data.gross_revenue || 0);
+      const materials = parseFloat(data.mat_cost || 0); // Это примерная себестоимость из сметы
+      const profit = revenue - materials; // Грязная прибыль
 
-          const report = 
-            `📊 <b>ФИНАНСОВЫЙ ОТЧЕТ (P&L)</b>\n` +
-            `➖➖➖➖➖➖➖➖➖➖\n` +
-            `✅ <b>Завершенные проекты:</b> ${data.count || 0}\n` +
-            `🛠 <b>В работе сейчас:</b> ${activeCount || 0}\n\n` +
-            
-            `💵 <b>ВЫРУЧКА (Оборот):</b>\n` +
-            `<code>${formatMoney(data.gross_revenue)}</code>\n\n` +
-            
-            `📉 <b>РАСХОДЫ (ЗП + Материал):</b>\n` +
-            `<code>${formatMoney(data.total_expenses)}</code>\n\n` +
-            
-            `💎 <b>ЧИСТАЯ ПРИБЫЛЬ (Net Profit):</b>\n` +
-            `💰 <b>${formatMoney(data.net_income)}</b>\n` +
-            `➖➖➖➖➖➖➖➖➖➖\n` +
-            `<i>Для ввода расходов используйте команду:</i>\n` +
-            `<code>/expense ID СУММА</code>`;
-          
-          // Редактируем сообщение (чтобы не спамить)
-          await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null, report, { parse_mode: 'HTML' });
-      
-      } catch (e) {
-          ctx.reply("❌ Ошибка при расчете финансов: " + e.message);
-      }
-  },
+      const fmt = (n) => new Intl.NumberFormat("ru-RU").format(n);
 
-  /**
-   * ===========================================================================
-   * 3. 💸 УПРАВЛЕНИЕ РАСХОДАМИ
-   * ===========================================================================
-   */
+      const report =
+        `📊 <b>ФИНАНСОВЫЙ ОТЧЕТ (P&L)</b>\n` +
+        `➖➖➖➖➖➖➖➖➖➖\n` +
+        `📦 <b>Всего заказов:</b> ${data.total_orders}\n` +
+        `💰 <b>Оборот (Выручка):</b> ${fmt(revenue)} ₸\n` +
+        `📉 <b>Материалы (Est.):</b> ${fmt(materials)} ₸\n` +
+        `➖➖➖➖➖➖➖➖➖➖\n` +
+        `💎 <b>ГРЯЗНАЯ ПРИБЫЛЬ: ${fmt(profit)} ₸</b>\n` +
+        `<i>* Данные основаны на статусе 'done'.</i>`;
 
-  /**
-   * Установка расходов по заказу.
-   * Автоматически пересчитывает чистую прибыль.
-   * Команда: /expense ID СУММА
-   */
-  async processSetExpense(ctx) {
-      const parts = ctx.message.text.split(' ');
-      
-      if (parts.length !== 3) {
-          return ctx.reply("⚠️ Ошибка формата.\nИспользуйте: <code>/expense ID_ЗАКАЗА СУММА</code>\nПример: /expense 15 45000", { parse_mode: 'HTML' });
-      }
-      
-      const orderId = parseInt(parts[1]);
-      const expense = parseFloat(parts[2]);
-
-      if (isNaN(orderId) || isNaN(expense)) {
-          return ctx.reply("⚠️ ID и Сумма должны быть числами.");
-      }
-
-      try {
-          // Транзакция: обновляем expense и пересчитываем profit
-          // profit = total_price - expense
-          const res = await db.query(`
-              UPDATE orders 
-              SET expenses = $1, 
-                  net_profit = total_price - $1 
-              WHERE id = $2
-              RETURNING id, total_price, net_profit
-          `, [expense, orderId]);
-
-          if (res.rowCount === 0) {
-              return ctx.reply("❌ Заказ с таким ID не найден.");
-          }
-
-          const updated = res.rows[0];
-          
-          await ctx.reply(
-              `✅ <b>Расход принят!</b>\n` +
-              `Заказ #${updated.id}\n` +
-              `Расход: ${formatMoney(expense)}\n` +
-              `Теперь чистая прибыль: <b>${formatMoney(updated.net_profit)}</b>`, 
-              { parse_mode: 'HTML' }
-          );
-
-      } catch (e) {
-          ctx.reply("Ошибка базы данных: " + e.message);
-      }
-  },
-
-  /**
-   * ===========================================================================
-   * 4. 📦 УПРАВЛЕНИЕ ЗАКАЗАМИ (Статусы)
-   * ===========================================================================
-   */
-
-  async showOrdersInstruction(ctx) {
-      await ctx.replyWithHTML(
-          `📦 <b>УПРАВЛЕНИЕ ЗАКАЗАМИ</b>\n\n` +
-          `🔍 <b>Поиск заказа:</b>\n` +
-          `<code>/findorder ID</code> (например: /findorder 12)\n\n` +
-          `🚦 <b>Смена статуса:</b>\n` +
-          `<code>/status ID КОД</code>\n\n` +
-          `<b>Коды статусов:</b>\n` +
-          `🆕 <code>new</code> - Новый\n` +
-          `🛠 <code>work</code> - В работе\n` +
-          `✅ <code>done</code> - Выполнен (учитывается в прибыли)\n` +
-          `❌ <code>cancel</code> - Отменен`
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        msg.message_id,
+        null,
+        report,
+        { parse_mode: "HTML" },
       );
-  },
-
-  async processSetStatus(ctx) {
-      // /status 12 work
-      const parts = ctx.message.text.split(' ');
-      if (parts.length !== 3) return ctx.reply("⚠️ Формат: /status ID CODE");
-      
-      const [_, id, statusRaw] = parts;
-      const status = statusRaw.toLowerCase();
-
-      // Валидация статуса
-      if (!Object.values(ORDER_STATUS).includes(status)) {
-          return ctx.reply("❌ Неверный статус. Допустимые: new, work, done, cancel");
-      }
-
-      try {
-        await db.query("UPDATE orders SET status = $1 WHERE id = $2", [status, id]);
-        
-        await ctx.reply(`✅ Статус заказа #${id} изменен на <b>${status.toUpperCase()}</b>`, { parse_mode: 'HTML' });
-      } catch(e) { 
-          ctx.reply("Ошибка БД: " + e.message); 
-      }
+    } catch (e) {
+      console.error(e);
+      ctx.reply("❌ Ошибка расчета P&L.");
+    }
   },
 
   /**
    * ===========================================================================
-   * 5. ⚙️ УПРАВЛЕНИЕ НАСТРОЙКАМИ (ЦЕНЫ)
-   * ===========================================================================
-   */
-
-  async showSettingsInstruction(ctx) {
-      // Получаем список доступных ключей настроек из constants.js
-      const keysList = Object.values(DB_KEYS).map(k => `<code>${k}</code>`).join('\n');
-      
-      await ctx.replyWithHTML(
-          `⚙️ <b>НАСТРОЙКИ СИСТЕМЫ</b>\n\n` +
-          `Здесь вы можете менять цены на услуги "на лету", без перезагрузки бота.\n\n` +
-          `📝 <b>Изменить цену:</b>\n` +
-          `<code>/setprice КЛЮЧ ЗНАЧЕНИЕ</code>\n\n` +
-          `🔑 <b>Доступные ключи:</b>\n${keysList}\n\n` +
-          `<i>Пример: /setprice price_point_concrete 3000</i>`
-      );
-  },
-
-  async processSetPrice(ctx) {
-      const parts = ctx.message.text.split(' ');
-      if (parts.length !== 3) return ctx.reply("⚠️ Формат: /setprice KEY VALUE");
-      
-      const [_, key, value] = parts;
-      
-      // Проверяем, что значение - число
-      if (isNaN(parseFloat(value))) return ctx.reply("❌ Значение должно быть числом.");
-
-      try {
-          // Используем UPSERT (Вставка или Обновление)
-          await db.query(`
-              INSERT INTO settings (key, value, updated_at) 
-              VALUES ($1, $2, NOW()) 
-              ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()
-          `, [key, value]);
-
-          await ctx.reply(`✅ Настройка <b>${key}</b> успешно обновлена до <b>${value}</b>`, { parse_mode: 'HTML' });
-      } catch (e) {
-          ctx.reply("Ошибка сохранения: " + e.message);
-      }
-  },
-
-  /**
-   * ===========================================================================
-   * 6. 👥 УПРАВЛЕНИЕ ПЕРСОНАЛОМ И БАН
-   * ===========================================================================
-   */
-
-  async showStaffInstruction(ctx) {
-      await ctx.replyWithHTML(
-          `👥 <b>УПРАВЛЕНИЕ КАДРАМИ</b>\n\n` +
-          `👑 <b>Назначить роль:</b>\n` +
-          `<code>/setrole ID ROLE</code>\n` +
-          `<i>Роли: admin, manager, user</i>\n\n` +
-          `⛔ <b>Заблокировать пользователя:</b>\n` +
-          `<code>/ban ID</code>\n\n` +
-          `📢 <b>Массовая рассылка:</b>\n` +
-          `<code>/broadcast ТЕКСТ</code>`
-      );
-  },
-
-  async processSetRole(ctx) {
-      const parts = ctx.message.text.split(' ');
-      if (parts.length !== 3) return ctx.reply("⚠️ Формат: /setrole ID ROLE");
-
-      const [_, userId, role] = parts;
-      
-      // Валидация ролей
-      if (!['admin', 'manager', 'user'].includes(role)) {
-          return ctx.reply("❌ Недопустимая роль. Используйте: admin, manager, user");
-      }
-
-      try {
-          await UserService.changeUserRole(ctx.from.id, userId, role);
-          await ctx.reply(`✅ Пользователю ${userId} назначена роль <b>${role.toUpperCase()}</b>`, { parse_mode: 'HTML' });
-          
-          // Уведомляем пользователя
-          try {
-              await ctx.telegram.sendMessage(userId, `⚠️ Ваши права доступа изменены на: <b>${role.toUpperCase()}</b>`, { parse_mode: 'HTML' });
-          } catch (e) { /* Игнорируем, если бот заблочен */ }
-
-      } catch (e) {
-          ctx.reply("Ошибка: " + e.message);
-      }
-  },
-
-  async processBanUser(ctx) {
-      const parts = ctx.message.text.split(' ');
-      if (parts.length !== 2) return ctx.reply("⚠️ Формат: /ban ID");
-      
-      const userId = parts[1];
-
-      // Защита от самострела
-      if (userId == ctx.from.id) return ctx.reply("🤡 Себя забанить нельзя.");
-
-      try {
-          // Мы не удаляем юзера, а ставим ему роль 'banned'
-          // Нужно убедиться, что роль 'banned' обрабатывается в UserHandler (если нет, можно просто ставить роль 'restricted')
-          // В текущей системе просто снимем админку
-          await UserService.changeUserRole(ctx.from.id, userId, 'banned'); 
-          await ctx.reply(`🚫 Пользователь ${userId} заблокирован (роль set to banned).`);
-      } catch (e) {
-          ctx.reply("Ошибка: " + e.message);
-      }
-  },
-
-  /**
-   * ===========================================================================
-   * 7. 📢 МАССОВАЯ РАССЫЛКА (BROADCAST)
-   * ===========================================================================
-   */
-
-  async processBroadcast(ctx) {
-      // Убираем команду из текста
-      const text = ctx.message.text.replace('/broadcast', '').trim();
-      
-      if (text.length < 5) {
-          return ctx.reply("⚠️ Текст рассылки слишком короткий.");
-      }
-
-      const confirmMsg = await ctx.reply("📢 Начинаю рассылку...");
-      const startTime = Date.now();
-      
-      try {
-          // Получаем всех пользователей
-          const usersRes = await db.query("SELECT telegram_id FROM users");
-          const users = usersRes.rows;
-          
-          let successCount = 0;
-          let blockCount = 0;
-          let failCount = 0;
-
-          // Проходим по всем юзерам
-          for (const user of users) {
-              try {
-                  await ctx.telegram.sendMessage(user.telegram_id, `📢 <b>НОВОСТИ PRO ELECTRIC</b>\n\n${text}`, { parse_mode: 'HTML' });
-                  successCount++;
-                  // Важно: Пауза, чтобы не превысить лимиты Телеграма (30 сообщений в секунду)
-                  await sleep(50); 
-              } catch (e) {
-                  // Ошибка 403 означает, что юзер заблокировал бота
-                  if (e.response && e.response.error_code === 403) {
-                      blockCount++;
-                  } else {
-                      failCount++;
-                  }
-              }
-          }
-
-          const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-
-          await ctx.replyWithHTML(
-              `✅ <b>Рассылка завершена!</b>\n` +
-              `⏱ Время: ${duration} сек\n` +
-              `📨 Отправлено: <b>${successCount}</b>\n` +
-              `💀 Бот заблокирован: <b>${blockCount}</b>\n` +
-              `❌ Ошибки: <b>${failCount}</b>`
-          );
-
-      } catch (e) {
-          ctx.reply("Критическая ошибка рассылки: " + e.message);
-      }
-  },
-
-  /**
-   * ===========================================================================
-   * 8. 👨‍💻 SQL КОНСОЛЬ
+   * 3. 👨‍💻 SQL ТЕРМИНАЛ (OWNER ONLY)
    * ===========================================================================
    */
 
   async showSQLInstruction(ctx) {
-      await ctx.replyWithHTML(
-          `👨‍💻 <b>SQL ТЕРМИНАЛ</b>\n` +
-          `Выполняйте любые запросы к БД напрямую.\n\n` +
-          `Пример:\n<code>/sql SELECT * FROM users LIMIT 5</code>\n\n` +
-          `⚠️ Будьте осторожны с DELETE и DROP!`
-      );
+    await ctx.replyWithHTML(
+      `👨‍💻 <b>SQL КОНСОЛЬ (Direct Access)</b>\n\n` +
+        `Позволяет выполнять произвольные запросы к базе данных.\n` +
+        `⚠️ <b>ВНИМАНИЕ:</b> Вы имеете полные права. ` +
+        `Команды <code>DROP</code>, <code>DELETE</code>, <code>TRUNCATE</code> необратимы!\n\n` +
+        `📝 <b>Синтаксис:</b>\n` +
+        `<code>/sql SELECT * FROM users LIMIT 5</code>\n` +
+        `<code>/sql UPDATE users SET role='admin' WHERE telegram_id=123</code>`,
+    );
   },
 
   async processSQL(ctx) {
-      const query = ctx.message.text.replace('/sql', '').trim();
-      if (!query) return ctx.reply("⚠️ Пустой запрос.");
-      
-      try {
-          const start = Date.now();
-          const res = await db.query(query);
-          const duration = Date.now() - start;
+    // 1. Парсинг
+    const queryText = ctx.message.text.replace(/^\/sql\s+/, "").trim();
+    if (!queryText)
+      return ctx.reply("⚠️ Введите SQL запрос после команды /sql");
 
-          if (res.command === 'SELECT') {
-              const json = JSON.stringify(res.rows, null, 2);
-              if (json.length > 4000) {
-                  await ctx.replyWithDocument({ source: Buffer.from(json), filename: 'result.json' });
-              } else {
-                  await ctx.replyWithHTML(`✅ <b>Результат (${res.rowCount} строк):</b>\n<pre>${json}</pre>`);
-              }
-          } else {
-              await ctx.reply(`✅ Выполнено. Затронуто: ${res.rowCount}. Время: ${duration}ms`);
-          }
-      } catch (e) {
-          await ctx.reply(`❌ Ошибка SQL:\n${e.message}`);
+    // 2. Логирование безопасности
+    console.warn(`[SECURITY] SQL Executed by ${ctx.from.id}: ${queryText}`);
+
+    const start = Date.now();
+    try {
+      // 3. Выполнение
+      const res = await db.query(queryText);
+      const duration = Date.now() - start;
+
+      // 4. Форматирование результата
+      let message = `✅ <b>SQL SUCCESS</b> (${duration}ms)\n`;
+      message += `Affected Rows: ${res.rowCount}\n\n`;
+
+      if (res.command === "SELECT" && res.rows.length > 0) {
+        const json = JSON.stringify(res.rows, null, 2);
+
+        // Если ответ слишком большой для Телеграма (4096 символов)
+        if (json.length > 3500) {
+          const buffer = Buffer.from(json, "utf-8");
+          await ctx.replyWithDocument({
+            source: buffer,
+            filename: `sql_result_${Date.now()}.json`,
+          });
+          return;
+        } else {
+          message += `<pre>${json}</pre>`;
+        }
+      } else if (res.rows.length === 0 && res.command === "SELECT") {
+        message += `<i>(Пустой результат)</i>`;
       }
-  }
+
+      await ctx.replyWithHTML(message);
+    } catch (e) {
+      await ctx.replyWithHTML(`❌ <b>SQL ERROR</b>\n<pre>${e.message}</pre>`);
+    }
+  },
+
+  /**
+   * ===========================================================================
+   * 4. 💾 БЭКАП СИСТЕМЫ (OWNER ONLY)
+   * ===========================================================================
+   */
+
+  async processBackup(ctx) {
+    try {
+      await ctx.reply("💾 Создаю дамп базы данных...");
+
+      // В реальном проекте тут можно использовать pg_dump через child_process
+      // Но в рамках Node.js драйвера мы можем выгрузить основные таблицы в JSON
+
+      const tables = ["users", "orders", "settings"];
+      const dump = {};
+
+      for (const table of tables) {
+        const res = await db.query(`SELECT * FROM ${table}`);
+        dump[table] = res.rows;
+      }
+
+      const json = JSON.stringify(dump, null, 2);
+      const buffer = Buffer.from(json, "utf-8");
+
+      const date = new Date().toISOString().slice(0, 10);
+      await ctx.replyWithDocument(
+        {
+          source: buffer,
+          filename: `backup_proelectric_${date}.json`,
+        },
+        {
+          caption: `✅ <b>Полный бэкап системы</b>\nТаблицы: ${tables.join(", ")}`,
+        },
+      );
+    } catch (e) {
+      ctx.reply(`❌ Ошибка бэкапа: ${e.message}`);
+    }
+  },
+
+  /**
+   * ===========================================================================
+   * 5. 👥 УПРАВЛЕНИЕ ПЕРСОНАЛОМ
+   * ===========================================================================
+   */
+
+  async showStaffInstruction(ctx) {
+    await ctx.replyWithHTML(
+      `👥 <b>УПРАВЛЕНИЕ КОМАНДОЙ</b>\n\n` +
+        `Чтобы назначить роль, используйте команду:\n` +
+        `<code>/setrole ID ROLE</code>\n\n` +
+        `<b>Доступные роли:</b>\n` +
+        `🔹 <code>admin</code> — Полный доступ (кроме SQL)\n` +
+        `🔹 <code>manager</code> — Управление заказами\n` +
+        `🔹 <code>user</code> — Снять права (обычный клиент)\n` +
+        `🚫 <code>banned</code> — Заблокировать доступ\n\n` +
+        `<i>Пример: /setrole 123456789 manager</i>`,
+    );
+  },
+
+  // Этот метод должен вызываться из server.js через bot.hears(/^\/setrole/...)
+  async processSetRole(ctx) {
+    // Проверка на Владельца или Админа
+    if (!(await UserService.isAdmin(ctx.from.id))) return;
+
+    const parts = ctx.message.text.split(" "); // /setrole 123 admin
+    if (parts.length < 3) return ctx.reply("⚠️ Формат: /setrole ID ROLE");
+
+    const targetId = parts[1];
+    const newRole = parts[2].toLowerCase();
+
+    try {
+      const result = await UserService.changeUserRole(
+        ctx.from.id,
+        targetId,
+        newRole,
+      );
+      await ctx.reply(
+        `✅ <b>Успешно!</b>\nПользователь ${targetId} теперь <b>${newRole.toUpperCase()}</b>.`,
+      );
+
+      // Уведомляем жертву/счастливчика
+      ctx.telegram
+        .sendMessage(
+          targetId,
+          `⚡️ Ваши права в системе обновлены: <b>${newRole.toUpperCase()}</b>`,
+          { parse_mode: "HTML" },
+        )
+        .catch(() => {});
+    } catch (e) {
+      ctx.reply(`❌ Ошибка: ${e.message}`);
+    }
+  },
+
+  /**
+   * ===========================================================================
+   * 6. ⚙️ НАСТРОЙКИ (ЦЕНООБРАЗОВАНИЕ)
+   * ===========================================================================
+   */
+
+  async showSettingsInstruction(ctx) {
+    await ctx.replyWithHTML(
+      `⚙️ <b>НАСТРОЙКИ ЦЕН</b>\n` +
+        `Изменение цен влияет на ВСЕ новые расчеты мгновенно.\n\n` +
+        `Команда: <code>/setprice KEY VALUE</code>\n\n` +
+        `<b>Основные ключи:</b>\n` +
+        `🔸 <code>price_strobe_concrete</code> (Штроба бетон)\n` +
+        `🔸 <code>price_cable</code> (Кабель м.п.)\n` +
+        `🔸 <code>price_shield_module</code> (Щит, модуль)\n` +
+        `🔸 <code>material_factor</code> (Коэф. материалов, напр 0.45)\n\n` +
+        `<i>Пример: /setprice price_cable 400</i>`,
+    );
+  },
+
+  // Вызывается из server.js
+  async processSetPrice(ctx) {
+    if (!(await UserService.isAdmin(ctx.from.id))) return;
+
+    const parts = ctx.message.text.split(" ");
+    if (parts.length < 3) return ctx.reply("⚠️ Формат: /setprice KEY VALUE");
+
+    const key = parts[1];
+    const value = parts[2];
+
+    try {
+      // Прямой SQL UPSERT в таблицу settings
+      await db.query(
+        `
+        INSERT INTO settings (key, value, updated_at)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()
+      `,
+        [key, value],
+      );
+
+      await ctx.reply(`✅ Цена <b>${key}</b> установлена: <b>${value}</b>`, {
+        parse_mode: "HTML",
+      });
+    } catch (e) {
+      ctx.reply("❌ Ошибка записи в БД.");
+    }
+  },
+
+  /**
+   * ===========================================================================
+   * 7. 📦 УПРАВЛЕНИЕ ЗАКАЗАМИ
+   * ===========================================================================
+   */
+
+  async showOrdersInstruction(ctx) {
+    await ctx.replyWithHTML(
+      `📦 <b>УПРАВЛЕНИЕ ЗАКАЗАМИ</b>\n` +
+        `Напишите <code>/order ID</code> чтобы открыть меню управления заказом.\n\n` +
+        `Или используйте поиск: <code>/findorder Имя</code>`,
+    );
+  },
+
+  // Обработка инлайн-кнопок статусов (из server.js bot.action)
+  async handleOrderStatusChange(ctx, orderId, newStatus) {
+    try {
+      await OrderService.updateOrderStatus(orderId, newStatus);
+      await ctx.answerCbQuery(`Статус изменен на ${newStatus}`);
+      await ctx.editMessageText(
+        `✅ Заказ #${orderId} переведен в статус: <b>${newStatus.toUpperCase()}</b>`,
+        { parse_mode: "HTML" },
+      );
+
+      // Можно уведомить клиента здесь
+    } catch (e) {
+      await ctx.answerCbQuery("Ошибка обновления");
+    }
+  },
 };
