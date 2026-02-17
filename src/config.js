@@ -49,7 +49,7 @@ const configRaw = {
   server: {
     port: getInt("PORT", 3000),
     // app.js ждет corsOrigin (строка), а не corsOrigins (массив)
-    corsOrigin: getEnv("CORS_ORIGIN", "*"), 
+    corsOrigin: getEnv("CORS_ORIGIN", "*"),
     sessionSecret: getEnv("SESSION_SECRET", "dev_secret_key_change_me"),
   },
 
@@ -81,5 +81,6 @@ export const config = Object.freeze(configRaw);
 if (process.env.NODE_ENV !== "test") {
   console.log(`✅ [CONFIG] Loaded. Env: ${config.system.env}`);
   // Проверка критических полей
-  if (!config.server.sessionSecret) console.warn("⚠️ Warning: SESSION_SECRET is missing");
+  if (!config.server.sessionSecret)
+    console.warn("⚠️ Warning: SESSION_SECRET is missing");
 }
