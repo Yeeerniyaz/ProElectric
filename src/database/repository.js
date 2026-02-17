@@ -1,168 +1,216 @@
 /**
  * @file src/database/repository.js
- * @description Слой репозитория (Repository Layer).
- * Содержит методы для выполнения CRUD операций (Create, Read, Update, Delete).
- * Изолирует бизнес-логику от прямого написания SQL-запросов.
- * @module DatabaseRepository
- * @version 1.0.0 (Senior Level)
+ * @description Слой репозитория (Data Access Layer).
+ * Содержит коллекцию готовых методов для работы с БД.
+ * Изолирует прямой SQL от бизнес-логики (Services).
+ *
+ * Архитектура: Repository Pattern.
+ *
+ * @module Repository
+ * @version 6.1.0 (Senior Architect Edition)
+ * @author ProElectric Team
  */
 
-import { query, getClient } from "./connection.js";
-import { ROLES } from "../constants.js";
+import { query } from "./connection.js";
 
 // =============================================================================
-// МЕТОДЫ РАБОТЫ С НАСТРОЙКАМИ (SETTINGS)
+// ⚙️ SETTINGS (DYNAMIC PRICING)
 // =============================================================================
 
 /**
- * Получить все глобальные настройки (цены, коэффициенты) из базы.
- * Преобразует массив строк из БД в удобный JavaScript объект.
- *
- * @returns {Promise<Object>} Объект вида { 'price_cable': '400', ... }
+ * Получение всех настроек системы одной пачкой.
+ * Используется для кеширования цен в OrderService.
+ * @returns {Promise<Object>} Объект вида { 'price_cable': 350, ... }
  */
 export const getSettings = async () => {
-  const result = await query("SELECT key, value FROM settings");
+  const sql = "SELECT key, value FROM settings";
+  const { rows } = await query(sql);
 
   const settings = {};
-  // Явный цикл for-of для максимальной понятности и производительности
-  for (const row of result.rows) {
-    settings[row.key] = row.value;
+  for (const row of rows) {
+    // Автоматическая конвертация чисел
+    const numVal = parseFloat(row.value);
+    settings[row.key] = isNaN(numVal) ? row.value : numVal;
   }
-
   return settings;
 };
 
-// =============================================================================
-// МЕТОДЫ РАБОТЫ С ПОЛЬЗОВАТЕЛЯМИ (USERS)
-// =============================================================================
-
 /**
- * Создать или обновить пользователя (Upsert).
- * Используется при каждом сообщении от пользователя (/start), чтобы обновить его имя/username.
- *
- * @param {number|string} telegramId - Уникальный ID пользователя Telegram
- * @param {string} firstName - Имя пользователя
- * @param {string} username - Юзернейм (без @)
- * @param {string} phone - Номер телефона (может быть null)
- * @returns {Promise<Object>} Обновленный объект пользователя
+ * Сохранение или обновление настройки (Upsert).
+ * @param {string} key - Ключ (напр. 'price_strobe_concrete')
+ * @param {string|number} value - Значение
  */
-
-export const upsertUser = async (telegramId, firstName, username, phone) => {
-  // Используем конструкцию ON CONFLICT для реализации логики "Вставь или Обнови"
+export const saveSetting = async (key, value) => {
   const sql = `
-        INSERT INTO users (telegram_id, first_name, username, phone)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (telegram_id) DO UPDATE SET 
-            first_name = COALESCE(EXCLUDED.first_name, users.first_name),
-            username = COALESCE(EXCLUDED.username, users.username),
-            phone = COALESCE(EXCLUDED.phone, users.phone),
-            updated_at = NOW()
-        RETURNING *
-    `;
-
-  const result = await query(sql, [telegramId, firstName, username, phone]);
-  return result.rows[0];
+    INSERT INTO settings (key, value, updated_at)
+    VALUES ($1, $2, NOW())
+    ON CONFLICT (key) DO UPDATE SET 
+      value = EXCLUDED.value,
+      updated_at = NOW()
+    RETURNING *
+  `;
+  const res = await query(sql, [key, String(value)]);
+  return res.rows[0];
 };
 
+// =============================================================================
+// 👤 USERS REPOSITORY
+// =============================================================================
+
 /**
- * Повысить или понизить роль сотрудника.
- * Это ТРАНЗАКЦИОННАЯ операция: если мы назначаем менеджера, мы ОБЯЗАНЫ создать ему кассу.
- *
- * @param {number|string} targetId - ID пользователя
- * @param {string} newRole - Новая роль (admin, manager, client)
- * @param {string} nameForAccount - Имя пользователя для названия кассы
- * @returns {Promise<void>}
+ * Найти пользователя по Telegram ID.
  */
-export const promoteUser = async (targetId, newRole, nameForAccount) => {
-  // Получаем выделенного клиента для транзакции
-  const client = await getClient();
+export const findUserById = async (telegramId) => {
+  const sql = "SELECT * FROM users WHERE telegram_id = $1";
+  const res = await query(sql, [telegramId]);
+  return res.rows[0];
+};
 
-  try {
-    await client.query("BEGIN"); // Начинаем транзакцию
+/**
+ * Регистрация или обновление пользователя (Upsert).
+ * Гарантирует актуальность username и first_name.
+ */
+export const upsertUser = async ({ id, first_name, username }) => {
+  const safeName = first_name || "Пользователь";
+  const safeUsername = username || null;
 
-    // 1. Обновляем роль в таблице пользователей
-    await client.query(
-      "UPDATE users SET role = $1, updated_at = NOW() WHERE telegram_id = $2",
-      [newRole, targetId],
-    );
+  const sql = `
+    INSERT INTO users (telegram_id, first_name, username, updated_at)
+    VALUES ($1, $2, $3, NOW())
+    ON CONFLICT (telegram_id) DO UPDATE SET 
+      first_name = EXCLUDED.first_name,
+      username = EXCLUDED.username,
+      updated_at = NOW()
+    RETURNING *
+  `;
+  const res = await query(sql, [id, safeName, safeUsername]);
+  return res.rows[0];
+};
 
-    // 2. Если новая роль подразумевает работу с финансами, создаем кассу
-    if (newRole === ROLES.MANAGER || newRole === ROLES.ADMIN) {
-      await client.query(
-        `INSERT INTO accounts (user_id, name, type)
-                 VALUES ($1, $2, 'cash')
-                 ON CONFLICT DO NOTHING`, // Если касса уже есть, не создаем дубликат
-        [targetId, `Касса: ${nameForAccount}`],
-      );
-    }
+/**
+ * Обновление телефона пользователя.
+ */
+export const updateUserPhone = async (userId, phone) => {
+  const sql =
+    "UPDATE users SET phone = $1, updated_at = NOW() WHERE telegram_id = $2";
+  await query(sql, [phone, userId]);
+};
 
-    await client.query("COMMIT"); // Применяем изменения
-  } catch (error) {
-    await client.query("ROLLBACK"); // Отменяем всё при ошибке
-    throw error; // Пробрасываем ошибку выше
-  } finally {
-    client.release(); // Обязательно возвращаем клиента в пул
-  }
+/**
+ * Смена роли пользователя.
+ */
+export const updateUserRole = async (userId, newRole) => {
+  const sql =
+    "UPDATE users SET role = $1, updated_at = NOW() WHERE telegram_id = $2 RETURNING *";
+  const res = await query(sql, [newRole, userId]);
+  return res.rows[0];
+};
+
+/**
+ * Получение списка пользователей с пагинацией.
+ */
+export const getAllUsers = async (limit = 50, offset = 0) => {
+  const sql = `
+    SELECT telegram_id, first_name, username, phone, role, created_at 
+    FROM users 
+    ORDER BY created_at DESC 
+    LIMIT $1 OFFSET $2
+  `;
+  const res = await query(sql, [limit, offset]);
+  return res.rows;
 };
 
 // =============================================================================
-// МЕТОДЫ РАБОТЫ С ЗАКАЗАМИ (ORDERS)
+// 📦 ORDERS REPOSITORY
 // =============================================================================
 
 /**
- * Создать новый заказ в системе.
- * Сохраняет полную детализацию расчета (смету) в поле JSONB.
- *
- * @param {number|string} userId - ID клиента
- * @param {Object} data - Объект с данными заказа
- * @param {number} data.area - Площадь
- * @param {number} data.price - Итоговая цена
- * @param {Object} data.details - Полный объект сметы (JSON)
- * @returns {Promise<Object>} Созданный заказ (id, status, total_price)
+ * Создание нового заказа.
+ * @param {number} userId
+ * @param {Object} data - { price, details, area, ... }
  */
 export const createOrder = async (userId, data) => {
   const sql = `
-        INSERT INTO orders (user_id, area, total_price, details, status)
-        VALUES ($1, $2, $3, $4, 'new')
-        RETURNING id, status, total_price
-    `;
+    INSERT INTO orders (user_id, total_price, details, status, created_at)
+    VALUES ($1, $2, $3, 'new', NOW())
+    RETURNING *
+  `;
+  // details сохраняем как JSONB
+  const res = await query(sql, [userId, data.price, data.details || {}]);
+  return res.rows[0];
+};
 
-  const result = await query(sql, [
-    userId,
-    data.area,
-    data.price,
-    data.details,
-  ]);
+/**
+ * Получение заказа по ID.
+ */
+export const getOrderById = async (orderId) => {
+  const sql = "SELECT * FROM orders WHERE id = $1";
+  const res = await query(sql, [orderId]);
+  return res.rows[0];
+};
 
-  return result.rows[0];
+/**
+ * Обновление статуса заказа.
+ */
+export const updateOrderStatus = async (orderId, status) => {
+  const sql =
+    "UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *";
+  const res = await query(sql, [status, orderId]);
+  return res.rows[0];
+};
+
+/**
+ * Получение истории заказов пользователя.
+ */
+export const getUserOrders = async (userId, limit = 20) => {
+  const sql = `
+    SELECT * FROM orders 
+    WHERE user_id = $1 
+    ORDER BY created_at DESC 
+    LIMIT $2
+  `;
+  const res = await query(sql, [userId, limit]);
+  return res.rows;
 };
 
 // =============================================================================
-// МЕТОДЫ РАБОТЫ С ФИНАНСАМИ (ACCOUNTS)
+// 📊 ANALYTICS & DASHBOARD
 // =============================================================================
 
 /**
- * Получить список финансовых счетов (Касс).
- * Учитывает права доступа: Админ видит всё, остальные — только своё.
- *
- * @param {number|string|null} userId - ID пользователя (владельца)
- * @param {string|null} role - Роль запрашивающего
- * @returns {Promise<Array>} Список аккаунтов
+ * Получение глобальной статистики (для дашборда).
+ * Возвращает количество юзеров, выручку (done) и активных за сутки.
  */
-export const getAccounts = async (userId = null, role = null) => {
-  let sql = "SELECT * FROM accounts";
-  const params = [];
+export const getGlobalStats = async () => {
+  // Выполняем 3 запроса параллельно, но внутри одной функции для чистоты API
+  const sqlUsers = "SELECT COUNT(*) as count FROM users";
+  const sqlRevenue =
+    "SELECT SUM(total_price) as sum FROM orders WHERE status = 'done'";
+  const sqlActive =
+    "SELECT COUNT(*) as count FROM users WHERE updated_at > NOW() - INTERVAL '24 hours'";
 
-  // Логика фильтрации:
-  // Если роль НЕ 'admin' и передан userId, то фильтруем по этому userId.
-  // Админ получает список всех касс без фильтрации (если userId не передан специально).
-  if (role !== ROLES.ADMIN && userId) {
-    sql += " WHERE user_id = $1";
-    params.push(userId);
-  }
+  const [resUsers, resRevenue, resActive] = await Promise.all([
+    query(sqlUsers),
+    query(sqlRevenue),
+    query(sqlActive),
+  ]);
 
-  sql += " ORDER BY id ASC"; // Сортировка для предсказуемого порядка
+  return {
+    totalUsers: parseInt(resUsers.rows[0].count),
+    totalRevenue: parseFloat(resRevenue.rows[0].sum || 0),
+    active24h: parseInt(resActive.rows[0].count),
+  };
+};
 
-  const result = await query(sql, params);
-  return result.rows;
+/**
+ * Аналитика по статусам заказов (Воронка).
+ */
+export const getOrdersFunnel = async () => {
+  const sql = `
+    SELECT status, COUNT(*) as count, SUM(total_price) as sum
+    FROM orders
+    GROUP BY status
+  `;
+  const res = await query(sql);
+  return res.rows;
 };
