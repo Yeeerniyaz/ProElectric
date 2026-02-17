@@ -1,21 +1,19 @@
 /**
  * @file src/config.js
- * @description Центральный модуль конфигурации приложения.
- * Исправленная версия для совместимости с app.js и server.js.
- * @module Config
+ * @description Синхронизированный модуль конфигурации.
+ * Устраняет ошибки "undefined" в app.js и connection.js, объединяя все секции.
  */
 
 import "dotenv/config";
 
-// =============================================================================
-// 🛠 УТИЛИТЫ
-// =============================================================================
-
+// --- Вспомогательные утилиты для парсинга ---
 const getEnv = (name, defaultValue = undefined) => {
   const val = process.env[name];
   if (val === undefined || val === "") {
     if (defaultValue !== undefined) return defaultValue;
-    throw new Error(`❌ [CONFIG FATAL] Missing var: "${name}"`);
+    throw new Error(
+      `❌ [CONFIG FATAL] Отсутствует обязательная переменная "${name}"`,
+    );
   }
   return val;
 };
@@ -23,64 +21,78 @@ const getEnv = (name, defaultValue = undefined) => {
 const getInt = (name, defaultValue = null) => {
   const val = process.env[name];
   if (val === undefined || val === "") return defaultValue;
-  return parseInt(val, 10);
+  const parsed = parseInt(val, 10);
+  if (isNaN(parsed))
+    throw new Error(`❌ [CONFIG FATAL] "${name}" должно быть числом`);
+  return parsed;
 };
 
 const getList = (name) => {
   const val = process.env[name];
-  return val ? val.split(",").map((v) => v.trim()) : [];
+  if (!val) return [];
+  return val
+    .split(",")
+    .map((v) => parseInt(v.trim(), 10))
+    .filter((n) => !isNaN(n));
 };
 
-// =============================================================================
-// ⚙️ КОНФИГУРАЦИЯ
-// =============================================================================
+// --- Формирование строки подключения к БД ---
+const getDatabaseUrl = () => {
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  const user = getEnv("DB_USER", "postgres");
+  const pass = getEnv("DB_PASSWORD", "postgres");
+  const host = getEnv("DB_HOST", "localhost");
+  const port = getInt("DB_PORT", 5432);
+  const name = getEnv("DB_NAME", "proelectric");
+  return `postgres://${user}:${pass}@${host}:${port}/${name}`;
+};
 
 const isProduction = process.env.NODE_ENV === "production";
 
+// --- Глобальный объект конфигурации ---
 const configRaw = {
-  // 1. Системные настройки
   system: {
     env: getEnv("NODE_ENV", "development"),
-    isProduction,
+    port: getInt("PORT", 3000),
     timezone: getEnv("TZ", "Asia/Almaty"),
+    isProduction,
   },
 
-  // 2. Настройки Сервера (Исправляем ошибку undefined 'server')
+  // Секция server — необходима для app.js
   server: {
-    port: getInt("PORT", 3000),
-    // app.js ждет corsOrigin (строка), а не corsOrigins (массив)
     corsOrigin: getEnv("CORS_ORIGIN", "*"),
     sessionSecret: getEnv("SESSION_SECRET", "dev_secret_key_change_me"),
   },
 
-  // 3. База данных
-  database: {
-    url: getEnv("DATABASE_URL"), // Ожидает полную строку подключения
-    maxPoolSize: getInt("DB_POOL_MAX", 20),
-    idleTimeout: 30000,
+  // Секция db — необходима для connection.js
+  db: {
+    connectionString: getDatabaseUrl(),
+    max: getInt("DB_POOL_MAX", 20),
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 5000,
+    ssl: isProduction ? { rejectUnauthorized: false } : false,
   },
 
-  // 4. Telegram Bot
+  // Секция bot — необходима для bot.js
   bot: {
     token: getEnv("BOT_TOKEN"),
-    webhookDomain: getEnv("WEBHOOK_DOMAIN", null),
+    ownerId: getInt("ADMIN_ID"),
+    adminIds: getList("ADDITIONAL_ADMIN_IDS"),
+    bossUsername: (process.env.BOSS_USERNAME || "yeeerniyaz").replace("@", ""),
   },
 
-  // 5. Админка (app.js ждет config.admin.password)
+  // Секция admin — необходима для авторизации в app.js
   admin: {
-    password: getEnv("ADMIN_PASSWORD", "admin123"),
-    ownerId: getInt("OWNER_ID", 0),
+    password: getEnv("ADMIN_PASS", "admin123"),
   },
 };
 
+// Замораживаем объект для предотвращения изменений в рантайме
 export const config = Object.freeze(configRaw);
 
-// =============================================================================
-// 🚀 SELF-CHECK
-// =============================================================================
-if (process.env.NODE_ENV !== "test") {
-  console.log(`✅ [CONFIG] Loaded. Env: ${config.system.env}`);
-  // Проверка критических полей
-  if (!config.server.sessionSecret)
-    console.warn("⚠️ Warning: SESSION_SECRET is missing");
-}
+(() => {
+  if (process.env.NODE_ENV !== "test") {
+    console.log(`✅ [CONFIG] Configuration loaded successfully.`);
+    console.log(`🌍 [ENV] Environment: ${config.system.env.toUpperCase()}`);
+  }
+})();
