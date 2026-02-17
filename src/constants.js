@@ -275,6 +275,7 @@ export const BUTTONS = Object.freeze({
   ORDERS: "📂 Мои расчеты", // Текст обновлен под server.js
   PRICE_LIST: "💰 Прайс-лист",
   CONTACTS: "📞 Контакты",
+  HOW_WORK: "🛠 Как мы работаем", // Новая кнопка
 
   MANAGER_OBJECTS: "👷‍♂️ Мои объекты",
   MANAGER_CASH: "💵 Моя Касса",
@@ -287,8 +288,10 @@ export const BUTTONS = Object.freeze({
   ADMIN_ORDERS: "📦 Управление заказами", // Новая
   ADMIN_SQL: "👨‍💻 SQL Консоль", // Новая
 
-  BACK: "🏠 Главное меню", // Иконка обновлена
+  BACK: "🔙 Назад",
   CANCEL: "❌ Отмена",
+
+  SHARE_PHONE: "📱 Отправить мой номер телефона",
 
   // 👇 ЭТОГО НЕ ХВАТАЛО ДЛЯ РАБОТЫ UserHandler.js
   // Используется для проверки "Глобальных перехватчиков"
