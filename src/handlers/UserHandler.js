@@ -1,504 +1,459 @@
 /**
  * @file src/handlers/UserHandler.js
- * @description Контроллер взаимодействия с пользователем (Presentation Layer).
- * Реализует машину состояний (FSM) для калькулятора, меню и поддержку.
- * @module UserHandler
- * @version 6.0.0 (Senior Production Ready)
+ * @description Обработчик действий обычного пользователя.
+ * Реализует бизнес-логику: Регистрация, Калькулятор сметы, Оформление заявки.
+ *
+ * @author ProElectric Team
+ * @version 9.0 (Enterprise Edition)
  */
 
-import { OrderService } from "../services/OrderService.js";
 import { UserService } from "../services/UserService.js";
-import { AdminHandler } from "./AdminHandler.js";
-import { KEYBOARDS, MESSAGES, BUTTONS, TEXTS, ROLES } from "../constants.js";
-import { getSettings } from "../database/repository.js";
+import { OrderService } from "../services/OrderService.js";
+import {
+  KEYBOARDS,
+  BUTTONS,
+  TEXTS,
+  USER_STATES,
+  MESSAGES,
+} from "../constants.js";
+import { config } from "../config.js";
 
-// =============================================================================
-// 🏗 СОСТОЯНИЯ (FINITE STATE MACHINE)
-// =============================================================================
-const USER_STATES = {
-  IDLE: "IDLE", // Обычный режим меню
-  CALC_WAIT_AREA: "WAIT_AREA", // Ожидание ввода площади
-  CALC_WAIT_WALL: "WAIT_WALL", // Ожидание выбора стен
-  CALC_WAIT_ROOMS: "WAIT_ROOMS", // Ожидание ввода комнат
-  CONTACT_WAIT_MSG: "WAIT_MSG", // Ожидание сообщения в поддержку
-};
+// ID Владельца для уведомлений о новых лидах (ОБЯЗАТЕЛЬНО ПРОВЕРЬ!)
+// В реальном проекте лучше вынести это в .env (process.env.OWNER_ID)
+const OWNER_ID = 123456789;
 
-// =============================================================================
-// 🎮 ГЛАВНЫЙ КОНТРОЛЛЕР (USER HANDLER)
-// =============================================================================
 export const UserHandler = {
   /**
-   * 🚀 Команда /start.
-   * Регистрирует пользователя и инициализирует сессию.
+   * ===========================================================================
+   * 1. 🏁 ТОЧКА ВХОДА И РЕГИСТРАЦИЯ
+   * ===========================================================================
+   */
+
+  /**
+   * Обработка команды /start
+   * Проверяет регистрацию пользователя. Если нет телефона - принуждает отправить.
+   * @param {object} ctx - Контекст Telegraf
    */
   async startCommand(ctx) {
     try {
-      await ctx.sendChatAction("typing");
+      const user = ctx.from;
+      console.log(`[USER START] User: ${user.id} (${user.first_name})`);
 
-      // 1. Регистрация / Обновление данных пользователя (Upsert)
-      // Получаем актуальную роль пользователя из БД
-      const user = await UserService.registerOrUpdateUser(ctx.from);
-      const userRole = user ? user.role : ROLES.CLIENT;
+      // 1. Получаем данные пользователя из базы
+      let dbUser = await UserService.getUser(user.id);
 
-      // 2. Сброс состояния (Hard Reset)
-      this.clearSession(ctx);
+      // 2. Если пользователя нет - регистрируем его (но пока без телефона)
+      if (!dbUser) {
+        dbUser = await UserService.registerUser(user);
+        console.log(`[USER REG] New user registered: ${user.id}`);
+      }
 
-      // 3. Приветствие
-      const userName = ctx.from.first_name || "Гость";
+      // 3. БЛОКИРОВКА: Если у пользователя не заполнен телефон - не пускаем дальше
+      if (!dbUser.phone_number) {
+        // Устанавливаем состояние ожидания контакта
+        ctx.session.state = USER_STATES.WAIT_PHONE;
 
-      // Используем HTML для жирного текста
-      await ctx.replyWithHTML(TEXTS.welcome(userName), {
-        reply_markup: KEYBOARDS.MAIN_MENU(userRole),
+        return ctx.reply(
+          `👋 Добро пожаловать, ${user.first_name}!\n\n` +
+            `🤖 Я — <b>Pro Electric Bot</b>, ваш помощник в расчете стоимости электромонтажа.\n\n` +
+            `🔒 Для доступа к калькулятору и прайсу, пожалуйста, <b>подтвердите ваш номер телефона</b>.\n` +
+            `Это нужно для связи с инженером в случае заявки.`,
+          {
+            parse_mode: "HTML",
+            reply_markup: KEYBOARDS.PHONE_REQUEST, // Специальная кнопка
+          },
+        );
+      }
+
+      // 4. Если телефон есть - показываем Главное Меню
+      await this.showMainMenu(ctx, dbUser.role);
+    } catch (error) {
+      console.error("[UserHandler] Error in startCommand:", error);
+      ctx.reply("Произошла системная ошибка. Попробуйте позже.");
+    }
+  },
+
+  /**
+   * Обработка полученного контакта (телефонного номера)
+   * Финализирует регистрацию.
+   */
+  async handleContact(ctx) {
+    try {
+      // Проверка состояния (действительно ли мы ждем телефон?)
+      const session = ctx.session || {};
+      if (session.state !== USER_STATES.WAIT_PHONE) {
+        return; // Игнорируем случайные контакты
+      }
+
+      const contact = ctx.message.contact;
+      const userId = ctx.from.id;
+
+      // Валидация: Контакт должен принадлежать отправителю
+      if (contact && contact.user_id === userId) {
+        // 1. Сохраняем номер в базу
+        await UserService.updatePhone(userId, contact.phone_number);
+        console.log(
+          `[USER PHONE] User ${userId} updated phone: ${contact.phone_number}`,
+        );
+
+        // 2. 🔥 ЛИД-МАГНИТ: Уведомляем владельца (Тебя) о новом клиенте
+        try {
+          await ctx.telegram.sendMessage(
+            OWNER_ID,
+            `🔔 <b>НОВЫЙ КЛИЕНТ!</b>\n\n` +
+              `👤 Имя: <a href="tg://user?id=${userId}">${ctx.from.first_name}</a>\n` +
+              `📱 Тел: <code>${contact.phone_number}</code>\n` +
+              `📅 Дата: ${new Date().toLocaleString("ru-RU")}`,
+            { parse_mode: "HTML" },
+          );
+        } catch (notifyError) {
+          console.error(
+            "[UserHandler] Failed to notify owner:",
+            notifyError.message,
+          );
+        }
+
+        // 3. Сбрасываем состояние и пускаем в меню
+        ctx.session.state = USER_STATES.IDLE;
+
+        await ctx.reply("✅ Отлично! Регистрация завершена.", {
+          reply_markup: { remove_keyboard: true },
+        });
+        await this.showMainMenu(ctx, "user");
+      } else {
+        await ctx.reply(
+          "⚠️ Пожалуйста, нажмите кнопку <b>'Отправить мой номер телефона'</b> внизу экрана.",
+          { parse_mode: "HTML" },
+        );
+      }
+    } catch (error) {
+      console.error("[UserHandler] Error in handleContact:", error);
+    }
+  },
+
+  /**
+   * Отображение Главного Меню
+   * Адаптируется под роль пользователя (Добавляет админку если нужно)
+   */
+  async showMainMenu(ctx, role = "user") {
+    try {
+      await ctx.replyWithHTML(TEXTS.welcome(ctx.from.first_name), {
+        reply_markup: KEYBOARDS.MAIN_MENU(role),
       });
     } catch (error) {
-      console.error("[UserHandler] Start Error:", error);
-      await ctx.reply("⚠️ Произошла ошибка при запуске. Попробуйте позже.");
+      console.error("[UserHandler] Menu Error:", error);
     }
   },
 
   /**
-   * 📨 Главный маршрутизатор текстовых сообщений (Router).
-   * Определяет, что делать с входящим текстом в зависимости от состояния и роли.
+   * ===========================================================================
+   * 2. 🎮 ГЛАВНЫЙ РОУТЕР СООБЩЕНИЙ (State Machine)
+   * ===========================================================================
    */
+
   async handleTextMessage(ctx) {
-    const text = ctx.message.text;
-    const session = ctx.session || {};
-    const state = session.state || USER_STATES.IDLE;
-
     try {
-      // 1. ГЛОБАЛЬНЫЕ ПЕРЕХВАТЧИКИ (Global Interceptors)
-      // Кнопки "Главное меню", "Отмена" и команда /cancel работают всегда
-      if (BUTTONS.common.includes(text) || text === "/cancel") {
+      const text = ctx.message.text;
+      const session = ctx.session || {}; // Безопасное чтение сессии
+      const state = session.state || USER_STATES.IDLE;
+
+      console.log(`[MSG] User ${ctx.from.id} [${state}]: ${text}`);
+
+      // --- 2.1 ГЛОБАЛЬНЫЕ КНОПКИ МЕНЮ (Работают всегда) ---
+
+      if (text === BUTTONS.CALCULATE) return this.enterCalculationMode(ctx);
+      if (text === BUTTONS.PRICE_LIST) return this.showPriceList(ctx);
+
+      if (text === BUTTONS.CONTACTS) {
+        // Отправляем контакты с Inline-кнопкой WhatsApp
+        return ctx.replyWithHTML(TEXTS.contacts, {
+          reply_markup: KEYBOARDS.CONTACT_ACTIONS,
+        });
+      }
+
+      if (text === BUTTONS.HOW_WORK) {
+        return ctx.replyWithHTML(TEXTS.howWeWork);
+      }
+
+      if (text === BUTTONS.ORDERS) return this.showMyOrders(ctx);
+
+      // Кнопки навигации
+      if (text === BUTTONS.BACK || text === BUTTONS.CANCEL)
         return this.returnToMainMenu(ctx);
+
+      // --- 2.2 ЛОГИКА СОСТОЯНИЙ (Wizard Steps) ---
+
+      // Если пользователь "застрял" на регистрации
+      if (state === USER_STATES.WAIT_PHONE) {
+        return ctx.reply(
+          "👇 Пожалуйста, завершите регистрацию, нажав кнопку внизу.",
+        );
       }
 
-      // 2. АДМИНСКИЕ КНОПКИ (Admin Router Delegation)
-      // Если нажата кнопка из админ-панели, передаем управление в AdminHandler
-      if (
-        [
-          BUTTONS.ADMIN_PANEL,
-          BUTTONS.ADMIN_STATS,
-          BUTTONS.ADMIN_SETTINGS,
-          BUTTONS.ADMIN_STAFF,
-          BUTTONS.MANAGER_OBJECTS,
-          BUTTONS.MANAGER_CASH,
-        ].includes(text) ||
-        text.startsWith("/")
-      ) {
-        return AdminHandler.handleMessage(ctx);
+      // Калькулятор: Шаг 1 (Площадь) -> Шаг 2
+      if (state === USER_STATES.CALC_WAIT_AREA) {
+        return this.processAreaInput(ctx);
       }
 
-      // 3. ОБРАБОТКА МЕНЮ (Idle State)
-      if (state === USER_STATES.IDLE) {
-        switch (text) {
-          case BUTTONS.CALCULATOR:
-            return this.enterCalculationMode(ctx);
-
-          case BUTTONS.ORDERS:
-            return this.showMyOrders(ctx);
-
-          case BUTTONS.PRICE_LIST:
-            return this.showPriceList(ctx);
-
-          case BUTTONS.CONTACTS:
-            return this.showContacts(ctx); // Новая функция без адреса
-
-          // Дополнительные "мелкие" функции, если текст совпадет
-          case "ℹ️ О нас":
-            return this.showAbout(ctx);
-        }
+      // Калькулятор: Шаг 3 (Комнаты) -> Финиш
+      if (state === USER_STATES.CALC_WAIT_ROOMS) {
+        return this.processRoomsInput(ctx);
       }
 
-      // 4. МАШИНА СОСТОЯНИЙ (Wizard Steps)
-      switch (state) {
-        case USER_STATES.CALC_WAIT_AREA:
-          return this.processAreaInput(ctx, text);
-
-        case USER_STATES.CALC_WAIT_ROOMS:
-          return this.processRoomsInput(ctx, text);
-
-        case USER_STATES.CONTACT_WAIT_MSG:
-          return this.processSupportMessage(ctx, text);
-
-        default:
-          // Если состояние неизвестно или команда не распознана
-          // Просто обновляем меню, чтобы у пользователя были правильные кнопки
-          return this.returnToMainMenu(ctx, MESSAGES.USER.UNKNOWN_COMMAND);
-      }
+      // Если состояние IDLE и текст не распознан - можно просто игнорировать или показать меню
+      // return this.showMainMenu(ctx);
     } catch (error) {
-      console.error("[UserHandler] Message Error:", error);
-      await ctx.reply("⚠️ Ошибка обработки сообщения.");
+      console.error("[UserHandler] Text Error:", error);
     }
   },
 
   /**
-   * 🖱 Маршрутизатор Inline-кнопок (Callback Query).
+   * ===========================================================================
+   * 3. 🧮 КАЛЬКУЛЯТОР СМЕТЫ (Business Logic)
+   * ===========================================================================
    */
-  async handleCallback(ctx) {
-    const data = ctx.callbackQuery.data;
 
-    try {
-      // Выбор стен (в процессе расчета)
-      if (data.startsWith("wall_")) {
-        return this.handleWallSelection(ctx);
-      }
-
-      // Действия после расчета
-      if (data === "action_save_order") {
-        return this.saveOrderAction(ctx);
-      }
-
-      if (data === "action_contact") {
-        return this.enterContactMode(ctx);
-      }
-
-      await ctx.answerCbQuery(); // Убираем часики загрузки
-    } catch (error) {
-      console.error("[UserHandler] Callback Error:", error);
-      await ctx.answerCbQuery("⚠️ Ошибка обработки кнопки");
-    }
-  },
-
-  // ===========================================================================
-  // 📐 БЛОК: КАЛЬКУЛЯТОР (WIZARD)
-  // ===========================================================================
-
-  /**
-   * Шаг 0: Вход в режим расчета.
-   */
+  // --- Шаг 0: Старт ---
   async enterCalculationMode(ctx) {
-    this.clearSession(ctx); // Чистим старые данные
     ctx.session.state = USER_STATES.CALC_WAIT_AREA;
-    ctx.session.calcData = {}; // Инициализируем буфер
-
+    ctx.session.calcData = {}; // Инициализируем объект данных
     await ctx.reply(MESSAGES.USER.WIZARD_STEP_1_AREA, {
       reply_markup: KEYBOARDS.CANCEL_MENU,
     });
   },
 
-  /**
-   * Шаг 1: Обработка площади -> Переход к Стенам.
-   */
-  async processAreaInput(ctx, text) {
-    // Валидация: заменяем запятую на точку, парсим число
-    const area = parseFloat(text.replace(",", "."));
+  // --- Шаг 1: Обработка Площади ---
+  async processAreaInput(ctx) {
+    // Парсим число (заменяем запятую на точку для удобства)
+    const rawText = ctx.message.text.replace(",", ".");
+    const area = parseFloat(rawText);
 
-    // Проверка на дурака (Validation Layer)
     if (isNaN(area) || area <= 0 || area > 5000) {
-      return ctx.replyWithMarkdown(MESSAGES.USER.WIZARD_ERROR_AREA);
+      return ctx.reply(
+        "⚠️ Пожалуйста, введите корректную площадь числом (например: <b>45</b> или <b>70.5</b>)",
+        { parse_mode: "HTML" },
+      );
     }
 
     ctx.session.calcData.area = area;
-    ctx.session.state = USER_STATES.CALC_WAIT_WALL;
 
+    // Переход к следующему шагу
+    ctx.session.state = USER_STATES.CALC_WAIT_WALL;
     await ctx.reply(MESSAGES.USER.WIZARD_STEP_2_WALL, {
       reply_markup: KEYBOARDS.WALL_TYPES,
     });
   },
 
-  /**
-   * Шаг 2: Обработка стен -> Переход к Комнатам.
-   */
+  // --- Шаг 2: Обработка стен (Inline Callback) ---
+  // Этот метод вызывается из server.js/bot.js через bot.action
   async handleWallSelection(ctx) {
-    const wallType = ctx.match[0]; // Получаем данные из callback_data
-
-    // Защита от старых нажатий (если сессия истекла)
-    if (ctx.session.state !== USER_STATES.CALC_WAIT_WALL) {
-      return ctx.answerCbQuery(MESSAGES.USER.SESSION_EXPIRED, {
-        show_alert: true,
-      });
-    }
-
-    ctx.session.calcData.wallType = wallType;
-    ctx.session.state = USER_STATES.CALC_WAIT_ROOMS;
-
-    // UX: Редактируем сообщение с кнопками, чтобы нельзя было нажать повторно
-    const wallName = this.getWallLabel(wallType);
-    await ctx.editMessageText(`✅ Стены: <b>${wallName}</b>`, {
-      parse_mode: "HTML",
-    });
-
-    await ctx.reply(MESSAGES.USER.WIZARD_STEP_3_ROOMS, {
-      reply_markup: KEYBOARDS.CANCEL_MENU,
-    });
-    await ctx.answerCbQuery();
-  },
-
-  /**
-   * Шаг 3: Обработка комнат -> Финальный расчет.
-   */
-  async processRoomsInput(ctx, text) {
-    const rooms = parseInt(text);
-
-    if (isNaN(rooms) || rooms < 1 || rooms > 50) {
-      return ctx.reply(MESSAGES.USER.WIZARD_ERROR_ROOMS);
-    }
-
-    ctx.session.calcData.rooms = rooms;
-
-    // Показываем "думаю..."
-    await ctx.sendChatAction("typing");
-    const processingMsg = await ctx.reply(MESSAGES.USER.CALCULATION_PROCESS);
-
     try {
-      const { area, wallType } = ctx.session.calcData;
+      const session = ctx.session || {};
 
-      // Вызов сервиса (Business Logic)
-      const result = await OrderService.calculateComplexEstimate(
-        area,
-        rooms,
-        wallType,
-      );
-
-      // Сохраняем результат в сессию (чтобы можно было оформить заказ)
-      ctx.session.lastResult = result;
-      ctx.session.state = USER_STATES.IDLE; // Выходим из режима ввода
-
-      // Формируем чек
-      // Используем шаблон из TEXTS или MESSAGES
-      const invoiceText = TEXTS.estimateResult(
-        "PREVIEW", // ID заказа пока нет
-        result,
-        wallType,
-      );
-
-      // Удаляем сообщение "Считаю..."
-      await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
-
-      // Отправляем результат с кнопками действий
-      await ctx.replyWithHTML(invoiceText, {
-        reply_markup: KEYBOARDS.ESTIMATE_ACTIONS,
-      });
-    } catch (error) {
-      console.error("[UserHandler] Calc Logic Error:", error);
-      await ctx.reply(MESSAGES.USER.CALCULATION_ERROR);
-      this.returnToMainMenu(ctx);
-    }
-  },
-
-  // ===========================================================================
-  // ⚡️ БЛОК: ДЕЙСТВИЯ (ACTIONS)
-  // ===========================================================================
-
-  /**
-   * ✅ Сохранение заказа в БД.
-   */
-  async saveOrderAction(ctx) {
-    const result = ctx.session.lastResult;
-
-    if (!result) {
-      return ctx.answerCbQuery(MESSAGES.USER.SESSION_EXPIRED, {
-        show_alert: true,
-      });
-    }
-
-    try {
-      await ctx.sendChatAction("typing");
-
-      // Создаем заказ через сервис
-      const order = await OrderService.createOrder(ctx.from.id, result);
-
-      // Редактируем сообщение (убираем кнопки "Сохранить", чтобы не дублировать)
-      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-
-      await ctx.replyWithMarkdown(MESSAGES.USER.SAVE_ORDER_SUCCESS(order.id));
-
-      // Уведомление админам (Observer)
-      this.notifyAdminsNewOrder(ctx, order, result.total.grandTotal);
-    } catch (error) {
-      console.error("[UserHandler] Save Order Error:", error);
-      await ctx.reply(MESSAGES.USER.SAVE_ORDER_ERROR);
-    }
-
-    await ctx.answerCbQuery();
-  },
-
-  /**
-   * 📞 Вход в режим "Вопрос менеджеру".
-   */
-  async enterContactMode(ctx) {
-    ctx.session.state = USER_STATES.CONTACT_WAIT_MSG;
-    await ctx.reply(MESSAGES.USER.CONTACT_PROMPT, {
-      reply_markup: KEYBOARDS.CANCEL_MENU,
-    });
-    if (ctx.callbackQuery) await ctx.answerCbQuery();
-  },
-
-  /**
-   * 📨 Отправка сообщения в поддержку.
-   */
-  async processSupportMessage(ctx, text) {
-    if (text.length < 5) {
-      return ctx.reply(
-        "⚠️ Сообщение слишком короткое. Опишите вопрос подробнее.",
-      );
-    }
-
-    try {
-      const adminIds = await UserService.getAdminIdsForNotification();
-      const userLink = ctx.from.username
-        ? `@${ctx.from.username}`
-        : `ID:${ctx.from.id}`;
-      const msg = MESSAGES.USER.SUPPORT_MSG_ADMIN(userLink, text);
-
-      // Рассылка всем админам
-      for (const adminId of adminIds) {
-        await ctx.telegram.sendMessage(adminId, msg).catch(() => {});
+      // Защита от старых нажатий (если сессия истекла)
+      if (session.state !== USER_STATES.CALC_WAIT_WALL) {
+        return ctx.answerCbQuery("⚠️ Сессия истекла. Начните расчет заново.");
       }
 
-      await ctx.reply(MESSAGES.USER.CONTACT_SENT);
-      this.returnToMainMenu(ctx);
-    } catch (e) {
-      await ctx.reply("Ошибка отправки сообщения.");
+      session.calcData.wallType = ctx.match[0]; // Получаем wall_brick / wall_gas ...
+
+      // Переход к следующему шагу
+      session.state = USER_STATES.CALC_WAIT_ROOMS;
+
+      await ctx.answerCbQuery(); // Убираем часики загрузки
+      await ctx.reply(MESSAGES.USER.WIZARD_STEP_3_ROOMS, {
+        reply_markup: KEYBOARDS.CANCEL_MENU,
+      });
+    } catch (error) {
+      console.error("[UserHandler] Wall Select Error:", error);
     }
   },
 
-  // ===========================================================================
-  // ℹ️ БЛОК: ИНФОРМАЦИЯ И МЕНЮ
-  // ===========================================================================
+  // --- Шаг 3: Обработка комнат и ФИНАЛЬНЫЙ РАСЧЕТ ---
+  async processRoomsInput(ctx) {
+    const rooms = parseInt(ctx.message.text);
+
+    if (isNaN(rooms) || rooms <= 0 || rooms > 50) {
+      return ctx.reply(
+        "⚠️ Введите корректное количество комнат целым числом (например: 2).",
+      );
+    }
+
+    const data = ctx.session.calcData;
+    data.rooms = rooms;
+
+    // 🔥 ВЫЗОВ БИЗНЕС-ЛОГИКИ (Service Layer)
+    // Мы не считаем деньги здесь, мы делегируем это OrderService
+    const estimate = await OrderService.calculateEstimate(data);
+
+    // Сохраняем расчет в сессию (чтобы потом можно было сохранить в БД)
+    ctx.session.lastEstimate = estimate;
+
+    // Формирование красивого чека
+    const wallName = this._getWallName(data.wallType); // Вспомогательный метод
+
+    const invoiceText =
+      `📋 <b>ПРЕДВАРИТЕЛЬНЫЙ РАСЧЕТ</b>\n` +
+      `➖➖➖➖➖➖➖➖➖➖\n` +
+      `🏠 <b>Объект:</b> ${data.area} м², ${data.rooms} комн.\n` +
+      `🧱 <b>Стены:</b> ${wallName}\n\n` +
+      `⚡️ <b>СТОИМОСТЬ РАБОТ (УСЛУГИ):</b>\n` +
+      `• Электроточки (~${estimate.pointsCount} шт): <b>${estimate.pricePoints.toLocaleString()} ₸</b>\n` +
+      `• Штробление стен: <b>${estimate.priceStrobe.toLocaleString()} ₸</b>\n` +
+      `• Прокладка кабеля: <b>${estimate.priceCableWork.toLocaleString()} ₸</b>\n` +
+      `• Сборка электрощита: <b>${estimate.pricePanel.toLocaleString()} ₸</b>\n` +
+      `➖➖➖➖➖➖➖➖➖➖\n` +
+      `💰 <b>ИТОГО ЗА РАБОТУ: ${estimate.totalWorkPrice.toLocaleString()} ₸</b>\n\n` +
+      `📦 <b>РАСХОДНЫЕ МАТЕРИАЛЫ (Ориентировочно):</b>\n` +
+      `• Кабель (ВВГ-нг-LS): ~${estimate.cableMeters} м.\n` +
+      `• Гофра ПВХ: ~${estimate.corrugationMeters} м.\n` +
+      `<i>* Материалы не входят в стоимость работ и оплачиваются по факту закупа.</i>\n` +
+      TEXTS.estimateFooter;
+
+    // Сброс состояния
+    ctx.session.state = USER_STATES.IDLE;
+
+    // Отправляем с кнопками действий (Оформить / Пересчитать)
+    await ctx.replyWithHTML(invoiceText, {
+      reply_markup: KEYBOARDS.ESTIMATE_ACTIONS,
+    });
+  },
 
   /**
-   * 💰 Показ прайс-листа.
+   * ===========================================================================
+   * 4. 💿 ДЕЙСТВИЯ (Сохранение, Просмотр)
+   * ===========================================================================
    */
-  async showPriceList(ctx) {
-    await ctx.sendChatAction("typing");
+
+  /**
+   * Сохранение заказа в Базу Данных (конверсия лида)
+   */
+  async saveOrder(ctx) {
     try {
-      // Получаем актуальные настройки из БД, чтобы прайс был свежим
-      // Вместо await OrderService.getSettings()
-      const settings = (await getSettings())
-        ? await OrderService.getSettings()
-        : {};
+      // Проверка наличия данных
+      if (!ctx.session.lastEstimate) {
+        return ctx.answerCbQuery("⚠️ Данные устарели. Рассчитайте заново.");
+      }
 
-      // Используем шаблон TEXTS.priceList
-      await ctx.replyWithHTML(TEXTS.priceList(settings));
-    } catch (e) {
-      // Если ошибка, выводим дефолтный
-      await ctx.replyWithHTML(TEXTS.priceList({}));
+      // Создаем запись в БД
+      // Важно: мы сохраняем полную стоимость работ в total_price
+      const orderData = {
+        ...ctx.session.lastEstimate,
+        total_price: ctx.session.lastEstimate.totalWorkPrice,
+      };
+
+      const orderId = await OrderService.createOrder(ctx.from.id, orderData);
+
+      await ctx.answerCbQuery("✅ Заявка успешно создана!");
+
+      // Ответ клиенту
+      await ctx.editMessageText(
+        `✅ <b>Заявка #${orderId} принята в работу!</b>\n\n` +
+          `Спасибо за доверие. Я (Ернияз, Главный инженер) уже получил ваше уведомление.\n` +
+          `Свяжусь с вами в ближайшее время для уточнения деталей выезда на замер.`,
+        { parse_mode: "HTML" },
+      );
+
+      // 🔥 ВАЖНО: Уведомление Владельцу
+      try {
+        const userLink = ctx.from.username
+          ? `@${ctx.from.username}`
+          : `ID: ${ctx.from.id}`;
+        await ctx.telegram.sendMessage(
+          OWNER_ID,
+          `🆕 <b>НОВЫЙ ЗАКАЗ #${orderId}</b>\n` +
+            `➖➖➖➖➖➖➖➖\n` +
+            `💰 Сумма (Работа): <b>${orderData.total_price.toLocaleString()} ₸</b>\n` +
+            `👤 Клиент: <b>${ctx.from.first_name}</b> (${userLink})\n` +
+            `🏠 Объект: ${orderData.area} м² / ${ctx.session.calcData.wallType}`,
+          { parse_mode: "HTML" },
+        );
+      } catch (notifyErr) {
+        console.error("Owner notification failed:", notifyErr);
+      }
+
+      // Очищаем временные данные
+      ctx.session.lastEstimate = null;
+      ctx.session.calcData = null;
+    } catch (error) {
+      console.error("Save Order Error:", error);
+      ctx.reply("Ошибка сохранения заявки.");
     }
   },
 
   /**
-   * 📞 Показ контактов (БЕЗ АДРЕСА).
-   */
-  async showContacts(ctx) {
-    // Формируем кастомное сообщение без адреса, как ты просил
-    const contactMsg =
-      `📞 <b>Наши контакты:</b>\n\n` +
-      `👤 Главный инженер: @yeeerniyaz\n` +
-      `📱 Телефон: +7 (777) 123-45-67\n` +
-      `🕒 Режим работы: 09:00 - 20:00\n` +
-      `💬 <i>Пишите в любое время!</i>`;
-
-    await ctx.replyWithHTML(contactMsg);
-  },
-
-  /**
-   * ℹ️ О нас (Мелкая функция).
-   */
-  async showAbout(ctx) {
-    await ctx.replyWithMarkdown(MESSAGES.USER.ABOUT_US);
-  },
-
-  /**
-   * 📂 Мои заказы.
+   * Показ истории расчетов пользователя
    */
   async showMyOrders(ctx) {
-    await ctx.sendChatAction("typing");
-    const orders = await OrderService.getUserOrders(ctx.from.id);
+    try {
+      const orders = await OrderService.getUserOrders(ctx.from.id);
 
-    if (!orders || orders.length === 0) {
-      return ctx.reply(MESSAGES.USER.NO_ORDERS);
+      if (!orders || orders.length === 0) {
+        return ctx.reply("📂 У вас пока нет сохраненных расчетов.");
+      }
+
+      // Формируем список (последние 10)
+      const list = orders
+        .slice(0, 10)
+        .map((o) => {
+          const date = new Date(o.created_at).toLocaleDateString("ru-RU");
+          const price = parseInt(o.total_price).toLocaleString();
+          // Эмодзи статуса
+          let icon = "🆕";
+          if (o.status === "work") icon = "🛠";
+          if (o.status === "done") icon = "✅";
+          if (o.status === "cancel") icon = "❌";
+
+          return `${icon} <b>Заказ #${o.id}</b> от ${date}\n💰 ${price} ₸`;
+        })
+        .join("\n\n");
+
+      await ctx.replyWithHTML(`📂 <b>ВАШИ ЗАЯВКИ:</b>\n\n${list}`);
+    } catch (error) {
+      console.error("Show Orders Error:", error);
+      ctx.reply("Не удалось загрузить список.");
     }
-
-    let msg = MESSAGES.USER.MY_ORDERS_HEADER;
-    orders.forEach((order, index) => {
-      const date = new Date(order.created_at).toLocaleDateString();
-      const price = parseInt(order.total_price).toLocaleString();
-      const statusIcon =
-        order.status === "new" ? "🆕" : order.status === "done" ? "✅" : "⚙️";
-
-      msg += `${index + 1}. ${statusIcon} <b>${date}</b> — ${price} ₸\n`;
-    });
-
-    await ctx.replyWithMarkdown(msg);
   },
 
-  // ===========================================================================
-  // 🛠 ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ (HELPERS)
-  // ===========================================================================
+  async showPriceList(ctx) {
+    // Здесь можно в будущем загружать цены из БД
+    await ctx.replyWithHTML(
+      "💰 <b>БАЗОВЫЙ ПРАЙС-ЛИСТ</b>\n\n" +
+        "• Точка (бетон): 2500 ₸\n" +
+        "• Точка (кирпич): 1500 ₸\n" +
+        "• Точка (газоблок): 1000 ₸\n" +
+        "• Прокладка кабеля: 350 ₸/м\n" +
+        "• Штроба (бетон): 2000 ₸/м\n\n" +
+        "<i>Полный прайс уточняйте у инженера.</i>",
+    );
+  },
 
-  /**
-   * 🏠 Возврат в главное меню.
-   * Умный метод: сам определяет роль пользователя для правильных кнопок.
-   */
-  async returnToMainMenu(ctx, customMessage = null) {
-    this.clearSession(ctx);
+  // --- Утилиты ---
 
-    // Быстрый запрос роли
-    let role = ROLES.CLIENT;
+  async returnToMainMenu(ctx) {
+    ctx.session.state = USER_STATES.IDLE;
+    let role = "user";
     try {
-      const user = await ctx.reply(text, {
-        reply_markup: KEYBOARDS.MAIN_MENU(role),
-      });
-      if (user) role = user.role;
+      // Пытаемся получить актуальную роль (вдруг админ дал права)
+      const u = await UserService.getUser(ctx.from.id);
+      if (u) role = u.role;
     } catch (e) {}
 
-    const text = customMessage || MESSAGES.USER.RETURN_MAIN;
-
-    // Если сообщение вызвано callback-ом, используем reply, иначе обычный ответ
-    await ctx.reply(text, KEYBOARDS.MAIN_MENU(role));
+    await this.showMainMenu(ctx, role);
   },
 
-  /**
-   * 🧹 Очистка сессии.
-   */
-  clearSession(ctx) {
-    if (!ctx.session) ctx.session = {};
-    ctx.session.state = USER_STATES.IDLE;
-    ctx.session.calcData = {};
-    ctx.session.lastResult = null;
+  async cancelCalculation(ctx) {
+    await ctx.answerCbQuery("Действие отменено");
+    await this.returnToMainMenu(ctx);
   },
 
-  /**
-   * 🏷 Текстовое описание стен.
-   */
-  getWallLabel(type) {
+  // Приватный хелпер для названий стен
+  _getWallName(type) {
     const map = {
-      wall_concrete: "Бетон (Монолит)",
-      wall_brick: "Кирпич",
-      wall_gas: "Газоблок",
+      wall_gas: "Газоблок / ГКЛ (Мягкие)",
+      wall_brick: "Кирпич (Средние)",
+      wall_concrete: "Бетон / Монолит (Твердые)",
     };
-    return map[type] || "Стандарт";
-  },
-
-  /**
-   * 🔔 Уведомление админов (Private).
-   */
-  async notifyAdminsNewOrder(ctx, order, totalSum) {
-    try {
-      const adminIds = await UserService.getAdminIdsForNotification();
-      const userLink = ctx.from.username
-        ? `@${ctx.from.username}`
-        : ctx.from.first_name;
-
-      // Пытаемся получить телефон из профиля
-      const profile = await UserService.getUserProfile(ctx.from.id);
-      const phone = profile?.phone || "Не указан";
-
-      const msg = MESSAGES.USER.NEW_ORDER_ADMIN(
-        order.id,
-        userLink,
-        phone,
-        totalSum.toLocaleString(),
-      );
-
-      for (const adminId of adminIds) {
-        await ctx.telegram
-          .sendMessage(adminId, msg)
-          .catch((e) => console.error("Admin send error", e));
-      }
-    } catch (e) {
-      console.error("Notify Error", e);
-    }
+    return map[type] || "Неизвестно";
   },
 };
