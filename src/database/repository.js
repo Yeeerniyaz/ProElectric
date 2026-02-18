@@ -7,7 +7,7 @@
  * Архитектура: Repository Pattern.
  *
  * @module Repository
- * @version 6.1.0 (Senior Architect Edition)
+ * @version 9.0.0 (Enterprise Edition)
  * @author ProElectric Team
  */
 
@@ -160,6 +160,24 @@ export const updateOrderStatus = async (orderId, status) => {
 };
 
 /**
+ * [NEW] Обновление деталей заказа (BOM) и итоговой цены.
+ * Используется при ручном редактировании сметы через Web Admin.
+ * @param {number} orderId
+ * @param {Object} details - Новый JSONB объект с материалами
+ * @param {number} totalPrice - Пересчитанная цена
+ */
+export const updateOrderDetails = async (orderId, details, totalPrice) => {
+  const sql = `
+    UPDATE orders 
+    SET details = $1, total_price = $2, updated_at = NOW() 
+    WHERE id = $3 
+    RETURNING *
+  `;
+  const res = await query(sql, [details, totalPrice, orderId]);
+  return res.rows[0];
+};
+
+/**
  * Получение истории заказов пользователя.
  */
 export const getUserOrders = async (userId, limit = 20) => {
@@ -170,6 +188,38 @@ export const getUserOrders = async (userId, limit = 20) => {
     LIMIT $2
   `;
   const res = await query(sql, [userId, limit]);
+  return res.rows;
+};
+
+// =============================================================================
+// 💸 EXPENSES REPOSITORY (NEW - Fixes "undefined length" error)
+// =============================================================================
+
+/**
+ * [NEW] Добавление расхода к объекту.
+ * @param {number} orderId
+ * @param {number} amount
+ * @param {string} category
+ * @param {string} comment
+ */
+export const addOrderExpense = async (orderId, amount, category, comment) => {
+  const sql = `
+    INSERT INTO object_expenses (order_id, amount, category, comment, created_at)
+    VALUES ($1, $2, $3, $4, NOW())
+    RETURNING *
+  `;
+  const res = await query(sql, [orderId, amount, category, comment]);
+  return res.rows[0];
+};
+
+/**
+ * [NEW] Получение всех расходов по конкретному заказу.
+ * Критически важно для корректного отображения на фронтенде и расчета чистой прибыли.
+ * @param {number} orderId
+ */
+export const getOrderExpenses = async (orderId) => {
+  const sql = "SELECT * FROM object_expenses WHERE order_id = $1 ORDER BY created_at DESC";
+  const res = await query(sql, [orderId]);
   return res.rows;
 };
 
