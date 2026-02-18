@@ -279,6 +279,11 @@ class Application {
     this.loginScreen.classList.add("hidden");
     this.appScreen.classList.remove("hidden");
 
+    // 🔥 ИСПРАВЛЕНИЕ: Снимаем класс невидимости (cloak) и добавляем видимость
+    this.appScreen.classList.remove("cloak");
+    this.appScreen.classList.add("visible");
+    this.appScreen.setAttribute("aria-hidden", "false");
+
     // Установка даты
     const options = {
       weekday: "long",
@@ -293,7 +298,6 @@ class Application {
 
     this.switchTab("dashboard");
   }
-
   showLogin() {
     this.appScreen.classList.add("hidden");
     this.loginScreen.classList.remove("hidden");
