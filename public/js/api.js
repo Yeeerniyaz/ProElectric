@@ -1,11 +1,11 @@
 /**
  * @file public/js/api.js
- * @description Frontend API Client (ERP Middleware v9.0.0).
+ * @description Frontend API Client (ERP Middleware v9.1.0).
  * Обеспечивает строгую типизацию запросов к REST API сервера ProElectric.
- * Включает новые методы финансового контроллера и управления заказами.
+ * Включает новые методы финансового контроллера, управления заказами и динамического прайс-листа.
  *
  * @module API
- * @version 9.0.0 (Enterprise ERP Edition)
+ * @version 9.1.0 (Enterprise ERP Edition)
  */
 
 const API_BASE = "/api";
@@ -109,14 +109,28 @@ export const API = {
     }),
 
   // ==========================================
-  // ⚙️ SYSTEM SETTINGS (DYNAMIC PRICING)
+  // ⚙️ SYSTEM SETTINGS (DYNAMIC PRICING v9.1.0)
   // ==========================================
   getSettings: () => fetchWrapper("/settings"),
+
+  /**
+   * Получение структурированного прайс-листа по категориям из OrderService
+   */
+  getPricelist: () => fetchWrapper("/pricelist"),
 
   updateSetting: (key, value) =>
     fetchWrapper("/settings", {
       method: "POST",
       body: JSON.stringify({ key, value }),
+    }),
+
+  /**
+   * Массовое обновление настроек (Bulk Update) за одну транзакцию
+   */
+  updateBulkSettings: (payloadArray) =>
+    fetchWrapper("/settings", {
+      method: "POST",
+      body: JSON.stringify(payloadArray),
     }),
 
   // ==========================================

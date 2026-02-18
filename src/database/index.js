@@ -1,39 +1,38 @@
 /**
  * @file src/database/index.js
- * @description Фасад базы данных (Database Entry Point).
- * * Отвечает за:
+ * @description Фасад базы данных (Database Entry Point v9.1.0 Enterprise).
+ * Отвечает за:
  * 1. Экспорт всех методов репозитория (единая точка доступа для Сервисов).
- * 2. Инициализацию схемы БД (DDL) при старте.
- * 3. Наполнение начальными данными (Seeding).
- * * Архитектура: Code-First Migration / Self-Healing Schema.
+ * 2. Инициализацию полной ERP схемы БД (DDL) при старте (вкл. Финансы и Чеки).
+ * 3. Наполнение начальными данными (Seeding) под новый динамический прайс.
+ *
+ * Архитектура: Code-First Migration / Self-Healing Schema.
  *
  * @module Database
- * @version 6.2.2 (Senior Architect Edition)
+ * @version 9.1.0 (Senior Architect Edition)
  * @author ProElectric Team
  */
 
 import { getClient, closePool, query } from "./connection.js";
 
 // Ре-экспортируем все методы репозитория, чтобы сервисы импортировали их отсюда
-// import { getUser, createOrder } from '../database/index.js';
 export * from "./repository.js";
 
-// FIX: Экспортируем query и getClient, так как сервисы (UserService, OrderService)
-// используют их напрямую через import * as db from './index.js' -> db.query()
+// Экспортируем ядро коннектов для прямых вызовов из Сервисов
 export { closePool, query, getClient };
 
 // =============================================================================
-// 🛠 SCHEMA DEFINITION (DDL)
+// 🛠 SCHEMA DEFINITION (DDL - ENTERPRISE ERP MODULE)
 // =============================================================================
 
 /**
- * SQL-скрипты для создания таблиц.
- * Используем IF NOT EXISTS для безопасности перезапусков.
+ * Полные SQL-скрипты для создания всех таблиц системы.
+ * Используем IF NOT EXISTS для безопасного обновления на живую.
  */
 const SCHEMA_SQL = `
-  -- 1. Таблица Пользователей (CRM)
+  -- 1. ТАБЛИЦА ПОЛЬЗОВАТЕЛЕЙ (CRM CORE)
   CREATE TABLE IF NOT EXISTS users (
-    telegram_id BIGINT PRIMARY KEY, -- Telegram ID как первичный ключ
+    telegram_id BIGINT PRIMARY KEY,
     first_name TEXT,
     username TEXT,
     phone TEXT,
@@ -42,57 +41,97 @@ const SCHEMA_SQL = `
     updated_at TIMESTAMP DEFAULT NOW()
   );
 
-  -- 2. Таблица Заказов (Orders)
+  -- 2. ТАБЛИЦА ЗАКАЗОВ (BUSINESS CORE)
   CREATE TABLE IF NOT EXISTS orders (
     id SERIAL PRIMARY KEY,
     user_id BIGINT REFERENCES users(telegram_id),
     status TEXT DEFAULT 'new',      -- Статусы: new, processing, work, done, cancel
     total_price NUMERIC(12, 2) DEFAULT 0,
-    details JSONB DEFAULT '{}',     -- Храним всю смету (объемы, стены) в JSONB
+    details JSONB DEFAULT '{}',     -- JSONB хранилище: BOM-спецификация и financials
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
   );
 
-  -- 3. Таблица Настроек (Dynamic Pricing)
-  -- Key-Value хранилище для цен, чтобы менять их без деплоя кода
+  -- 3. ТАБЛИЦА НАСТРОЕК (DYNAMIC PRICING)
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     updated_at TIMESTAMP DEFAULT NOW()
   );
+
+  -- 4. ТАБЛИЦА РАСХОДОВ ПО ОБЪЕКТАМ (OBJECT EXPENSES - NEW)
+  -- Детализированный учет затрат под конкретный заказ.
+  CREATE TABLE IF NOT EXISTS object_expenses (
+    id SERIAL PRIMARY KEY,
+    order_id INTEGER REFERENCES orders(id) ON DELETE CASCADE,
+    amount NUMERIC(12, 2) NOT NULL,
+    category VARCHAR(100),          -- Категория: Материалы, Транспорт, Прочее
+    comment TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+  );
+
+  -- 5. ТАБЛИЦА ФИНАНСОВЫХ СЧЕТОВ (ACCOUNTS - NEW ERP)
+  CREATE TABLE IF NOT EXISTS accounts (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT REFERENCES users(telegram_id),
+    name VARCHAR(255) NOT NULL,
+    balance NUMERIC(12, 2) DEFAULT 0,
+    type VARCHAR(50) DEFAULT 'cash',
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+  );
+
+  -- 6. ТАБЛИЦА ТРАНЗАКЦИЙ (TRANSACTIONS - NEW ERP)
+  CREATE TABLE IF NOT EXISTS transactions (
+    id SERIAL PRIMARY KEY,
+    account_id INTEGER REFERENCES accounts(id),
+    user_id BIGINT REFERENCES users(telegram_id),
+    amount NUMERIC(12, 2) NOT NULL,
+    type VARCHAR(50) NOT NULL,
+    category VARCHAR(100),
+    comment TEXT,
+    order_id INTEGER REFERENCES orders(id),
+    created_at TIMESTAMP DEFAULT NOW()
+  );
   
-  -- Индексы для ускорения поиска
+  -- ИНДЕКСЫ ДЛЯ УСКОРЕНИЯ АНАЛИТИКИ
   CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
   CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
   CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+  CREATE INDEX IF NOT EXISTS idx_expenses_order ON object_expenses(order_id);
 `;
 
 // =============================================================================
-// 🌱 SEEDING DATA (DEFAULTS)
+// 🌱 SEEDING DATA (DEFAULTS FOR v9.1.0)
 // =============================================================================
 
 /**
- * Базовые настройки цен.
- * Применяются только если таблица пустая или ключа нет.
+ * Базовые настройки цен, синхронизированные с OrderService.js v9.1.0.
+ * Применяются (UPSERT) при старте, если ключа еще нет в базе.
  */
 const DEFAULT_SETTINGS = [
-  // --- Черновые работы ---
-  ["price_strobe_concrete", "2000"], // Штроба бетон
-  ["price_strobe_brick", "1200"], // Штроба кирпич
-  ["price_strobe_gas", "800"], // Штроба газоблок
+  // --- Черновые работы (Подготовка) ---
+  ["price_strobe_concrete", "1000"],
+  ["price_strobe_brick", "700"],
+  ["price_strobe_gas", "500"],
+  ["price_drill_concrete", "500"],
 
-  ["price_drill_concrete", "2500"], // Точка бетон
-  ["price_drill_brick", "1500"], // Точка кирпич
-  ["price_drill_gas", "1000"], // Точка газоблок
+  // --- Кабельные трассы ---
+  ["price_cable_base", "455"],
+  ["price_cable_corrugated", "200"],
+  ["price_cable_channel", "90"],
 
-  // --- Монтаж ---
-  ["price_cable", "350"], // Прокладка кабеля
-  ["price_box_install", "500"], // Вмазка подрозетника
-  ["price_socket_install", "1200"], // Установка механизма
-  ["price_shield_module", "2500"], // Сборка щита (1 модуль)
+  // --- Электроточки и Оборудование ---
+  ["price_point_socket", "800"],
+  ["price_point_box", "1200"],
+  ["price_point_chandelier", "3500"],
 
-  // --- Коэффициенты ---
-  ["material_factor", "0.45"], // Материалы = 45% от работ
+  // --- Сборка электрощита ---
+  ["price_shield_base_24", "9000"],
+  ["price_shield_extra_module", "500"],
+
+  // --- Финансовые Коэффициенты ---
+  ["material_factor", "0.45"], // Эвристика: стоимость материалов = 45% от стоимости работ
 ];
 
 // =============================================================================
@@ -100,44 +139,44 @@ const DEFAULT_SETTINGS = [
 // =============================================================================
 
 /**
- * Инициализация базы данных.
- * Запускает транзакцию для создания схемы и посева данных.
- * Должна быть вызвана перед стартом сервера.
+ * Инициализация базы данных (Запуск DDL и Seeding).
+ * Запускает транзакцию для безопасного создания схемы и посева данных.
+ * Должна быть вызвана строго перед стартом HTTP-сервера и Telegram-бота.
  */
 export const initDB = async () => {
-  const client = await getClient(); // Берем клиента из пула для транзакции
+  const client = await getClient(); // Захватываем изолированный коннект из пула
 
   try {
-    console.log("🛠 Checking database integrity...");
-    await client.query("BEGIN");
+    console.log(
+      "🛠 [DB Module] Checking database integrity for v9.1.0 Enterprise...",
+    );
+    await client.query("BEGIN"); // Старт транзакции
 
-    // 1. Накатываем схему
+    // 1. Накатываем полную схему
     await client.query(SCHEMA_SQL);
 
-    // 2. Сидинг (Наполнение) настроек
-    // Используем Prepared Statements внутри цикла для безопасности
+    // 2. Сидинг (Наполнение) системных настроек и цен
     for (const [key, val] of DEFAULT_SETTINGS) {
       await client.query(
         `
-        INSERT INTO settings (key, value) 
-        VALUES ($1, $2)
+        INSERT INTO settings (key, value, updated_at) 
+        VALUES ($1, $2, NOW())
         ON CONFLICT (key) DO NOTHING
       `,
         [key, val],
       );
     }
 
-    // 3. Создаем владельца (если нужно, опционально)
-    // Здесь можно добавить логику "если нет админов, назначить ID из env владельцем"
-
-    await client.query("COMMIT");
-    console.log("✅ Database initialized successfully (Schema + Seeds).");
+    await client.query("COMMIT"); // Фиксация транзакции
+    console.log(
+      "✅ [DB Module] Database initialized successfully (Schema + Seeds updated).",
+    );
   } catch (error) {
-    await client.query("ROLLBACK");
-    console.error("🔥 FATAL: Database initialization failed!");
+    await client.query("ROLLBACK"); // Откат в случае сбоя
+    console.error("🔥 [DB Module] FATAL: Database initialization failed!");
     console.error(error);
-    throw error; // Пробрасываем ошибку выше, чтобы остановить запуск приложения
+    throw error; // Блокируем старт приложения (Fast Fail)
   } finally {
-    client.release(); // Обязательно возвращаем клиента в пул
+    client.release(); // Обязательное освобождение коннекта обратно в пул
   }
 };

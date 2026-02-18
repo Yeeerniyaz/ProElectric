@@ -1,26 +1,27 @@
 /**
  * @file src/database/repository.js
- * @description Слой репозитория (Data Access Layer).
+ * @description Слой репозитория (Data Access Layer v9.1.0).
  * Содержит коллекцию готовых методов для работы с БД.
  * Изолирует прямой SQL от бизнес-логики (Services).
+ * Обеспечивает строгую типизацию и транзакционную целостность.
  *
  * Архитектура: Repository Pattern.
  *
  * @module Repository
- * @version 9.0.0 (Enterprise Edition)
+ * @version 9.1.0 (Enterprise ERP Edition)
  * @author ProElectric Team
  */
 
-import { query } from "./connection.js";
+import { query, getClient } from "./connection.js";
 
 // =============================================================================
-// ⚙️ SETTINGS (DYNAMIC PRICING)
+// ⚙️ SETTINGS (DYNAMIC PRICING & CONFIG)
 // =============================================================================
 
 /**
  * Получение всех настроек системы одной пачкой.
- * Используется для кеширования цен в OrderService.
- * @returns {Promise<Object>} Объект вида { 'price_cable': 350, ... }
+ * Используется для кеширования цен в OrderService и рендера прайс-листа.
+ * @returns {Promise<Object>} Объект вида { 'price_cable_base': 455, ... }
  */
 export const getSettings = async () => {
   const sql = "SELECT key, value FROM settings";
@@ -28,7 +29,7 @@ export const getSettings = async () => {
 
   const settings = {};
   for (const row of rows) {
-    // Автоматическая конвертация чисел
+    // Автоматическая конвертация числовых строк в числа для бизнес-логики
     const numVal = parseFloat(row.value);
     settings[row.key] = isNaN(numVal) ? row.value : numVal;
   }
@@ -36,8 +37,8 @@ export const getSettings = async () => {
 };
 
 /**
- * Сохранение или обновление настройки (Upsert).
- * @param {string} key - Ключ (напр. 'price_strobe_concrete')
+ * Сохранение или обновление одиночной настройки (Upsert).
+ * @param {string} key - Ключ
  * @param {string|number} value - Значение
  */
 export const saveSetting = async (key, value) => {
@@ -53,8 +54,37 @@ export const saveSetting = async (key, value) => {
   return res.rows[0];
 };
 
+/**
+ * Массовое сохранение настроек (Bulk Update) через транзакцию.
+ * @param {Array<{key: string, value: any}>} settingsArray
+ * @returns {Promise<boolean>}
+ */
+export const saveBulkSettings = async (settingsArray) => {
+  const client = await getClient();
+  try {
+    await client.query("BEGIN");
+    for (const item of settingsArray) {
+      if (item.key && item.value !== undefined) {
+        await client.query(
+          `INSERT INTO settings (key, value, updated_at) 
+           VALUES ($1, $2, NOW()) 
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+          [item.key, String(item.value)],
+        );
+      }
+    }
+    await client.query("COMMIT");
+    return true;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw new Error(`Ошибка массового обновления настроек: ${error.message}`);
+  } finally {
+    client.release();
+  }
+};
+
 // =============================================================================
-// 👤 USERS REPOSITORY
+// 👤 USERS REPOSITORY (CRM)
 // =============================================================================
 
 /**
@@ -92,12 +122,13 @@ export const upsertUser = async ({ id, first_name, username }) => {
  */
 export const updateUserPhone = async (userId, phone) => {
   const sql =
-    "UPDATE users SET phone = $1, updated_at = NOW() WHERE telegram_id = $2";
-  await query(sql, [phone, userId]);
+    "UPDATE users SET phone = $1, updated_at = NOW() WHERE telegram_id = $2 RETURNING *";
+  const res = await query(sql, [phone, userId]);
+  return res.rows[0];
 };
 
 /**
- * Смена роли пользователя.
+ * Смена роли пользователя (RBAC).
  */
 export const updateUserRole = async (userId, newRole) => {
   const sql =
@@ -111,7 +142,7 @@ export const updateUserRole = async (userId, newRole) => {
  */
 export const getAllUsers = async (limit = 50, offset = 0) => {
   const sql = `
-    SELECT telegram_id, first_name, username, phone, role, created_at 
+    SELECT telegram_id, first_name, username, phone, role, created_at, updated_at 
     FROM users 
     ORDER BY created_at DESC 
     LIMIT $1 OFFSET $2
@@ -121,22 +152,26 @@ export const getAllUsers = async (limit = 50, offset = 0) => {
 };
 
 // =============================================================================
-// 📦 ORDERS REPOSITORY
+// 📦 ORDERS REPOSITORY (BUSINESS CORE)
 // =============================================================================
 
 /**
- * Создание нового заказа.
+ * Создание нового заказа (HOTFIX v9.1.0: Добавлена запись поля area).
  * @param {number} userId
- * @param {Object} data - { price, details, area, ... }
+ * @param {Object} data - { price, area, details }
  */
 export const createOrder = async (userId, data) => {
   const sql = `
-    INSERT INTO orders (user_id, total_price, details, status, created_at)
-    VALUES ($1, $2, $3, 'new', NOW())
+    INSERT INTO orders (user_id, total_price, area, details, status, created_at, updated_at)
+    VALUES ($1, $2, $3, $4, 'new', NOW(), NOW())
     RETURNING *
   `;
-  // details сохраняем как JSONB
-  const res = await query(sql, [userId, data.price, data.details || {}]);
+  // Извлекаем площадь безопасно, сохраняем JSONB смету целиком
+  const area =
+    data.area ||
+    (data.details && data.details.params ? data.details.params.area : 0);
+
+  const res = await query(sql, [userId, data.price, area, data.details || {}]);
   return res.rows[0];
 };
 
@@ -161,10 +196,9 @@ export const updateOrderStatus = async (orderId, status) => {
 
 /**
  * Обновление деталей заказа (BOM) и итоговой цены.
- * Используется при редактировании сметы вручную.
  * @param {number} orderId
- * @param {Object} details - Новый JSONB объект с материалами
- * @param {number} totalPrice - Пересчитанная цена
+ * @param {Object} details - Новый JSONB объект
+ * @param {number} totalPrice - Пересчитанная договорная цена
  */
 export const updateOrderDetails = async (orderId, details, totalPrice) => {
   const sql = `
@@ -178,7 +212,7 @@ export const updateOrderDetails = async (orderId, details, totalPrice) => {
 };
 
 /**
- * Получение истории заказов пользователя.
+ * Получение истории заказов конкретного пользователя.
  */
 export const getUserOrders = async (userId, limit = 20) => {
   const sql = `
@@ -192,15 +226,11 @@ export const getUserOrders = async (userId, limit = 20) => {
 };
 
 // =============================================================================
-// 💸 EXPENSES REPOSITORY (NEW: Fixes "undefined length" error)
+// 💸 EXPENSES & FINANCE REPOSITORY (ERP ACCOUNTS)
 // =============================================================================
 
 /**
- * Добавление расхода к объекту.
- * @param {number} orderId
- * @param {number} amount
- * @param {string} category
- * @param {string} comment
+ * Добавление расхода (чека) к конкретному объекту.
  */
 export const addOrderExpense = async (orderId, amount, category, comment) => {
   const sql = `
@@ -214,13 +244,54 @@ export const addOrderExpense = async (orderId, amount, category, comment) => {
 
 /**
  * Получение всех расходов по конкретному заказу.
- * Критически важно для корректного отображения на фронтенде.
- * @param {number} orderId
  */
 export const getOrderExpenses = async (orderId) => {
-  const sql = "SELECT * FROM object_expenses WHERE order_id = $1 ORDER BY created_at DESC";
+  const sql =
+    "SELECT * FROM object_expenses WHERE order_id = $1 ORDER BY created_at DESC";
   const res = await query(sql, [orderId]);
   return res.rows;
+};
+
+/**
+ * Создание финансового счета (Касса/Банк) - Задел под v10.0
+ */
+export const createAccount = async (userId, name, type = "cash") => {
+  const sql = `
+    INSERT INTO accounts (user_id, name, type, balance, created_at)
+    VALUES ($1, $2, $3, 0, NOW())
+    RETURNING *
+  `;
+  const res = await query(sql, [userId, name, type]);
+  return res.rows[0];
+};
+
+/**
+ * Запись транзакции в общую бухгалтерию - Задел под v10.0
+ */
+export const createTransaction = async (
+  accountId,
+  userId,
+  amount,
+  type,
+  category,
+  comment,
+  orderId = null,
+) => {
+  const sql = `
+    INSERT INTO transactions (account_id, user_id, amount, type, category, comment, order_id, created_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+    RETURNING *
+  `;
+  const res = await query(sql, [
+    accountId,
+    userId,
+    amount,
+    type,
+    category,
+    comment,
+    orderId,
+  ]);
+  return res.rows[0];
 };
 
 // =============================================================================
@@ -228,11 +299,9 @@ export const getOrderExpenses = async (orderId) => {
 // =============================================================================
 
 /**
- * Получение глобальной статистики (для дашборда).
- * Возвращает количество юзеров, выручку (done) и активных за сутки.
+ * Получение глобальной статистики для системного Дашборда.
  */
 export const getGlobalStats = async () => {
-  // Выполняем 3 запроса параллельно, но внутри одной функции для чистоты API
   const sqlUsers = "SELECT COUNT(*) as count FROM users";
   const sqlRevenue =
     "SELECT SUM(total_price) as sum FROM orders WHERE status = 'done'";

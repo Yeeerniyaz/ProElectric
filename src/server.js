@@ -1,166 +1,100 @@
 /**
  * @file src/server.js
- * @description Главная точка входа в приложение (Application Bootstrapper).
- * Отвечает за оркестрацию запуска сервисов: Environment -> Database -> Web Server -> Telegram Bot.
- * Реализует Graceful Shutdown для безопасной остановки в Docker/VPS.
+ * @description Главный загрузчик сервисов (Service Bootstrapper v9.1.0).
+ * Отвечает за:
+ * 1. Строгую последовательность запуска: БД -> Web Server -> Telegram Bot.
+ * 2. Выполнение миграций и сидинга (initDB).
+ * 3. Настройку Graceful Shutdown (безопасная остановка без потери данных).
  *
  * @module Server
- * @version 8.0.0 (Enterprise CRM Edition)
+ * @version 9.1.0 (Enterprise ERP Edition)
  * @author ProElectric Team
  */
 
-// ВАЖНО: Загружаем переменные окружения (.env) САМЫМИ ПЕРВЫМИ
-import "dotenv/config";
-
-import http from "http";
+import app from "./app.js";
+import { bot } from "./bot.js";
+import { initDB, closePool } from "./database/index.js";
 import { config } from "./config.js";
-import * as db from "./database/index.js";
-
-// Импортируем настроенные экземпляры сервисов
-import app from "./app.js"; // Express App (без вызова .listen)
-import { bot } from "./bot.js"; // Telegraf Bot (без вызова .launch)
-
-// =============================================================================
-// 🔧 PROCESS CONFIGURATION
-// =============================================================================
 
 const PORT = config.server.port || 3000;
-const IS_PROD = config.system.isProduction;
-
-// Перехват необработанных ошибок (Global Exception Handlers)
-process.on("uncaughtException", (err) => {
-  console.error("🔥 FATAL: Uncaught Exception:", err);
-  // В продакшене здесь стоит отправлять алерт Владельцу в Telegram
-  process.exit(1);
-});
-
-process.on("unhandledRejection", (reason, promise) => {
-  console.error(
-    "🔥 FATAL: Unhandled Rejection at:",
-    promise,
-    "reason:",
-    reason,
-  );
-});
-
-// =============================================================================
-// 🚀 BOOTSTRAP LOGIC
-// =============================================================================
 
 /**
- * Основная функция запуска системы.
- * Выполняет инициализацию в строгом порядке зависимостей.
+ * 🚀 Инициализация и запуск всех микросервисов системы.
+ * Порядок строго детерминирован: сначала база, потом API, потом Бот.
  */
-const bootstrap = async () => {
-  console.log(
-    `\n🚀 Starting ProElectric Enterprise System [${IS_PROD ? "PROD" : "DEV"}]...`,
-  );
-
-  // Проверка критических переменных окружения
-  if (!process.env.ADMIN_LOGIN || !process.env.ADMIN_PASS) {
-    console.warn(
-      "⚠️ WARNING: ADMIN_LOGIN or ADMIN_PASS is not set in .env file. Using default values!",
-    );
-  }
-
-  let server;
-
+async function startServer() {
   try {
-    // 1. Инициализация Базы Данных
-    // Приложение не должно стартовать, если БД недоступна
-    console.log("⏳ Connecting to Database...");
-    await db.initDB();
-    console.log("✅ Database connected successfully.");
+    // 1. Инициализация базы данных (DDL + Seeding)
+    console.log(
+      "🗄 [Server] Подключение к PostgreSQL и инициализация ядра ERP...",
+    );
+    await initDB();
+    console.log("✅ [Server] База данных успешно инициализирована.");
 
-    // 2. Запуск HTTP Сервера
-    // Создаем нативный HTTP сервер, оборачивая Express, для гибкого управления
-    server = http.createServer(app);
-
-    await new Promise((resolve, reject) => {
-      server.listen(PORT, () => {
-        console.log(`🌍 Web Server is running on port: ${PORT}`);
-        console.log(`🔧 Admin Panel: http://localhost:${PORT}/admin.html`);
-        console.log(`📡 API Health: http://localhost:${PORT}/api/auth/check`);
-        resolve();
-      });
-      server.on("error", reject);
+    // 2. Запуск Express REST API сервера (Web CRM)
+    const server = app.listen(PORT, () => {
+      console.log(`🌐 [Server] Web CRM & REST API запущены на порту: ${PORT}`);
+      console.log(`🔗 [Server] Локальный доступ: http://localhost:${PORT}`);
     });
 
-    // 3. Запуск Telegram Бота
-    console.log("⏳ Launching Telegram Bot...");
+    // 3. Запуск Telegram Бота (Long-polling)
+    console.log("🤖 [Server] Запуск Telegram-контроллера (ProElectric Bot)...");
+    await bot.launch();
+    console.log(
+      `✅ [Server] Telegram-бот успешно подключен к API и слушает обновления.`,
+    );
 
-    await bot.launch(() => {
-      console.log(`🤖 Telegram Bot is online (@${bot.botInfo?.username})`);
-    });
+    // =========================================================================
+    // 🛡 GRACEFUL SHUTDOWN (БЕЗОПАСНАЯ ОСТАНОВКА)
+    // =========================================================================
+    // Перехватываем системные сигналы завершения (например, от PM2 или Docker),
+    // чтобы корректно завершить работу с базой данных и не потерять запросы.
 
-    // 4. Финализация
-    console.log("\n✅ SYSTEM IS FULLY OPERATIONAL 🚀\n");
+    const gracefulShutdown = async (signal) => {
+      console.log(
+        `\n🛑 [Shutdown] Получен сигнал ${signal}. Инициирована безопасная остановка системы...`,
+      );
 
-    // Навешиваем обработчики завершения
-    setupGracefulShutdown(server);
-  } catch (error) {
-    console.error("\n❌ CRITICAL STARTUP ERROR:");
-    console.error(error);
+      try {
+        // 1. Останавливаем прием новых запросов от Telegram
+        console.log("⏳ [Shutdown] Остановка Telegram-бота...");
+        bot.stop(signal);
 
-    // Пытаемся закрыть пул БД, если он успел открыться
-    try {
-      await db.closePool();
-    } catch (e) {}
+        // 2. Закрываем HTTP-сервер Express
+        console.log("⏳ [Shutdown] Завершение работы Web-сервера...");
+        server.close(async () => {
+          console.log("✅ [Shutdown] Web-сервер успешно остановлен.");
 
-    process.exit(1);
-  }
-};
+          // 3. Сбрасываем пул соединений с PostgreSQL
+          console.log(
+            "⏳ [Shutdown] Закрытие пула соединений с базой данных...",
+          );
+          await closePool();
+          console.log("✅ [Shutdown] Подключения к БД закрыты.");
 
-// =============================================================================
-// 🛑 GRACEFUL SHUTDOWN
-// =============================================================================
-
-/**
- * Корректное завершение работы.
- * Важно для сохранения данных и отсутствия 502 ошибок при деплое.
- * @param {http.Server} server - Экземпляр HTTP сервера
- */
-const setupGracefulShutdown = (server) => {
-  const shutdown = async (signal) => {
-    console.log(`\n🛑 Received signal: ${signal}. Shutting down gracefully...`);
-
-    // Таймер принудительного убийства (если что-то зависнет)
-    const forceExitTimer = setTimeout(() => {
-      console.error("⚠️ Force shutdown due to timeout (10s).");
-      process.exit(1);
-    }, 10000);
-
-    try {
-      // 1. Останавливаем Бота первее всего (чтобы не принимал новые лиды)
-      bot.stop(signal);
-      console.log("💤 Telegram Bot stopped.");
-
-      // 2. Останавливаем прием новых HTTP соединений
-      if (server) {
-        await new Promise((resolve) => server.close(resolve));
-        console.log("💤 HTTP Server closed.");
+          console.log(
+            "👋 [Shutdown] Система ProElectric ERP v9.1.0 безопасно завершила работу.",
+          );
+          process.exit(0);
+        });
+      } catch (error) {
+        console.error(
+          "❌ [Shutdown] Критическая ошибка при остановке сервисов:",
+          error,
+        );
+        process.exit(1);
       }
+    };
 
-      // 3. Закрываем соединения с БД
-      await db.closePool();
-      console.log("💤 Database pool closed.");
+    // Слушаем сигналы операционной системы
+    process.once("SIGINT", () => gracefulShutdown("SIGINT")); // Ctrl+C в терминале
+    process.once("SIGTERM", () => gracefulShutdown("SIGTERM")); // Сигнал от менеджера процессов (Docker/PM2)
+  } catch (error) {
+    console.error("💥 [Server] КРИТИЧЕСКАЯ ОШИБКА ЗАПУСКА СИСТЕМЫ:");
+    console.error(error);
+    process.exit(1); // Немедленно убиваем процесс, если ядро не смогло запуститься
+  }
+}
 
-      console.log("✅ Goodbye, Chief.");
-      clearTimeout(forceExitTimer);
-      process.exit(0);
-    } catch (err) {
-      console.error("⚠️ Error during graceful shutdown:", err);
-      process.exit(1);
-    }
-  };
-
-  // Перехват сигналов ОС
-  process.once("SIGTERM", () => shutdown("SIGTERM")); // PM2 / Docker stop
-  process.once("SIGINT", () => shutdown("SIGINT")); // Ctrl+C
-};
-
-// =============================================================================
-// ▶️ EXECUTION
-// =============================================================================
-
-bootstrap();
+// 🏁 Точка входа
+startServer();

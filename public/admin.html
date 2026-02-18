@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ProElectric ERP | v9.0 Enterprise</title>
+    <title>ProElectric ERP | v9.1 Enterprise</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -24,7 +24,7 @@
           <h2>
             ProElectric <span class="pe-badge pe-badge-primary">ERP</span>
           </h2>
-          <p class="pe-text-muted">Enterprise Management System v9.0</p>
+          <p class="pe-text-muted">Enterprise Management System v9.1</p>
         </div>
 
         <form id="loginForm" class="pe-form">
@@ -259,7 +259,7 @@
 
             <div class="pe-card">
               <div class="pe-card-body">
-                <div class="pe-settings-grid" id="settingsFormContainer"></div>
+                <div id="settingsFormContainer"></div>
               </div>
             </div>
           </section>
@@ -388,7 +388,7 @@
                 <h4 class="pe-h4">
                   <i data-feather="shopping-bag"></i> Спецификация (BOM)
                 </h4>
-                <ul id="modalBOMList" class="pe-bom-list"></ul>
+                <div id="modalBOMList" class="pe-bom-container"></div>
               </div>
             </div>
 
@@ -563,7 +563,7 @@
       document.addEventListener("DOMContentLoaded", () => {
         feather.replace();
 
-        // Легкий скрипт для смены заголовка Topbar
+        // Динамический заголовок Topbar
         document.querySelectorAll(".nav-btn").forEach((btn) => {
           btn.addEventListener("click", (e) => {
             const text = e.currentTarget.querySelector("span").innerText;
