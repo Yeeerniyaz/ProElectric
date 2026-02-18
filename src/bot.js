@@ -5,7 +5,7 @@
  * Полностью автономен (Self-Contained): не зависит от внешних файлов констант.
  *
  * @module BotCore
- * @version 6.3.1 (Senior Architect Edition)
+ * @version 6.4.0 (Senior Architect Edition)
  * @author ProElectric Team
  */
 
@@ -20,9 +20,7 @@ import { AdminHandler } from "./handlers/AdminHandler.js";
 // 🔧 LOCAL ROUTING TRIGGERS
 // =============================================================================
 // Определяем тексты кнопок локально для маршрутизации.
-// Это плата за отказ от глобального файла constants.js (Loose Coupling).
-// Эти строки должны совпадать с тем, что отправляют клавиатуры в Handlers.
-
+// FIX: Добавлена константа ADMIN_PANEL для обработки кнопки входа
 const TRIGGERS = {
   // --- Пользовательское меню ---
   CALCULATE: "🚀 Рассчитать стоимость",
@@ -35,7 +33,10 @@ const TRIGGERS = {
   MAIN_MENU: "🏠 Главное меню",
   SHARE_PHONE: "📱 Отправить мой номер телефона",
 
-  // --- Админское меню ---
+  // --- Админское меню (Вход) ---
+  ADMIN_PANEL: "👑 Админ-панель", // <--- ДОБАВЛЕНО: Текст кнопки входа
+
+  // --- Внутри админки ---
   ADMIN_DASHBOARD: "📊 P&L Отчет",
   ADMIN_ORDERS: "📦 Управление заказами",
   ADMIN_SETTINGS: "⚙️ Настройки цен",
@@ -61,13 +62,10 @@ export const bot = new Telegraf(config.bot.token);
 // =============================================================================
 
 // 2.1. Session Middleware
-// Хранит состояние (FSM) в оперативной памяти.
-// В Production Highload рекомендуется заменить на Redis (telegraf-session-redis).
-// FIX: Добавляем defaultSession, чтобы ctx.session всегда был объектом (избегаем undefined error)
+// FIX: Добавляем defaultSession, чтобы ctx.session всегда был объектом
 bot.use(session({ defaultSession: () => ({}) }));
 
 // 2.2. Logger Middleware (Audit)
-// Логирует все входящие события для отладки.
 bot.use(async (ctx, next) => {
   if (!config.system.isProduction) {
     const user = ctx.from
@@ -89,13 +87,18 @@ bot.use(async (ctx, next) => {
 // =============================================================================
 
 // --- 👑 ADMIN COMMANDS (Regex Routers) ---
-// Команды, требующие аргументов или специального парсинга
 bot.hears(/^\/setrole/, (ctx) => AdminHandler.processSetRole(ctx)); // /setrole 123 admin
 bot.hears(/^\/setprice/, (ctx) => AdminHandler.processSetPrice(ctx)); // /setprice cable 500
 bot.hears(/^\/sql/, (ctx) => AdminHandler.processSQL(ctx)); // /sql SELECT * ...
 bot.hears(/^\/backup/, (ctx) => AdminHandler.processBackup(ctx)); // /backup
 
+// FIX: Добавляем команду /admin для явного вызова панели
+bot.command("admin", (ctx) => AdminHandler.showAdminMenu(ctx));
+
 // --- 🕹 ADMIN MENU HANDLERS ---
+// FIX: Добавляем слушатель кнопки "👑 Админ-панель"
+bot.hears(TRIGGERS.ADMIN_PANEL, (ctx) => AdminHandler.showAdminMenu(ctx));
+
 bot.hears(TRIGGERS.ADMIN_DASHBOARD, (ctx) => AdminHandler.showDashboard(ctx));
 bot.hears(TRIGGERS.ADMIN_ORDERS, (ctx) =>
   AdminHandler.showOrdersInstruction(ctx),
@@ -109,42 +112,44 @@ bot.hears(TRIGGERS.ADMIN_STAFF, (ctx) =>
 bot.hears(TRIGGERS.ADMIN_SQL, (ctx) => AdminHandler.showSQLInstruction(ctx));
 bot.hears(TRIGGERS.ADMIN_BACKUP, (ctx) => AdminHandler.processBackup(ctx));
 
+// Админские кнопки возврата (если они отличаются от юзерских)
+bot.hears("🔙 В главное меню", (ctx) => UserHandler.returnToMainMenu(ctx));
+
 // --- 👤 USER COMMANDS ---
 bot.command("start", (ctx) => UserHandler.startCommand(ctx));
 bot.command("cancel", (ctx) => UserHandler.returnToMainMenu(ctx));
 bot.command("menu", (ctx) => UserHandler.returnToMainMenu(ctx));
 
 // --- 🖱 CALLBACK ACTIONS (Inline Buttons) ---
-// Используем Regex для обработки динамических callback_data
-bot.action(/^wall_/, (ctx) => UserHandler.handleWallSelection(ctx)); // Выбор стен (wall_brick...)
-bot.action("action_save_order", (ctx) => UserHandler.saveOrderAction(ctx)); // Сохранение заказа
-bot.action("action_recalc", (ctx) => UserHandler.enterCalculationMode(ctx)); // Пересчет
+bot.action(/^wall_/, (ctx) => UserHandler.handleWallSelection(ctx));
+bot.action("action_save_order", (ctx) => UserHandler.saveOrderAction(ctx));
+bot.action("action_recalc", (ctx) => UserHandler.enterCalculationMode(ctx));
 
 // Админские действия с заказами (status_123_work)
-bot.action(/^status_/, (ctx) => AdminHandler.handleOrderStatusChange(ctx));
+bot.action(/^status_/, (ctx) =>
+  AdminHandler.handleOrderStatusChange(ctx, ...ctx.match[0].split("_").slice(1))
+);
 
 // --- 💬 USER TEXT MENU (Navigation) ---
-// Обработка нажатий на Reply клавиатуру
 bot.hears([TRIGGERS.CALCULATE, TRIGGERS.MAIN_MENU], (ctx) =>
   UserHandler.enterCalculationMode(ctx),
 );
 bot.hears(TRIGGERS.ORDERS, (ctx) => UserHandler.showMyOrders(ctx));
 bot.hears(TRIGGERS.PRICE_LIST, (ctx) => UserHandler.showPriceList(ctx));
-bot.hears(TRIGGERS.CONTACTS, (ctx) => UserHandler.handleTextMessage(ctx)); // Проксируем в хендлер
-bot.hears(TRIGGERS.HOW_WORK, (ctx) => UserHandler.handleTextMessage(ctx)); // Проксируем в хендлер
+bot.hears(TRIGGERS.CONTACTS, (ctx) => UserHandler.handleTextMessage(ctx));
+bot.hears(TRIGGERS.HOW_WORK, (ctx) => UserHandler.handleTextMessage(ctx));
 bot.hears([TRIGGERS.BACK, TRIGGERS.CANCEL], (ctx) =>
   UserHandler.returnToMainMenu(ctx),
 );
 
 // --- 📥 GLOBAL INPUT HANDLER (Wizard Steps) ---
-// Ловит любой текст, который не попал в предыдущие фильтры.
-// Используется для ввода площади, количества комнат и т.д.
+// Ловит любой текст, который не попал в предыдущие фильтры
 bot.on("text", (ctx) => {
+  // Если мы в процессе ввода данных для расчета
   return UserHandler.handleTextMessage(ctx);
 });
 
 // --- 📱 CONTACT HANDLER ---
-// Обработка отправки контактов (регистрация)
 bot.on("contact", (ctx) => UserHandler.handleContact(ctx));
 
 // =============================================================================
@@ -153,16 +158,11 @@ bot.on("contact", (ctx) => UserHandler.handleContact(ctx));
 
 bot.catch((err, ctx) => {
   console.error(`🔥 [Bot Catch] Error for ${ctx.updateType}:`, err);
-
-  // Пытаемся безопасно ответить пользователю, если это возможно
   try {
     if (ctx.chat?.type === "private") {
-      ctx.reply(
-        "⚠️ Произошла внутренняя ошибка сервера. Инженеры уже уведомлены.",
-      );
+      ctx.reply("⚠️ Внутренняя ошибка. Попробуйте перезапустить бота /start");
     }
   } catch (e) {
-    // Если не удалось отправить сообщение (юзер заблокировал бота), просто логируем
-    console.error("Failed to send error notification to user.");
+    console.error("Failed to send error notification.");
   }
 });
