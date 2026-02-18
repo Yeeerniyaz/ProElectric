@@ -1,11 +1,12 @@
 /**
  * @file public/js/app.js
- * @description Frontend Application Controller (SPA Logic v9.1.0).
+ * @description Frontend Application Controller (SPA Logic v9.1.2).
  * Управляет состоянием интерфейса, модальными окнами, финансовыми операциями.
- * Включает динамический редактор массива BOM и массовое обновление прайс-листа.
+ * Включает динамический редактор массива BOM, массовое обновление прайс-листа
+ * и Self-Healing логику для защиты от багов со старыми данными (null area, undefined expenses).
  *
  * @module AppController
- * @version 9.1.0 (Enterprise ERP Edition)
+ * @version 9.1.2 (Enterprise ERP Edition - Resilience Update)
  */
 
 import { API } from "./api.js";
@@ -231,11 +232,14 @@ async function loadOrders() {
           ? financials.net_profit
           : o.total_price;
 
+      // Self-Healing: Защита от "null м²" для старых заказов
+      const area = o.area || o.details?.params?.area || 0;
+
       const tr = document.createElement("tr");
       tr.innerHTML = `
                 <td><b>#${o.id}</b><br><small class="pe-text-muted">${Utils.formatDate(o.created_at)}</small></td>
                 <td>${o.client_name || "Неизвестно"}<br><small>${o.client_phone || "—"}</small></td>
-                <td>${o.area} м²</td>
+                <td>${area} м²</td>
                 <td><span class="pe-badge badge-${o.status}">${o.status.toUpperCase()}</span></td>
                 <td class="pe-text-success fw-bold">${Utils.formatCurrency(netProfit)}</td>
                 <td class="pe-text-right">
@@ -256,9 +260,12 @@ window.openOrderModal = (orderId) => {
   if (!order) return;
   State.selectedOrderId = order.id;
 
+  // Self-Healing: Защита от "null м²"
+  const area = order.area || order.details?.params?.area || 0;
+
   // Инфо
   document.getElementById("modalOrderTitle").textContent =
-    `Объект #${order.id} (${order.area} м²)`;
+    `Объект #${order.id} (${area} м²)`;
   document.getElementById("modalClientName").textContent =
     order.client_name || "Оффлайн клиент";
   document.getElementById("modalClientPhone").textContent =
@@ -311,11 +318,16 @@ function renderOrderFinancials(order) {
   const expensesList = document.getElementById("modalExpensesList");
   expensesList.innerHTML = "";
 
-  if (financials.expenses.length === 0) {
+  // Self-Healing: Гарантируем, что expenses - это массив (защита от краша length)
+  const expensesArray = Array.isArray(financials.expenses)
+    ? financials.expenses
+    : [];
+
+  if (expensesArray.length === 0) {
     expensesList.innerHTML =
       '<div class="pe-text-muted text-center p-1">Нет расходов по объекту</div>';
   } else {
-    financials.expenses.forEach((exp) => {
+    expensesArray.forEach((exp) => {
       const div = document.createElement("div");
       div.className = "expense-item";
       div.innerHTML = `
@@ -344,7 +356,7 @@ function renderBOMEditor() {
   } else {
     State.currentBOM.forEach((item, index) => {
       const row = document.createElement("div");
-      // Инлайн-стили для жесткой фиксации сетки, чтобы не поехало в модалке
+      // Инлайн-стили для жесткой фиксации сетки
       row.style.display = "flex";
       row.style.gap = "0.5rem";
       row.style.marginBottom = "0.5rem";
@@ -551,7 +563,7 @@ function bindGlobalEvents() {
 }
 
 // =============================================================================
-// 8. ⚙️ НАСТРОЙКИ ПРАЙСА И ПЕРСОНАЛ (DYNAMIC PRICELIST v9.1.0)
+// 8. ⚙️ НАСТРОЙКИ ПРАЙСА И ПЕРСОНАЛ (DYNAMIC PRICELIST v9.1.1)
 // =============================================================================
 
 async function loadSettings() {

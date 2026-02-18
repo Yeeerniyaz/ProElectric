@@ -1,7 +1,8 @@
 /**
  * @file public/css/style.css
- * @description ProElectric ERP Design System (v9.0.0 Enterprise).
+ * @description ProElectric ERP Design System (v9.1.2 Enterprise).
  * @architecture Modern CSS, Custom Properties, Grid/Flexbox, BEM-like (pe-*).
+ * Полностью поддерживает динамические формы, BOM Manager и мобильную адаптивность.
  */
 
 /* ==========================================================================
@@ -62,7 +63,7 @@ body.pe-theme-dark {
   line-height: 1.5;
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
-  overflow: hidden; /* Prevent body scroll, layout handles it */
+  overflow: hidden; /* Предотвращаем скролл body, контент скроллится внутри */
 }
 
 /* Custom Scrollbar */
@@ -123,6 +124,12 @@ body.pe-theme-dark {
 }
 .pe-mb-2 {
   margin-bottom: 0.5rem;
+}
+.pe-mb-4 {
+  margin-bottom: 1rem;
+}
+.pe-mb-6 {
+  margin-bottom: 1.5rem;
 }
 
 /* ==========================================================================
@@ -243,6 +250,13 @@ textarea.pe-input {
   min-height: 80px;
 }
 
+/* Утилита для ограничения ширины селектов (Фиксы для шапки таблицы) */
+.pe-select-inline {
+  width: auto;
+  min-width: 160px;
+  display: inline-block;
+}
+
 .pe-input-group {
   position: relative;
 }
@@ -303,6 +317,13 @@ textarea.pe-input {
 .badge-done {
   background: rgba(16, 185, 129, 0.15);
   color: var(--pe-success);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+.badge-cancel {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--pe-danger);
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 0.75rem;
@@ -825,6 +846,17 @@ textarea.pe-input {
   white-space: pre-wrap;
 }
 
+/* BOM Container (NEW in v9.1.2) */
+.pe-bom-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 300px;
+  overflow-y: auto;
+  padding-right: 0.5rem; /* Отступ для красивого скроллбара */
+}
+
+/* Старый класс оставлен для обратной совместимости старых заказов (Legacy Fallback) */
 .pe-bom-list {
   list-style: none;
   padding: 0;
@@ -905,7 +937,7 @@ textarea.pe-input {
 }
 
 /* ==========================================================================
-   8. TOASTS NOTIFICATIONS
+   8. TOASTS NOTIFICATIONS (ИСПРАВЛЕН ОБРЫВ)
    ========================================================================== */
 .pe-toast-container {
   position: fixed;
@@ -917,6 +949,7 @@ textarea.pe-input {
   gap: 0.5rem;
   pointer-events: none;
 }
+
 .toast {
   background: var(--pe-bg-surface-elevated);
   border-left: 4px solid var(--pe-primary);
@@ -933,21 +966,25 @@ textarea.pe-input {
   transform: translateX(120%);
   transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
 .toast.show {
   transform: translateX(0);
 }
+
 .toast-success {
   border-left-color: var(--pe-success);
 }
 .toast-success svg {
   color: var(--pe-success);
 }
+
 .toast-error {
   border-left-color: var(--pe-danger);
 }
 .toast-error svg {
   color: var(--pe-danger);
 }
+
 .toast-info {
   border-left-color: var(--pe-primary);
 }
@@ -966,13 +1003,13 @@ textarea.pe-input {
     position: static;
   }
 }
+
 @media (max-width: 768px) {
   .pe-sidebar {
     position: fixed;
     transform: translateX(-100%);
     transition: var(--pe-transition);
   }
-  /* Для активации мобильного меню нужно добавить логику в JS, но база тут */
   .pe-sidebar.mobile-active {
     transform: translateX(0);
     box-shadow: var(--pe-shadow);

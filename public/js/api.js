@@ -1,11 +1,11 @@
 /**
  * @file public/js/api.js
- * @description Frontend API Client (ERP Middleware v9.1.0).
+ * @description Frontend API Client (ERP Middleware v9.1.2).
  * Обеспечивает строгую типизацию запросов к REST API сервера ProElectric.
- * Включает новые методы финансового контроллера, управления заказами и динамического прайс-листа.
+ * Включает методы финансового контроллера, управления заказами и динамического прайс-листа.
  *
  * @module API
- * @version 9.1.0 (Enterprise ERP Edition)
+ * @version 9.1.2 (Enterprise ERP Edition)
  */
 
 const API_BASE = "/api";
@@ -13,12 +13,12 @@ const API_BASE = "/api";
 /**
  * Универсальная обертка для HTTP-запросов (Fetch Wrapper).
  * Автоматически обрабатывает JSON, заголовки, сессии и перехватывает ошибки.
- * * @param {string} endpoint - Путь (например, '/orders')
+ * @param {string} endpoint - Путь (например, '/orders')
  * @param {Object} options - Fetch options (method, body, etc.)
  * @returns {Promise<any>}
  */
 async function fetchWrapper(endpoint, options = {}) {
-  options.credentials = "include"; // Обязательно для сессионных куки
+  options.credentials = "include"; // Обязательно для передачи сессионных куки (авторизация)
   options.headers = options.headers || {};
 
   // Если передаем не FormData, ставим заголовок JSON
@@ -31,6 +31,7 @@ async function fetchWrapper(endpoint, options = {}) {
     const data = await response.json();
 
     if (!response.ok) {
+      // Пробрасываем ошибку с бэкенда для отображения в Utils.showToast
       throw new Error(data.error || "Неизвестная ошибка сервера");
     }
     return data;
@@ -41,7 +42,7 @@ async function fetchWrapper(endpoint, options = {}) {
 }
 
 /**
- * Экспорт всех методов для работы CRM
+ * Экспорт всех методов для работы CRM (Data Access Layer Front-end)
  */
 export const API = {
   // ==========================================
@@ -69,7 +70,7 @@ export const API = {
     fetchWrapper(`/orders?status=${status}&limit=${limit}&offset=${offset}`),
 
   /**
-   * Создание оффлайн-лида вручную (Без бота)
+   * Создание оффлайн-лида вручную (Без бота, через CRM)
    */
   createManualOrder: (data) =>
     fetchWrapper("/orders", { method: "POST", body: JSON.stringify(data) }),
@@ -80,6 +81,9 @@ export const API = {
       body: JSON.stringify({ status }),
     }),
 
+  /**
+   * Универсальное обновление деталей (BOM-массив, адрес, комментарий)
+   */
   updateOrderDetails: (id, key, value) =>
     fetchWrapper(`/orders/${id}/details`, {
       method: "PATCH",
@@ -87,7 +91,7 @@ export const API = {
     }),
 
   // ==========================================
-  // 💸 FINANCE (ERP MODULE v9.0)
+  // 💸 FINANCE (ERP MODULE)
   // ==========================================
 
   /**
@@ -109,7 +113,7 @@ export const API = {
     }),
 
   // ==========================================
-  // ⚙️ SYSTEM SETTINGS (DYNAMIC PRICING v9.1.0)
+  // ⚙️ SYSTEM SETTINGS (DYNAMIC PRICING)
   // ==========================================
   getSettings: () => fetchWrapper("/settings"),
 

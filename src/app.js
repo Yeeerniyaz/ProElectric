@@ -1,11 +1,11 @@
 /**
  * @file src/app.js
- * @description Конфигурация Express приложения (API Gateway & ERP Backend v9.0.0).
+ * @description Конфигурация Express приложения (API Gateway & ERP Backend v9.1.1).
  * Отвечает за обработку HTTP-запросов, маршрутизацию CRM и интеграцию с OrderService.
- * Реализует RESTful API для финансового ядра, ручных заказов и дашборда.
+ * Исправлен баг загрузки динамического прайс-листа (добавлен /api/pricelist).
  *
  * @module Application
- * @version 9.0.0 (Enterprise ERP Edition)
+ * @version 9.1.1 (Enterprise ERP Edition)
  * @author ProElectric Team
  */
 
@@ -133,10 +133,6 @@ app.get("/api/auth/check", (req, res) => {
 // 3. 📊 ERP API ROUTES (BUSINESS LOGIC)
 // =============================================================================
 
-/**
- * GET /api/dashboard/stats
- * Сводная финансовая статистика (Net Profit, Revenue, Воронка)
- */
 app.get("/api/dashboard/stats", requireAdmin, async (req, res) => {
   try {
     const [globalStats, funnelStats] = await Promise.all([
@@ -147,7 +143,7 @@ app.get("/api/dashboard/stats", requireAdmin, async (req, res) => {
     res.json({
       overview: {
         totalRevenue: funnelStats.metrics.totalRevenue,
-        totalNetProfit: funnelStats.metrics.totalNetProfit, // Чистая прибыль!
+        totalNetProfit: funnelStats.metrics.totalNetProfit,
         totalUsers: globalStats.totalUsers,
         activeToday: globalStats.activeUsers24h,
         pendingOrders: funnelStats.metrics.activeCount,
@@ -165,9 +161,6 @@ app.get("/api/dashboard/stats", requireAdmin, async (req, res) => {
 // 📦 4. ORDER MANAGEMENT (ORDERS API)
 // =============================================================================
 
-/**
- * GET /api/orders
- */
 app.get("/api/orders", requireAdmin, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 100;
@@ -196,10 +189,6 @@ app.get("/api/orders", requireAdmin, async (req, res) => {
   }
 });
 
-/**
- * POST /api/orders
- * 🔥 Создание заказа вручную из CRM (Оффлайн лид)
- */
 app.post("/api/orders", requireAdmin, async (req, res) => {
   try {
     const {
@@ -214,7 +203,6 @@ app.post("/api/orders", requireAdmin, async (req, res) => {
       return res.status(400).json({ error: "Имя и телефон обязательны" });
     }
 
-    // Ищем пользователя по телефону. Если нет — создаем виртуального (ID < 0)
     let userId;
     const existingUser = await db.query(
       "SELECT telegram_id FROM users WHERE phone = $1 LIMIT 1",
@@ -224,21 +212,19 @@ app.post("/api/orders", requireAdmin, async (req, res) => {
     if (existingUser.rows.length > 0) {
       userId = existingUser.rows[0].telegram_id;
     } else {
-      userId = -Date.now(); // Виртуальный ID для клиентов не из Telegram
+      userId = -Date.now();
       await db.query(
         "INSERT INTO users (telegram_id, first_name, username, phone, role) VALUES ($1, $2, $3, $4, 'user')",
         [userId, clientName, "crm_lead", clientPhone],
       );
     }
 
-    // 1. Делаем просчет
     const estimate = await OrderService.calculateComplexEstimate(
       Number(area),
       Number(rooms),
       wallType,
     );
 
-    // 2. Создаем заказ с финансовым блоком
     const order = await OrderService.createOrder(userId, estimate);
 
     res.json({ success: true, order });
@@ -281,10 +267,6 @@ app.patch("/api/orders/:id/details", requireAdmin, async (req, res) => {
 // 💸 5. FINANCIAL MANAGEMENT (ERP MODULE)
 // =============================================================================
 
-/**
- * PATCH /api/orders/:id/finance/price
- * Переопределение итоговой цены (Override Final Price)
- */
 app.patch("/api/orders/:id/finance/price", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -302,10 +284,6 @@ app.patch("/api/orders/:id/finance/price", requireAdmin, async (req, res) => {
   }
 });
 
-/**
- * POST /api/orders/:id/finance/expense
- * Добавление расхода (Такси, Буры, Материалы за счет фирмы)
- */
 app.post("/api/orders/:id/finance/expense", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -332,7 +310,7 @@ app.post("/api/orders/:id/finance/expense", requireAdmin, async (req, res) => {
 });
 
 // =============================================================================
-// ⚙️ 6. SYSTEM SETTINGS (DYNAMIC PRICING)
+// ⚙️ 6. SYSTEM SETTINGS (DYNAMIC PRICING v9.1.1)
 // =============================================================================
 
 app.get("/api/settings", requireAdmin, async (req, res) => {
@@ -344,23 +322,40 @@ app.get("/api/settings", requireAdmin, async (req, res) => {
   }
 });
 
+/**
+ * 🔥 ЭНДПОИНТ ДЛЯ ПРАЙС-ЛИСТА (ИСПРАВЛЯЕТ "ОШИБКУ ЗАГРУЗКИ")
+ */
+app.get("/api/pricelist", requireAdmin, async (req, res) => {
+  try {
+    const pricelist = await OrderService.getPublicPricelist();
+    res.json(pricelist);
+  } catch (error) {
+    console.error("[API] Pricelist Load Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * СОХРАНЕНИЕ НАСТРОЕК (ПОДДЕРЖКА МАССИВОВ И ОДИНОЧНЫХ ЗАПИСЕЙ)
+ */
 app.post("/api/settings", requireAdmin, async (req, res) => {
   try {
-    const { key, value } = req.body;
+    const payload = req.body;
+
+    // Массовое обновление (Bulk Update) из формы прайс-листа
+    if (Array.isArray(payload)) {
+      await db.saveBulkSettings(payload);
+      return res.json({ success: true, message: "Bulk update successful" });
+    }
+
+    // Одиночное обновление
+    const { key, value } = payload;
     if (!key || value === undefined) {
       return res.status(400).json({ error: "Missing 'key' or 'value'" });
     }
 
-    const sql = `
-      INSERT INTO settings (key, value, updated_at)
-      VALUES ($1, $2, NOW())
-      ON CONFLICT (key) DO UPDATE SET 
-        value = EXCLUDED.value,
-        updated_at = NOW()
-      RETURNING *
-    `;
-    const result = await db.query(sql, [key, value]);
-    res.json({ success: true, setting: result.rows[0] });
+    const result = await db.saveSetting(key, value);
+    res.json({ success: true, setting: result });
   } catch (error) {
     console.error("[API] Settings Update Error:", error);
     res.status(500).json({ error: error.message });
@@ -399,7 +394,7 @@ app.post("/api/broadcast", requireAdmin, async (req, res) => {
     if (!text)
       return res.status(400).json({ error: "Текст рассылки обязателен" });
 
-    let query = `SELECT telegram_id FROM users WHERE telegram_id > 0`; // Исключаем виртуальных оффлайн юзеров
+    let query = `SELECT telegram_id FROM users WHERE telegram_id > 0`;
     let params = [];
 
     if (targetRole && targetRole !== "all") {
@@ -435,7 +430,7 @@ app.post("/api/broadcast", requireAdmin, async (req, res) => {
             });
           }
           successCount++;
-          await new Promise((resolve) => setTimeout(resolve, 50)); // Antispam
+          await new Promise((resolve) => setTimeout(resolve, 50));
         } catch (e) {
           failCount++;
         }
@@ -445,7 +440,7 @@ app.post("/api/broadcast", requireAdmin, async (req, res) => {
       );
     };
 
-    sendMassMessage(); // Run in background
+    sendMassMessage();
 
     res.json({
       success: true,
