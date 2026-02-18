@@ -1,426 +1,516 @@
 /**
- * @file src/app.js
- * @description Конфигурация Express приложения (API Gateway & ERP Backend v9.1.0).
- * Отвечает за обработку HTTP-запросов, маршрутизацию CRM и интеграцию с OrderService.
- * Поддерживает динамический прайс-лист и текстовую спецификацию (BOM).
+ * @file public/js/app.js
+ * @description Frontend Application Controller (SPA Logic v9.0.0).
+ * Управляет состоянием интерфейса, модальными окнами, финансовыми операциями
+ * и связывает разметку admin.html с методами api.js.
  *
- * @module Application
- * @version 9.1.0 (Enterprise ERP Edition)
- * @author ProElectric Team
+ * @module AppController
+ * @version 9.0.0 (Enterprise ERP Edition)
  */
 
-import express from "express";
-import session from "express-session";
-import cors from "cors";
-import helmet from "helmet";
-import rateLimit from "express-rate-limit";
-import path from "path";
-import { fileURLToPath } from "url";
-
-// --- CORE IMPORTS ---
-import { config } from "./config.js";
-import * as db from "./database/index.js";
-import { bot } from "./bot.js"; 
-
-// --- SERVICES (Domain Logic) ---
-import { UserService } from "./services/UserService.js";
-import { OrderService } from "./services/OrderService.js";
-
-// --- INITIALIZATION ---
-const app = express();
-app.set("trust proxy", 1);
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { API } from './api.js';
 
 // =============================================================================
-// 1. 🛡 SECURITY & MIDDLEWARE
+// 1. 🛠 УТИЛИТЫ И ФОРМАТТЕРЫ (UTILITIES)
 // =============================================================================
 
-app.use(
-  helmet({
-    contentSecurityPolicy: false,
-    crossOriginEmbedderPolicy: false,
-  })
-);
-
-app.use(
-  cors({
-    origin: config.server.corsOrigin || "*",
-    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
-    credentials: true,
-  })
-);
-
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 1000, 
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "⛔ Слишком много запросов. Подождите пару минут." },
-});
-app.use("/api/", apiLimiter);
-
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
-
-app.use(
-  session({
-    name: "proelectric.sid",
-    secret: config.server.sessionSecret || "enterprise_super_secret_key_v9",
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: config.system.isProduction,
-      httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000, // 24 часа
-      sameSite: "lax",
+const Utils = {
+    formatCurrency: (value) => {
+        const num = parseFloat(value) || 0;
+        return new Intl.NumberFormat('ru-KZ', { style: 'currency', currency: 'KZT', maximumFractionDigits: 0 }).format(num);
     },
-  })
-);
+    formatDate: (dateString) => {
+        if (!dateString) return '—';
+        const d = new Date(dateString);
+        return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    },
+    showToast: (message, type = 'info') => {
+        const container = document.getElementById('toastContainer');
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        
+        let icon = 'info';
+        if (type === 'success') icon = 'check-circle';
+        if (type === 'error') icon = 'alert-circle';
 
-app.use(express.static(path.join(__dirname, "../public")));
+        toast.innerHTML = `<i data-feather="${icon}"></i> <span>${message}</span>`;
+        container.appendChild(toast);
+        feather.replace();
 
-// =============================================================================
-// 2. 🔐 AUTHENTICATION & ACCESS CONTROL
-// =============================================================================
-
-const requireAdmin = (req, res, next) => {
-  if (req.session && req.session.isAdmin) {
-    return next();
-  }
-  return res.status(401).json({ error: "⛔ Доступ запрещен. Авторизуйтесь." });
+        setTimeout(() => toast.classList.add('show'), 10);
+        setTimeout(() => {
+            toast.classList.remove('show');
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    }
 };
 
-app.get("/", (req, res) => {
-  res.redirect("/admin.html");
-});
+// =============================================================================
+// 2. 🧠 СТЭЙТ И ИНИЦИАЛИЗАЦИЯ (STATE MANAGEMENT)
+// =============================================================================
 
-app.post("/api/auth/login", (req, res) => {
-  const { login, password } = req.body;
-  const validLogin = process.env.ADMIN_LOGIN || "admin";
-  const validPass = config.admin.password || "admin123";
+const State = {
+    currentView: 'dashboardView',
+    orders: [],
+    users: [],
+    selectedOrderId: null
+};
 
-  if (login === validLogin && password === validPass) {
-    req.session.isAdmin = true;
-    req.session.loginTime = new Date();
-    console.log(`[AUTH] Admin logged in successfully from IP: ${req.ip}`);
-    return res.json({ success: true, message: "Welcome back, Boss!" });
-  }
-
-  console.warn(`[AUTH] Failed login attempt from IP: ${req.ip} | Login: ${login}`);
-  return res.status(401).json({ error: "Неверный логин или пароль" });
-});
-
-app.post("/api/auth/logout", (req, res) => {
-  req.session.destroy((err) => {
-    if (err) return res.status(500).json({ error: "Ошибка при выходе" });
-    res.clearCookie("proelectric.sid");
-    res.json({ success: true });
-  });
-});
-
-app.get("/api/auth/check", (req, res) => {
-  res.json({
-    authenticated: !!(req.session && req.session.isAdmin),
-    serverTime: new Date(),
-  });
+document.addEventListener('DOMContentLoaded', async () => {
+    bindAuthEvents();
+    await checkSession();
 });
 
 // =============================================================================
-// 3. 📊 ERP API ROUTES (BUSINESS LOGIC)
+// 3. 🔐 АВТОРИЗАЦИЯ И НАВИГАЦИЯ (AUTH & ROUTING)
 // =============================================================================
 
-app.get("/api/dashboard/stats", requireAdmin, async (req, res) => {
-  try {
-    const [globalStats, funnelStats] = await Promise.all([
-      UserService.getDashboardStats(),
-      OrderService.getAdminStats(),
-    ]);
-
-    res.json({
-      overview: {
-        totalRevenue: funnelStats.metrics.totalRevenue,
-        totalNetProfit: funnelStats.metrics.totalNetProfit, 
-        totalUsers: globalStats.totalUsers,
-        activeToday: globalStats.activeUsers24h,
-        pendingOrders: funnelStats.metrics.activeCount,
-      },
-      funnel: funnelStats.breakdown,
-      financials: funnelStats.metrics,
-    });
-  } catch (error) {
-    console.error("[API] Stats Error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// =============================================================================
-// 📦 4. ORDER MANAGEMENT (ORDERS API)
-// =============================================================================
-
-app.get("/api/orders", requireAdmin, async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 100;
-    const offset = parseInt(req.query.offset) || 0;
-    const status = req.query.status || null;
-
-    let query = `
-      SELECT o.*, u.first_name as client_name, u.phone as client_phone 
-      FROM orders o
-      JOIN users u ON o.user_id = u.telegram_id
-    `;
-    const params = [];
-
-    if (status && status !== "all") {
-      query += " WHERE o.status = $1";
-      params.push(status);
-    }
-
-    query += ` ORDER BY o.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
-    params.push(limit, offset);
-
-    const result = await db.query(query, params);
-    res.json(result.rows);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post("/api/orders", requireAdmin, async (req, res) => {
-  try {
-    const { clientName, clientPhone, area = 50, rooms = 2, wallType = 'wall_concrete' } = req.body;
-
-    if (!clientName || !clientPhone) {
-      return res.status(400).json({ error: "Имя и телефон обязательны" });
-    }
-
-    let userId;
-    const existingUser = await db.query("SELECT telegram_id FROM users WHERE phone = $1 LIMIT 1", [clientPhone]);
-    
-    if (existingUser.rows.length > 0) {
-      userId = existingUser.rows[0].telegram_id;
-    } else {
-      userId = -Date.now(); 
-      await db.query(
-        "INSERT INTO users (telegram_id, first_name, username, phone, role) VALUES ($1, $2, $3, $4, 'user')",
-        [userId, clientName, 'crm_lead', clientPhone]
-      );
-    }
-
-    const estimate = await OrderService.calculateComplexEstimate(Number(area), Number(rooms), wallType);
-    const order = await OrderService.createOrder(userId, estimate);
-
-    res.json({ success: true, order });
-  } catch (error) {
-    console.error("[API] Create Manual Order Error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.patch("/api/orders/:id/status", requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-    await OrderService.updateOrderStatus(id, status);
-    res.json({ success: true, status });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.patch("/api/orders/:id/details", requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { key, value } = req.body;
-    if (!key) return res.status(400).json({ error: "Ключ обновления не передан" });
-
-    // Этот метод теперь используется для обновления bom_text, comment и address
-    const updatedDetails = await OrderService.updateOrderDetails(id, key, value);
-    res.json({ success: true, details: updatedDetails });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// =============================================================================
-// 💸 5. FINANCIAL MANAGEMENT (ERP MODULE)
-// =============================================================================
-
-app.patch("/api/orders/:id/finance/price", requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { newPrice } = req.body;
-    
-    if (!newPrice || isNaN(newPrice)) {
-      return res.status(400).json({ error: "Укажите корректную новую цену" });
-    }
-
-    const financials = await OrderService.updateOrderFinalPrice(id, newPrice);
-    res.json({ success: true, financials });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post("/api/orders/:id/finance/expense", requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { amount, category, comment } = req.body;
-
-    if (!amount || isNaN(amount) || amount <= 0) {
-      return res.status(400).json({ error: "Сумма расхода должна быть больше 0" });
-    }
-
-    const financials = await OrderService.addOrderExpense(id, amount, category || "Расход", comment, "admin");
-    res.json({ success: true, financials });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// =============================================================================
-// ⚙️ 6. SYSTEM SETTINGS (DYNAMIC PRICING)
-// =============================================================================
-
-app.get("/api/settings", requireAdmin, async (req, res) => {
-  try {
-    const settings = await db.getSettings();
-    res.json(settings);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * 🔥 NEW: Выдача структурированного прайс-листа для рендера в CRM
- */
-app.get("/api/pricelist", requireAdmin, async (req, res) => {
-  try {
-    const pricelist = await OrderService.getPublicPricelist();
-    res.json(pricelist);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post("/api/settings", requireAdmin, async (req, res) => {
-  try {
-    const payload = req.body;
-    
-    // Поддержка массового сохранения (Bulk Update) для формы прайс-листа
-    if (Array.isArray(payload)) {
-      for (const item of payload) {
-        if (item.key && item.value !== undefined) {
-          await db.query(
-            "INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
-            [item.key, item.value]
-          );
+async function checkSession() {
+    try {
+        const res = await API.checkAuth();
+        if (res.authenticated) {
+            document.getElementById('loginView').classList.remove('active');
+            document.getElementById('appLayout').style.display = 'flex';
+            initApp();
+        } else {
+            showLogin();
         }
-      }
-      return res.json({ success: true, message: "Bulk update successful" });
+    } catch (e) {
+        showLogin();
     }
+}
 
-    // Обратная совместимость для сохранения одного ключа
-    const { key, value } = payload;
-    if (!key || value === undefined) return res.status(400).json({ error: "Missing 'key' or 'value'" });
+function showLogin() {
+    document.getElementById('loginView').classList.add('active');
+    document.getElementById('appLayout').style.display = 'none';
+}
 
-    const result = await db.query(
-      "INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW() RETURNING *",
-      [key, value]
-    );
-    res.json({ success: true, setting: result.rows[0] });
-  } catch (error) {
-    console.error("[API] Settings Update Error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// =============================================================================
-// 👥 7. STAFF & BROADCAST
-// =============================================================================
-
-app.get("/api/users", requireAdmin, async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 100;
-    const offset = parseInt(req.query.offset) || 0;
-    const users = await UserService.getAllUsers(limit, offset);
-    res.json(users);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post("/api/users/role", requireAdmin, async (req, res) => {
-  try {
-    const { userId, role } = req.body;
-    const updatedUser = await UserService.changeUserRole(0, userId, role);
-    res.json({ success: true, user: updatedUser });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-app.post("/api/broadcast", requireAdmin, async (req, res) => {
-  try {
-    const { text, imageUrl, targetRole } = req.body; 
-
-    if (!text) return res.status(400).json({ error: "Текст рассылки обязателен" });
-
-    // Используем метод UserService для таргетинга
-    const users = await UserService.getUsersForBroadcast(targetRole);
-
-    if (users.length === 0) {
-      return res.json({ success: true, delivered: 0, message: "Нет пользователей для рассылки" });
-    }
-
-    let successCount = 0;
-    let failCount = 0;
-
-    const sendMassMessage = async () => {
-      for (const user of users) {
+function bindAuthEvents() {
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const l = document.getElementById('adminLogin').value;
+        const p = document.getElementById('adminPassword').value;
+        const errDiv = document.getElementById('loginError');
+        
         try {
-          if (imageUrl) {
-            await bot.telegram.sendPhoto(user.telegram_id, imageUrl, { caption: text, parse_mode: "HTML" });
-          } else {
-            await bot.telegram.sendMessage(user.telegram_id, text, { parse_mode: "HTML" });
-          }
-          successCount++;
-          await new Promise((resolve) => setTimeout(resolve, 50)); // Antispam 20 msg/sec
-        } catch (e) {
-          failCount++;
+            errDiv.style.display = 'none';
+            await API.login(l, p);
+            Utils.showToast('Успешный вход. Добро пожаловать, Босс!', 'success');
+            checkSession();
+        } catch (error) {
+            errDiv.textContent = error.message;
+            errDiv.style.display = 'block';
         }
-      }
-      console.log(`[Broadcast] Finished. Success: ${successCount}, Failed: ${failCount}`);
+    });
+
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+        try {
+            await API.logout();
+            window.location.reload();
+        } catch (e) {
+            Utils.showToast('Ошибка при выходе', 'error');
+        }
+    });
+
+    // Навигация
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+            e.currentTarget.classList.add('active');
+            
+            const targetId = e.currentTarget.getAttribute('data-target');
+            document.querySelectorAll('.view-section').forEach(v => {
+                v.style.display = v.id === targetId ? 'block' : 'none';
+            });
+            
+            State.currentView = targetId;
+            loadViewData(targetId);
+        });
+    });
+}
+
+function initApp() {
+    feather.replace();
+    loadViewData(State.currentView);
+    bindGlobalEvents();
+}
+
+function loadViewData(viewId) {
+    switch(viewId) {
+        case 'dashboardView': loadDashboard(); break;
+        case 'ordersView': loadOrders(); break;
+        case 'settingsView': loadSettings(); break;
+        case 'usersView': loadUsers(); break;
+    }
+}
+
+// =============================================================================
+// 4. 📊 ДАШБОРД (DASHBOARD LOGIC)
+// =============================================================================
+
+async function loadDashboard() {
+    try {
+        const data = await API.getStats();
+        
+        document.getElementById('statNetProfit').textContent = Utils.formatCurrency(data.overview.totalNetProfit);
+        document.getElementById('statRevenue').textContent = Utils.formatCurrency(data.overview.totalRevenue);
+        document.getElementById('statActiveOrders').textContent = data.overview.pendingOrders;
+        document.getElementById('statTotalUsers').textContent = data.overview.totalUsers;
+
+        renderFunnel(data.funnel);
+    } catch (e) {
+        Utils.showToast('Ошибка загрузки статистики', 'error');
+    }
+}
+
+function renderFunnel(funnelData) {
+    const container = document.getElementById('funnelChart');
+    container.innerHTML = '';
+    
+    const statuses = [
+        { key: 'new', label: 'Новые лиды', color: '#3b82f6' },
+        { key: 'work', label: 'В работе', color: '#f59e0b' },
+        { key: 'done', label: 'Завершено', color: '#10b981' }
+    ];
+
+    statuses.forEach(s => {
+        const stat = funnelData[s.key] || { count: 0, sum: 0 };
+        const row = document.createElement('div');
+        row.className = 'funnel-row';
+        row.innerHTML = `
+            <div class="funnel-label" style="border-left: 4px solid ${s.color}; padding-left: 10px;">${s.label}</div>
+            <div class="funnel-value"><b>${stat.count}</b> шт.</div>
+            <div class="funnel-sum">${Utils.formatCurrency(stat.sum)}</div>
+        `;
+        container.appendChild(row);
+    });
+}
+
+// =============================================================================
+// 5. 📦 УПРАВЛЕНИЕ ЗАКАЗАМИ (ORDERS & OFFLINE LEADS)
+// =============================================================================
+
+async function loadOrders() {
+    try {
+        const status = document.getElementById('orderStatusFilter').value;
+        State.orders = await API.getOrders(status);
+        const tbody = document.getElementById('ordersTableBody');
+        tbody.innerHTML = '';
+
+        State.orders.forEach(o => {
+            const financials = o.details?.financials || {};
+            const netProfit = financials.net_profit !== undefined ? financials.net_profit : o.total_price;
+            
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><b>#${o.id}</b><br><small class="text-muted">${Utils.formatDate(o.created_at)}</small></td>
+                <td>${o.client_name || 'Неизвестно'}<br><small>${o.client_phone || '—'}</small></td>
+                <td>${o.area} м²</td>
+                <td><span class="badge badge-${o.status}">${o.status.toUpperCase()}</span></td>
+                <td class="text-success fw-bold">${Utils.formatCurrency(netProfit)}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline" onclick="openOrderModal(${o.id})">
+                        Управление
+                    </button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    } catch (e) {
+        Utils.showToast('Ошибка загрузки заказов', 'error');
+    }
+}
+
+window.openOrderModal = (orderId) => {
+    const order = State.orders.find(o => o.id === orderId);
+    if (!order) return;
+    State.selectedOrderId = order.id;
+
+    // Инфо
+    document.getElementById('modalOrderTitle').textContent = `Объект #${order.id} (${order.area} м²)`;
+    document.getElementById('modalClientName').textContent = order.client_name || 'Оффлайн клиент';
+    document.getElementById('modalClientPhone').textContent = order.client_phone || '—';
+
+    // Статус
+    const statusSelect = document.getElementById('modalOrderStatus');
+    statusSelect.innerHTML = `
+        <option value="new">Новый (Лид)</option>
+        <option value="processing">Взят в расчет</option>
+        <option value="work">В работе</option>
+        <option value="done">Завершен успешно</option>
+        <option value="canceled">Отказ</option>
+    `;
+    statusSelect.value = order.status;
+
+    // Спецификация (BOM)
+    const bomList = document.getElementById('modalBOMList');
+    bomList.innerHTML = '';
+    if (order.details?.bom && Array.isArray(order.details.bom)) {
+        order.details.bom.forEach(item => {
+            const li = document.createElement('li');
+            li.innerHTML = `<span>${item.name}</span> <b>${item.qty} ${item.unit}</b>`;
+            bomList.appendChild(li);
+        });
+    } else {
+        bomList.innerHTML = '<li class="text-muted">Спецификация не сгенерирована</li>';
+    }
+
+    // Финансы (ERP Core)
+    renderOrderFinancials(order);
+
+    document.getElementById('orderModal').style.display = 'flex';
+    feather.replace();
+};
+
+function renderOrderFinancials(order) {
+    const details = order.details || {};
+    const financials = details.financials || {
+        final_price: order.total_price,
+        total_expenses: 0,
+        net_profit: order.total_price,
+        expenses: []
     };
 
-    sendMassMessage(); // Запуск в фоне
+    document.getElementById('modalCalcPrice').textContent = Utils.formatCurrency(details.total?.work || order.total_price);
+    document.getElementById('modalFinalPrice').value = financials.final_price;
+    document.getElementById('modalTotalExpenses').textContent = Utils.formatCurrency(financials.total_expenses);
+    document.getElementById('modalNetProfit').textContent = Utils.formatCurrency(financials.net_profit);
 
-    res.json({
-      success: true,
-      message: `Рассылка запущена для ${users.length} пользователей.`,
-      estimatedTimeSec: Math.ceil(users.length * 0.05),
+    const expensesList = document.getElementById('modalExpensesList');
+    expensesList.innerHTML = '';
+    
+    if (financials.expenses.length === 0) {
+        expensesList.innerHTML = '<div class="text-muted text-center p-1">Нет расходов по объекту</div>';
+    } else {
+        financials.expenses.forEach(exp => {
+            const div = document.createElement('div');
+            div.className = 'expense-item';
+            div.innerHTML = `
+                <div>
+                    <strong>${exp.category}</strong> <small class="text-muted">${Utils.formatDate(exp.date)}</small>
+                    <div class="text-sm">${exp.comment || ''}</div>
+                </div>
+                <div class="text-danger fw-bold">-${Utils.formatCurrency(exp.amount)}</div>
+            `;
+            expensesList.appendChild(div);
+        });
+    }
+}
+
+// =============================================================================
+// 6. 💸 ФИНАНСОВЫЕ ОПЕРАЦИИ И СОБЫТИЯ (ERP ACTIONS)
+// =============================================================================
+
+function bindGlobalEvents() {
+    // --- ДАШБОРД ---
+    document.getElementById('refreshStatsBtn').addEventListener('click', loadDashboard);
+    
+    // --- ФИЛЬТР ЗАКАЗОВ ---
+    document.getElementById('orderStatusFilter').addEventListener('change', loadOrders);
+
+    // --- ЗАКРЫТИЕ МОДАЛОК ---
+    document.getElementById('btnCloseOrderModal').addEventListener('click', () => {
+        document.getElementById('orderModal').style.display = 'none';
+        State.selectedOrderId = null;
     });
-  } catch (error) {
-    console.error("[API] Broadcast Error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
+    
+    document.getElementById('btnCloseManualModal').addEventListener('click', () => {
+        document.getElementById('manualOrderModal').style.display = 'none';
+    });
+
+    // --- ИЗМЕНЕНИЕ СТАТУСА ЗАКАЗА ---
+    document.getElementById('modalOrderStatus').addEventListener('change', async (e) => {
+        if (!State.selectedOrderId) return;
+        try {
+            await API.updateOrderStatus(State.selectedOrderId, e.target.value);
+            Utils.showToast('Статус обновлен', 'success');
+            loadOrders(); // Обновляем таблицу на фоне
+        } catch (err) {
+            Utils.showToast(err.message, 'error');
+        }
+    });
+
+    // --- ОБНОВЛЕНИЕ ФИНАЛЬНОЙ ЦЕНЫ ---
+    document.getElementById('btnUpdateFinalPrice').addEventListener('click', async () => {
+        if (!State.selectedOrderId) return;
+        const newPrice = document.getElementById('modalFinalPrice').value;
+        try {
+            const newFinancials = await API.updateOrderFinalPrice(State.selectedOrderId, newPrice);
+            // Обновляем локальный стейт
+            const order = State.orders.find(o => o.id === State.selectedOrderId);
+            order.details.financials = newFinancials;
+            order.total_price = newFinancials.final_price;
+            renderOrderFinancials(order);
+            loadOrders(); // Обновляем таблицу
+            Utils.showToast('Итоговая цена зафиксирована', 'success');
+        } catch (err) {
+            Utils.showToast(err.message, 'error');
+        }
+    });
+
+    // --- ДОБАВЛЕНИЕ РАСХОДА (ЧЕКА) ---
+    document.getElementById('btnAddExpense').addEventListener('click', async () => {
+        if (!State.selectedOrderId) return;
+        const amount = document.getElementById('expenseAmount').value;
+        const category = document.getElementById('expenseCategory').value;
+        const comment = document.getElementById('expenseComment').value;
+
+        if (!amount || amount <= 0) return Utils.showToast('Введите корректную сумму', 'error');
+
+        try {
+            const newFinancials = await API.addOrderExpense(State.selectedOrderId, amount, category, comment);
+            
+            // Очистка формы
+            document.getElementById('expenseAmount').value = '';
+            document.getElementById('expenseComment').value = '';
+
+            // Обновляем UI
+            const order = State.orders.find(o => o.id === State.selectedOrderId);
+            order.details.financials = newFinancials;
+            renderOrderFinancials(order);
+            loadOrders();
+            Utils.showToast('Расход успешно списан', 'success');
+        } catch (err) {
+            Utils.showToast(err.message, 'error');
+        }
+    });
+
+    // --- СОЗДАНИЕ РУЧНОГО ОФФЛАЙН ЛИДА ---
+    document.getElementById('btnOpenManualOrderModal').addEventListener('click', () => {
+        document.getElementById('manualOrderModal').style.display = 'flex';
+    });
+
+    document.getElementById('formManualOrder').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const data = {
+            clientName: document.getElementById('manualName').value,
+            clientPhone: document.getElementById('manualPhone').value,
+            area: document.getElementById('manualArea').value,
+            rooms: document.getElementById('manualRooms').value,
+            wallType: document.getElementById('manualWallType').value
+        };
+
+        try {
+            await API.createManualOrder(data);
+            document.getElementById('manualOrderModal').style.display = 'none';
+            document.getElementById('formManualOrder').reset();
+            Utils.showToast('Оффлайн-заказ успешно создан!', 'success');
+            loadOrders();
+        } catch (err) {
+            Utils.showToast(err.message, 'error');
+        }
+    });
+
+    // --- РАССЫЛКА (BROADCAST) ---
+    document.getElementById('btnSendBroadcast').addEventListener('click', async () => {
+        const text = document.getElementById('broadcastText').value;
+        const target = document.getElementById('broadcastTarget').value;
+        const image = document.getElementById('broadcastImage').value;
+
+        if (!text) return Utils.showToast('Введите текст рассылки', 'error');
+
+        try {
+            const res = await API.sendBroadcast(text, image, target);
+            Utils.showToast(res.message, 'success');
+            document.getElementById('broadcastText').value = '';
+            document.getElementById('broadcastImage').value = '';
+        } catch (err) {
+            Utils.showToast(err.message, 'error');
+        }
+    });
+}
 
 // =============================================================================
-// 🚑 8. ERROR HANDLING
+// 7. ⚙️ НАСТРОЙКИ ПРАЙСА И ПЕРСОНАЛ (SETTINGS & USERS)
 // =============================================================================
 
-app.use((req, res) => {
-  res.status(404).json({ error: "Endpoint not found" });
+async function loadSettings() {
+    try {
+        const settings = await API.getSettings();
+        const container = document.getElementById('settingsFormContainer');
+        container.innerHTML = '';
+
+        // Выводим только важные для ERP настройки (можно расширить)
+        const keysToRender = [
+            { key: 'price_point_socket', label: 'Точка: Розетка (₸)' },
+            { key: 'price_point_box', label: 'Точка: Распредкоробка (₸)' },
+            { key: 'price_cable_base', label: 'Кабель: База (₸/м)' },
+            { key: 'price_shield_base_24', label: 'Щит: База до 24 мод. (₸)' }
+        ];
+
+        keysToRender.forEach(k => {
+            const val = settings[k.key] || '';
+            container.innerHTML += `
+                <div class="form-group">
+                    <label>${k.label}</label>
+                    <input type="number" class="form-control setting-input" data-key="${k.key}" value="${val}">
+                </div>
+            `;
+        });
+    } catch (e) {
+        Utils.showToast('Ошибка загрузки настроек', 'error');
+    }
+}
+
+document.getElementById('btnSaveSettings')?.addEventListener('click', async () => {
+    const inputs = document.querySelectorAll('.setting-input');
+    let errors = 0;
+    
+    for (let input of inputs) {
+        const key = input.getAttribute('data-key');
+        const val = input.value;
+        try {
+            await API.updateSetting(key, val);
+        } catch (e) {
+            errors++;
+        }
+    }
+
+    if (errors === 0) Utils.showToast('Прайс успешно обновлен', 'success');
+    else Utils.showToast(`Обновлено с ошибками (${errors})`, 'error');
 });
 
-app.use((err, req, res, next) => {
-  console.error("🔥 [Express Error]:", err);
-  res.status(500).json({
-    error: "Internal Server Error",
-    details: config.system.isProduction ? null : err.message,
-  });
-});
+async function loadUsers() {
+    try {
+        State.users = await API.getUsers();
+        const tbody = document.getElementById('usersTableBody');
+        tbody.innerHTML = '';
 
-export default app;
+        State.users.forEach(u => {
+            const isManager = u.role === 'manager';
+            const isAdmin = u.role === 'admin' || u.role === 'owner';
+            
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${u.telegram_id}</td>
+                <td>${u.first_name} <br> <small class="text-muted">@${u.username || 'нет'}</small></td>
+                <td>${u.phone || '—'}</td>
+                <td>
+                    <select class="form-control form-sm role-select" data-uid="${u.telegram_id}" ${isAdmin ? 'disabled' : ''}>
+                        <option value="user" ${u.role === 'user' ? 'selected' : ''}>Клиент</option>
+                        <option value="manager" ${isManager ? 'selected' : ''}>Мастер</option>
+                        ${isAdmin ? `<option value="${u.role}" selected>${u.role.toUpperCase()}</option>` : ''}
+                    </select>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        // Биндинг смены роли
+        document.querySelectorAll('.role-select').forEach(select => {
+            select.addEventListener('change', async (e) => {
+                const uid = e.target.getAttribute('data-uid');
+                const newRole = e.target.value;
+                try {
+                    await API.updateUserRole(uid, newRole);
+                    Utils.showToast('Роль обновлена', 'success');
+                } catch (err) {
+                    Utils.showToast(err.message, 'error');
+                    loadUsers(); // Откат при ошибке
+                }
+            });
+        });
+    } catch (e) {
+        Utils.showToast('Ошибка загрузки пользователей', 'error');
+    }
+}
