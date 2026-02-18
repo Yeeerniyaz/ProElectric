@@ -1,13 +1,16 @@
 /**
  * @file src/server.js
  * @description Главная точка входа в приложение (Application Bootstrapper).
- * Отвечает за оркестрацию запуска сервисов: Database -> Web Server -> Telegram Bot.
- * Реализует Graceful Shutdown для безопасной остановки в Docker/Kubernetes.
+ * Отвечает за оркестрацию запуска сервисов: Environment -> Database -> Web Server -> Telegram Bot.
+ * Реализует Graceful Shutdown для безопасной остановки в Docker/VPS.
  *
  * @module Server
- * @version 6.3.0 (Production Ready)
+ * @version 8.0.0 (Enterprise CRM Edition)
  * @author ProElectric Team
  */
+
+// ВАЖНО: Загружаем переменные окружения (.env) САМЫМИ ПЕРВЫМИ
+import "dotenv/config";
 
 import http from "http";
 import { config } from "./config.js";
@@ -27,7 +30,7 @@ const IS_PROD = config.system.isProduction;
 // Перехват необработанных ошибок (Global Exception Handlers)
 process.on("uncaughtException", (err) => {
   console.error("🔥 FATAL: Uncaught Exception:", err);
-  // В продакшене здесь стоит отправлять алерт в Sentry
+  // В продакшене здесь стоит отправлять алерт Владельцу в Telegram
   process.exit(1);
 });
 
@@ -50,8 +53,15 @@ process.on("unhandledRejection", (reason, promise) => {
  */
 const bootstrap = async () => {
   console.log(
-    `\n🚀 Starting ProElectric System [${IS_PROD ? "PROD" : "DEV"}]...`,
+    `\n🚀 Starting ProElectric Enterprise System [${IS_PROD ? "PROD" : "DEV"}]...`,
   );
+
+  // Проверка критических переменных окружения
+  if (!process.env.ADMIN_LOGIN || !process.env.ADMIN_PASS) {
+    console.warn(
+      "⚠️ WARNING: ADMIN_LOGIN or ADMIN_PASS is not set in .env file. Using default values!",
+    );
+  }
 
   let server;
 
@@ -77,12 +87,7 @@ const bootstrap = async () => {
     });
 
     // 3. Запуск Telegram Бота
-    // Используем Webhook в проде (если настроен) или Long Polling в деве
     console.log("⏳ Launching Telegram Bot...");
-
-    // В будущем здесь можно добавить логику webhook'а:
-    // if (IS_PROD) await bot.createWebhook({ domain: config.bot.webhookDomain ... });
-    // else await bot.launch();
 
     await bot.launch(() => {
       console.log(`🤖 Telegram Bot is online (@${bot.botInfo?.username})`);
@@ -113,7 +118,7 @@ const bootstrap = async () => {
 /**
  * Корректное завершение работы.
  * Важно для сохранения данных и отсутствия 502 ошибок при деплое.
- * * @param {http.Server} server - Экземпляр HTTP сервера
+ * @param {http.Server} server - Экземпляр HTTP сервера
  */
 const setupGracefulShutdown = (server) => {
   const shutdown = async (signal) => {
@@ -126,21 +131,21 @@ const setupGracefulShutdown = (server) => {
     }, 10000);
 
     try {
-      // 1. Останавливаем прием новых HTTP соединений
+      // 1. Останавливаем Бота первее всего (чтобы не принимал новые лиды)
+      bot.stop(signal);
+      console.log("💤 Telegram Bot stopped.");
+
+      // 2. Останавливаем прием новых HTTP соединений
       if (server) {
         await new Promise((resolve) => server.close(resolve));
         console.log("💤 HTTP Server closed.");
       }
 
-      // 2. Останавливаем Бота
-      bot.stop(signal);
-      console.log("💤 Telegram Bot stopped.");
-
       // 3. Закрываем соединения с БД
       await db.closePool();
       console.log("💤 Database pool closed.");
 
-      console.log("✅ Goodbye.");
+      console.log("✅ Goodbye, Chief.");
       clearTimeout(forceExitTimer);
       process.exit(0);
     } catch (err) {
@@ -150,7 +155,7 @@ const setupGracefulShutdown = (server) => {
   };
 
   // Перехват сигналов ОС
-  process.once("SIGTERM", () => shutdown("SIGTERM")); // Docker stop
+  process.once("SIGTERM", () => shutdown("SIGTERM")); // PM2 / Docker stop
   process.once("SIGINT", () => shutdown("SIGINT")); // Ctrl+C
 };
 
