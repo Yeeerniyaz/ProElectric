@@ -8,7 +8,7 @@
  * * Архитектура: Code-First Migration / Self-Healing Schema.
  *
  * @module Database
- * @version 6.2.0 (Senior Architect Edition)
+ * @version 6.2.2 (Senior Architect Edition)
  * @author ProElectric Team
  */
 
@@ -17,7 +17,10 @@ import { getClient, closePool, query } from "./connection.js";
 // Ре-экспортируем все методы репозитория, чтобы сервисы импортировали их отсюда
 // import { getUser, createOrder } from '../database/index.js';
 export * from "./repository.js";
-export { closePool };
+
+// FIX: Экспортируем query и getClient, так как сервисы (UserService, OrderService)
+// используют их напрямую через import * as db from './index.js' -> db.query()
+export { closePool, query, getClient };
 
 // =============================================================================
 // 🛠 SCHEMA DEFINITION (DDL)
