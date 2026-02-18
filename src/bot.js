@@ -5,7 +5,7 @@
  * Полностью автономен (Self-Contained): не зависит от внешних файлов констант.
  *
  * @module BotCore
- * @version 6.3.0 (Senior Architect Edition)
+ * @version 6.3.1 (Senior Architect Edition)
  * @author ProElectric Team
  */
 
@@ -63,7 +63,8 @@ export const bot = new Telegraf(config.bot.token);
 // 2.1. Session Middleware
 // Хранит состояние (FSM) в оперативной памяти.
 // В Production Highload рекомендуется заменить на Redis (telegraf-session-redis).
-bot.use(session());
+// FIX: Добавляем defaultSession, чтобы ctx.session всегда был объектом (избегаем undefined error)
+bot.use(session({ defaultSession: () => ({}) }));
 
 // 2.2. Logger Middleware (Audit)
 // Логирует все входящие события для отладки.
