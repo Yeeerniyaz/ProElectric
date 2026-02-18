@@ -1,11 +1,12 @@
 /**
  * @file src/handlers/AdminHandler.js
- * @description Контроллер панели администратора (Enterprise Telegram Controller v9.0.0).
+ * @description Контроллер панели администратора (Enterprise Telegram Controller v9.1.1).
  * Управляет бизнес-процессами (Смена статусов, Дашборд, Роли, Настройки цен).
  * Включает FSM для ввода метаданных заказа и инструменты DevOps (SQL, Backup).
+ * Интегрирован с динамическим прайс-листом и защитой от ошибок Telegram API.
  *
  * @module AdminHandler
- * @version 9.0.0 (Senior Architect Edition)
+ * @version 9.1.1 (Senior Architect Edition - Bugfix)
  */
 
 import { Markup } from "telegraf";
@@ -261,12 +262,16 @@ export const AdminHandler = {
   },
 
   /**
-   * 2. 📊 ERP ДАШБОРД (NET PROFIT CALCULUS v9.0)
+   * 2. 📊 ERP ДАШБОРД (NET PROFIT CALCULUS v9.1)
    */
   async showDashboard(ctx) {
-    const loading = await ctx.reply(
-      "⏳ Агрегация финансовых данных из базы...",
-    );
+    let loadingMsgId;
+    if (!ctx.callbackQuery) {
+      const loading = await ctx.reply(
+        "⏳ Агрегация финансовых данных из базы...",
+      );
+      loadingMsgId = loading.message_id;
+    }
 
     try {
       // Прямой запрос с вычислением JSONB полей для максимальной производительности
@@ -279,7 +284,7 @@ export const AdminHandler = {
           COUNT(*) FILTER (WHERE status = 'done') as done_count,
           COUNT(*) FILTER (WHERE status = 'cancel') as cancel_count,
           COALESCE(SUM(total_price) FILTER (WHERE status = 'done'), 0) as gross_revenue,
-          COALESCE(SUM((details->'financials'->>'net_profit')::numeric) FILTER (WHERE status = 'done'), 0) as net_profit,
+          COALESCE(SUM(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)) FILTER (WHERE status = 'done'), 0) as net_profit,
           COALESCE(SUM((details->'financials'->>'total_expenses')::numeric) FILTER (WHERE status = 'done'), 0) as total_expenses
         FROM orders
       `;
@@ -318,21 +323,36 @@ export const AdminHandler = {
         `❌ Отказы: ${data.cancel_count}`;
 
       if (ctx.callbackQuery) {
-        await ctx.telegram.editMessageText(
-          ctx.chat.id,
-          ctx.callbackQuery.message.message_id,
-          null,
-          report,
-          {
-            parse_mode: "HTML",
-            reply_markup: AdminKeyboards.refresh.reply_markup,
-          },
-        );
-        await ctx.answerCbQuery("Данные обновлены");
+        try {
+          await ctx.telegram.editMessageText(
+            ctx.chat.id,
+            ctx.callbackQuery.message.message_id,
+            null,
+            report,
+            {
+              parse_mode: "HTML",
+              reply_markup: AdminKeyboards.refresh.reply_markup,
+            },
+          );
+          await ctx.answerCbQuery("✅ Данные синхронизированы");
+        } catch (editError) {
+          // Если сообщение не изменилось, Telegram выдает ошибку. Перехватываем ее, чтобы бот не падал.
+          if (
+            editError.description &&
+            editError.description.includes("message is not modified")
+          ) {
+            await ctx.answerCbQuery("🔄 Данные актуальны (изменений нет)", {
+              show_alert: false,
+            });
+          } else {
+            console.error(editError);
+            await ctx.answerCbQuery("❌ Ошибка обновления интерфейса");
+          }
+        }
       } else {
         await ctx.telegram.editMessageText(
           ctx.chat.id,
-          loading.message_id,
+          loadingMsgId,
           null,
           report,
           {
@@ -343,12 +363,16 @@ export const AdminHandler = {
       }
     } catch (e) {
       console.error(e);
-      await ctx.telegram.editMessageText(
-        ctx.chat.id,
-        loading.message_id,
-        null,
-        "❌ Ошибка формирования P&L отчета.",
-      );
+      if (ctx.callbackQuery) {
+        await ctx.answerCbQuery("❌ Ошибка БД");
+      } else {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id,
+          loadingMsgId,
+          null,
+          "❌ Ошибка формирования P&L отчета.",
+        );
+      }
     }
   },
 
@@ -395,7 +419,6 @@ export const AdminHandler = {
       const details = order.details || {};
       const params = details.params || {};
 
-      // Инициализация финансового блока (для обратной совместимости)
       const financials = details.financials || {
         final_price: order.total_price,
         total_expenses: 0,
@@ -432,10 +455,13 @@ export const AdminHandler = {
         cancelLine = `\n⚠️ <b>Отказ:</b> ${reasonStr}\n`;
       }
 
+      // Безопасное чтение массива спецификации
+      const bomCount = details.bom?.length || 0;
       const bomIndicator =
-        details.bom && details.bom.length > 0
-          ? `\n📦 <i>BOM Спецификация сгенерирована (${details.bom.length} поз.)</i>`
-          : "";
+        bomCount > 0 ? `\n📦 <i>BOM Спецификация: ${bomCount} поз.</i>` : "";
+
+      // Страховка от null площади
+      const areaInfo = order.area || params.area || 0;
 
       const info =
         `🏢 <b>ОБЪЕКТ #${order.id}</b>\n` +
@@ -450,7 +476,7 @@ export const AdminHandler = {
         commentLine +
         `\n\n` +
         `🏗 <b>Технические данные:</b>\n` +
-        `Площадь: ${params.area || 0} м² | Комнат: ${params.rooms || 0}\n` +
+        `Площадь: ${areaInfo} м² | Комнат: ${params.rooms || 0}\n` +
         `Стены: ${wallName}` +
         bomIndicator +
         `\n\n` +
@@ -460,12 +486,21 @@ export const AdminHandler = {
         `<b>ЧИСТАЯ ПРИБЫЛЬ: ${fmt(financials.net_profit)} ₸</b>`;
 
       if (ctx.callbackQuery) {
-        await ctx.editMessageText(info, {
-          parse_mode: "HTML",
-          reply_markup: AdminKeyboards.orderControl(order.id, order.status)
-            .reply_markup,
-        });
-        await ctx.answerCbQuery();
+        try {
+          await ctx.editMessageText(info, {
+            parse_mode: "HTML",
+            reply_markup: AdminKeyboards.orderControl(order.id, order.status)
+              .reply_markup,
+          });
+          await ctx.answerCbQuery();
+        } catch (e) {
+          if (
+            e.description &&
+            e.description.includes("message is not modified")
+          ) {
+            await ctx.answerCbQuery("🔄 Данные объекта актуальны");
+          }
+        }
       } else {
         await ctx.replyWithHTML(
           info,
@@ -620,20 +655,33 @@ export const AdminHandler = {
   },
 
   /**
-   * 5. ⚙️ НАСТРОЙКИ (Dynamic Configuration)
+   * 5. ⚙️ НАСТРОЙКИ (Dynamic Configuration v9.1.1)
    */
   async showSettings(ctx) {
     try {
-      const res = await db.query(
-        "SELECT key, value FROM settings ORDER BY key",
-      );
-      let msg = "⚙️ <b>СИСТЕМНЫЙ ПРАЙС-ЛИСТ (Глобальный)</b>\n\n";
-      res.rows.forEach(
-        (row) => (msg += `🔸 <b>${row.key}</b>: <code>${row.value}</code>\n`),
-      );
-      msg += `\nИзменить параметр:\n<code>/setprice key value</code>\n<i>⚠️ Изменения моментально применяются к калькулятору новых смет.</i>`;
+      // Запрашиваем новый структурированный прайс-лист вместо сырых ключей
+      const pricelist = await OrderService.getPublicPricelist();
+
+      let msg = "⚙️ <b>ПАНЕЛЬ УПРАВЛЕНИЯ ЦЕНАМИ</b>\n\n";
+      msg +=
+        "Для изменения цены используйте команду:\n<code>/setprice [ключ] [цена]</code>\n\n";
+
+      if (Array.isArray(pricelist)) {
+        pricelist.forEach((section) => {
+          msg += `🔸 <b>${section.category}</b>\n`;
+          section.items.forEach((item) => {
+            msg += `▪️ ${item.name}: <b>${item.currentPrice} ${item.unit}</b>\n`;
+            msg += `   Ключ: <code>${item.key}</code>\n`;
+          });
+          msg += `\n`;
+        });
+      } else {
+        msg += "⚠️ Прайс-лист пуст или имеет неверный формат.";
+      }
+
       await ctx.replyWithHTML(msg);
     } catch (e) {
+      console.error(e);
       ctx.reply("❌ Ошибка доступа к таблице конфигурации.");
     }
   },
@@ -641,14 +689,16 @@ export const AdminHandler = {
   async processSetPrice(ctx) {
     const args = ctx.message.text.split(" ");
     if (args.length < 3)
-      return ctx.reply("⚠️ Синтаксис: /setprice <KEY> <VALUE>");
+      return ctx.reply(
+        "⚠️ Синтаксис: /setprice <KEY> <VALUE>\nПример: /setprice price_drill_concrete 600",
+      );
     try {
       await db.query(
         `INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
         [args[1], args[2]],
       );
       await ctx.reply(
-        `✅ Параметр конфигурации <b>${args[1]}</b> обновлен на <b>${args[2]}</b>`,
+        `✅ Прайс-лист обновлен!\nКлюч <b>${args[1]}</b> = <b>${args[2]}</b>.\n\nИзменения моментально применены в Web CRM и Калькуляторе.`,
         { parse_mode: "HTML" },
       );
     } catch (e) {
@@ -677,11 +727,19 @@ export const AdminHandler = {
 
   async processBackup(ctx) {
     const loading = await ctx.reply(
-      "💾 Инициализация создания Snapshot'а базы данных...",
+      "💾 Инициализация создания Snapshot'а базы данных (v9.1.0)...",
     );
     try {
       const dump = { timestamp: new Date().toISOString(), database: {} };
-      const tables = ["users", "orders", "settings", "object_expenses"]; // Теперь бэкапим и чеки!
+      // Расширенный список таблиц ERP
+      const tables = [
+        "users",
+        "orders",
+        "settings",
+        "object_expenses",
+        "accounts",
+        "transactions",
+      ];
 
       for (const table of tables) {
         try {
@@ -689,7 +747,7 @@ export const AdminHandler = {
             await db.query(`SELECT * FROM ${table}`)
           ).rows;
         } catch (e) {
-          /* Игнорируем отсутствие таблицы на случай старой БД */
+          /* Игнорируем отсутствие таблицы на случай, если БД еще не смигрировала */
         }
       }
 

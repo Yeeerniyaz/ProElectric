@@ -1,17 +1,14 @@
 /**
  * @file src/services/OrderService.js
- * @description Сервис бизнес-логики заказов (Core Business Logic v9.0.0).
+ * @description Сервис бизнес-логики заказов (Core Business Logic v9.1.1).
  * Отвечает за:
- * 1. Сверхточный инженерный расчет сметы (Detailed Complex Estimation).
- * 2. Финансовое ядро (Net Profit, Expenses, Custom Overrides).
- * 3. Динамическое ценообразование на основе данных из БД.
- * 4. Автоматическую генерацию спецификации материалов (BOM Generator).
- * 5. Управление жизненным циклом заказа (State Machine).
- *
- * Архитектура: Enterprise ERP Module (Self-Contained).
+ * 1. Инженерный расчет сметы (Бурение и точки разделены).
+ * 2. Финансовое ядро (Self-Healing Expenses & Net Profit).
+ * 3. Динамическое ценообразование (Pricelist Template).
+ * 4. Автогенерацию массива BOM.
  *
  * @module OrderService
- * @version 9.0.0 (Enterprise ERP Edition)
+ * @version 9.1.1 (Enterprise ERP Edition - Bugfix)
  */
 
 import * as db from "../database/index.js";
@@ -35,9 +32,6 @@ export const ORDER_STATUS = Object.freeze({
   ARCHIVED: "archived",
 });
 
-/**
- * Словарь для маппинга системных ключей стен в читаемый вид (Исправление бага "Стены: wall_")
- */
 const WALL_NAMES = Object.freeze({
   wall_gas: "Газоблок / ГКЛ",
   wall_brick: "Кирпич",
@@ -45,61 +39,115 @@ const WALL_NAMES = Object.freeze({
 });
 
 /**
- * Ключи настроек в таблице `settings` (Расширенная модель v9.0)
+ * 🔥 ДИНАМИЧЕСКИЙ ПРАЙС-ЛИСТ (v9.1.1)
+ * Бурение лунок и монтаж механизмов теперь полностью разделены.
  */
-const DB_KEYS = Object.freeze({
-  // Штробы
-  STROBE_GAS: "price_strobe_gas",
-  STROBE_BRICK: "price_strobe_brick",
-  STROBE_CONCRETE: "price_strobe_concrete",
+export const PRICELIST_TEMPLATE = [
+  {
+    category: "🧱 Черновые работы (Подготовка)",
+    items: [
+      {
+        key: "price_strobe_concrete",
+        name: "Штробление (Бетон/Монолит)",
+        default: 1000,
+        unit: "₸/м",
+      },
+      {
+        key: "price_strobe_brick",
+        name: "Штробление (Кирпич)",
+        default: 700,
+        unit: "₸/м",
+      },
+      {
+        key: "price_strobe_gas",
+        name: "Штробление (Газоблок/ГКЛ)",
+        default: 500,
+        unit: "₸/м",
+      },
+      {
+        key: "price_drill_concrete",
+        name: "Бурение лунки под точку",
+        default: 500,
+        unit: "₸/шт",
+      },
+    ],
+  },
+  {
+    category: "⚡️ Кабельные трассы",
+    items: [
+      {
+        key: "price_cable_base",
+        name: "Прокладка кабеля (открыто)",
+        default: 455,
+        unit: "₸/м",
+      },
+      {
+        key: "price_cable_corrugated",
+        name: "Затяжка в гофру (+к базе)",
+        default: 200,
+        unit: "₸/м",
+      },
+      {
+        key: "price_cable_channel",
+        name: "Монтаж кабель-канала (+к базе)",
+        default: 90,
+        unit: "₸/м",
+      },
+    ],
+  },
+  {
+    category: "🔌 Электроточки и Оборудование",
+    items: [
+      {
+        key: "price_point_socket",
+        name: "Монтаж розетки/выключателя",
+        default: 800,
+        unit: "₸/шт",
+      },
+      {
+        key: "price_point_box",
+        name: "Распаечная коробка (сварка/монтаж)",
+        default: 1200,
+        unit: "₸/шт",
+      },
+      {
+        key: "price_point_chandelier",
+        name: "Монтаж люстры/светильника",
+        default: 3500,
+        unit: "₸/шт",
+      },
+    ],
+  },
+  {
+    category: "🛡 Сборка электрощита",
+    items: [
+      {
+        key: "price_shield_base_24",
+        name: "Базовая сборка (до 24 мод.)",
+        default: 9000,
+        unit: "₸/шт",
+      },
+      {
+        key: "price_shield_extra_module",
+        name: "Доп. модуль свыше 24",
+        default: 500,
+        unit: "₸/шт",
+      },
+    ],
+  },
+];
 
-  // Точки (Детализация)
-  POINT_SOCKET: "price_point_socket",
-  POINT_BOX: "price_point_box",
-  POINT_CHANDELIER: "price_point_chandelier",
-
-  // Кабель (База + Надбавки)
-  CABLE_BASE: "price_cable_base",
-  CABLE_CORRUGATED_ADDER: "price_cable_corrugated",
-  CABLE_CHANNEL_ADDER: "price_cable_channel",
-
-  // Щит
-  SHIELD_BASE_24: "price_shield_base_24",
-  SHIELD_EXTRA_MODULE: "price_shield_extra_module",
-
-  MAT_FACTOR: "material_factor",
-});
-
-/**
- * Инженерные эвристики (Heuristics v9.0).
- * Статистические формулы для расчета идеальных объемов работ.
- */
 const ESTIMATE_RULES = Object.freeze({
   cablePerSqm: 6.5,
-  cableRatioCorr: 0.7, // 70% кабеля в гофре
-  cableRatioBase: 0.2, // 20% голый кабель (потолок/лотки)
-  cableRatioChan: 0.1, // 10% в кабель-канале
-
+  cableRatioCorr: 0.7,
+  cableRatioBase: 0.2,
+  cableRatioChan: 0.1,
   strobeFactor: 0.9,
-
-  socketsPerSqm: 0.7, // Розеток/выключателей на м2
-  boxesPerRoom: 1.5, // Распредкоробок на комнату
-  chandeliersPerRoom: 1.0, // Люстр на комнату
-
+  socketsPerSqm: 0.7,
+  boxesPerRoom: 1.5,
+  chandeliersPerRoom: 1.0,
   minShieldModules: 12,
-  shieldModulesStep: 15, // +1 модуль за каждые 15м2 свыше 40м2
-});
-
-/**
- * Цены по умолчанию (Fallback Strategy v9.0).
- * Строго по ТЗ для версии 9.0.0.
- */
-const DEFAULT_PRICING = Object.freeze({
-  strobe: { concrete: 1000, brick: 700, gas: 500 },
-  points: { socket: 800, box: 1200, chandelier: 3500 },
-  cable: { base: 455, corrugatedAdder: 200, channelAdder: 90 },
-  shield: { base24: 9000, extraModule: 500 },
-  common: { matFactor: 0.45 },
+  shieldModulesStep: 15,
 });
 
 // =============================================================================
@@ -110,137 +158,119 @@ export const OrderService = {
   ORDER_STATUS,
 
   /**
-   * 🏗 Расширенный расчет сметы (ERP Complex Estimate v9.0).
-   *
-   * @param {number} area - Площадь (м²)
-   * @param {number} rooms - Комнат (шт)
-   * @param {string} wallKey - Системный ключ стен ('wall_gas', 'wall_brick', 'wall_concrete')
+   * 📋 Выгрузка актуального прайс-листа для Web CRM и Telegram Бота.
    */
-  async calculateComplexEstimate(area, rooms, wallKey) {
+  async getPublicPricelist() {
     const settings = await db.getSettings();
+    const result = [];
 
-    const getPrice = (dbKey, fallbackValue) => {
-      const val = parseFloat(settings[dbKey]);
-      return !isNaN(val) && val > 0 ? val : fallbackValue;
+    for (const section of PRICELIST_TEMPLATE) {
+      const activeItems = section.items.map((item) => {
+        const val = parseFloat(settings[item.key]);
+        const currentPrice = !isNaN(val) && val > 0 ? val : item.default;
+        return { ...item, currentPrice };
+      });
+      result.push({ category: section.category, items: activeItems });
+    }
+    return result;
+  },
+
+  /**
+   * 🏗 Инженерный расчет сметы (Разделенное бурение и механизмы).
+   */
+  async calculateComplexEstimate(areaRaw, roomsRaw, wallKey) {
+    const settings = await db.getSettings();
+    const area = parseFloat(areaRaw) || 0;
+    const rooms = parseInt(roomsRaw, 10) || 1;
+
+    const getPrice = (key) => {
+      const val = parseFloat(settings[key]);
+      if (!isNaN(val) && val > 0) return val;
+      for (const cat of PRICELIST_TEMPLATE) {
+        const item = cat.items.find((i) => i.key === key);
+        if (item) return item.default;
+      }
+      return 0;
     };
 
-    // 1. Извлечение тарифов (Pricing Extraction)
-    let priceStrobe = 0;
-    switch (wallKey) {
-      case "wall_gas":
-        priceStrobe = getPrice(DB_KEYS.STROBE_GAS, DEFAULT_PRICING.strobe.gas);
-        break;
-      case "wall_brick":
-        priceStrobe = getPrice(
-          DB_KEYS.STROBE_BRICK,
-          DEFAULT_PRICING.strobe.brick,
-        );
-        break;
-      case "wall_concrete":
-      default:
-        priceStrobe = getPrice(
-          DB_KEYS.STROBE_CONCRETE,
-          DEFAULT_PRICING.strobe.concrete,
-        );
-        break;
-    }
+    // 1. Тарифы
+    let priceStrobe = getPrice("price_strobe_concrete");
+    if (wallKey === "wall_gas") priceStrobe = getPrice("price_strobe_gas");
+    if (wallKey === "wall_brick") priceStrobe = getPrice("price_strobe_brick");
 
-    const pricePointSocket = getPrice(
-      DB_KEYS.POINT_SOCKET,
-      DEFAULT_PRICING.points.socket,
-    );
-    const pricePointBox = getPrice(
-      DB_KEYS.POINT_BOX,
-      DEFAULT_PRICING.points.box,
-    );
-    const pricePointChandelier = getPrice(
-      DB_KEYS.POINT_CHANDELIER,
-      DEFAULT_PRICING.points.chandelier,
-    );
+    const priceDrill = getPrice("price_drill_concrete"); // Отдельная цена бурения
+    const pricePointSocket = getPrice("price_point_socket");
+    const pricePointBox = getPrice("price_point_box");
+    const pricePointChandelier = getPrice("price_point_chandelier");
 
-    const priceCableBase = getPrice(
-      DB_KEYS.CABLE_BASE,
-      DEFAULT_PRICING.cable.base,
-    );
-    const priceCableCorrAdd = getPrice(
-      DB_KEYS.CABLE_CORRUGATED_ADDER,
-      DEFAULT_PRICING.cable.corrugatedAdder,
-    );
-    const priceCableChanAdd = getPrice(
-      DB_KEYS.CABLE_CHANNEL_ADDER,
-      DEFAULT_PRICING.cable.channelAdder,
-    );
+    const priceCableBase = getPrice("price_cable_base");
+    const priceCableCorrAdd = getPrice("price_cable_corrugated");
+    const priceCableChanAdd = getPrice("price_cable_channel");
 
-    const priceShieldBase24 = getPrice(
-      DB_KEYS.SHIELD_BASE_24,
-      DEFAULT_PRICING.shield.base24,
-    );
-    const priceShieldExtra = getPrice(
-      DB_KEYS.SHIELD_EXTRA_MODULE,
-      DEFAULT_PRICING.shield.extraModule,
-    );
+    const priceShieldBase24 = getPrice("price_shield_base_24");
+    const priceShieldExtra = getPrice("price_shield_extra_module");
 
-    const matFactor = getPrice(
-      DB_KEYS.MAT_FACTOR,
-      DEFAULT_PRICING.common.matFactor,
-    );
-
-    // 2. Инженерный расчет объемов (Volume Calculus)
+    // 2. Объемы
     const volStrobe = Math.ceil(area * ESTIMATE_RULES.strobeFactor);
-
-    // Кабель
     const totalCable = Math.ceil(area * ESTIMATE_RULES.cablePerSqm);
     const volCableCorr = Math.ceil(totalCable * ESTIMATE_RULES.cableRatioCorr);
     const volCableBase = Math.ceil(totalCable * ESTIMATE_RULES.cableRatioBase);
-    const volCableChan = totalCable - volCableCorr - volCableBase; // Остаток
+    const volCableChan = totalCable - volCableCorr - volCableBase;
 
-    // Точки
     const volSockets = Math.ceil(area * ESTIMATE_RULES.socketsPerSqm);
     const volBoxes = Math.ceil(rooms * ESTIMATE_RULES.boxesPerRoom);
     const volChandeliers = Math.ceil(rooms * ESTIMATE_RULES.chandeliersPerRoom);
     const totalPoints = volSockets + volBoxes + volChandeliers;
 
-    // Щит
+    // Объем бурения (розетки + коробки)
+    const volDrill = volSockets + volBoxes;
+
     const volModules = Math.max(
       ESTIMATE_RULES.minShieldModules,
       Math.ceil(12 + Math.max(0, area - 40) / ESTIMATE_RULES.shieldModulesStep),
     );
 
-    // 3. Калькуляция стоимости (Cost Aggregation)
+    // 3. Калькуляция
     const costStrobe = volStrobe * priceStrobe;
+    const costDrillTotal = volDrill * priceDrill; // Сумма за бурение
 
-    const costCableBase = volCableBase * priceCableBase;
-    const costCableCorr = volCableCorr * (priceCableBase + priceCableCorrAdd);
-    const costCableChan = volCableChan * (priceCableBase + priceCableChanAdd);
-    const costCableTotal = costCableBase + costCableCorr + costCableChan;
+    const costCableTotal =
+      volCableBase * priceCableBase +
+      volCableCorr * (priceCableBase + priceCableCorrAdd) +
+      volCableChan * (priceCableBase + priceCableChanAdd);
 
-    const costSockets = volSockets * pricePointSocket;
-    const costBoxes = volBoxes * pricePointBox;
-    const costChandeliers = volChandeliers * pricePointChandelier;
-    const costPointsTotal = costSockets + costBoxes + costChandeliers;
+    const costPointsTotal =
+      volSockets * pricePointSocket +
+      volBoxes * pricePointBox +
+      volChandeliers * pricePointChandelier;
 
     const costShield =
       volModules <= 24
         ? priceShieldBase24
         : priceShieldBase24 + (volModules - 24) * priceShieldExtra;
 
-    // Итого Работа
-    const totalWorkRaw =
-      costStrobe + costCableTotal + costPointsTotal + costShield;
-    const grandTotalWork = Math.ceil(totalWorkRaw / 500) * 500; // Округление до 500 ₸
+    // Итого работа
+    const grandTotalWork =
+      Math.ceil(
+        (costStrobe +
+          costDrillTotal +
+          costCableTotal +
+          costPointsTotal +
+          costShield) /
+          500,
+      ) * 500;
+    const materialInfo = Math.ceil(grandTotalWork * 0.45);
 
-    const infoMaterial = Math.ceil(grandTotalWork * matFactor);
-
-    // 4. Формирование DTO ответа
+    // 4. Формирование DTO
     const estimateDTO = {
       params: {
         area,
         rooms,
         wallTypeRaw: wallKey,
-        wallType: WALL_NAMES[wallKey] || wallKey, // ИСПРАВЛЕНИЕ: Читаемое название стен
+        wallType: WALL_NAMES[wallKey] || wallKey,
       },
       volume: {
-        points: totalPoints, // Для совместимости со старым кодом
+        points: totalPoints,
         detailedPoints: {
           sockets: volSockets,
           boxes: volBoxes,
@@ -257,26 +287,26 @@ export const OrderService = {
       },
       breakdown: {
         strobe: costStrobe,
+        drill: costDrillTotal,
         cable: costCableTotal,
         points: costPointsTotal,
         shield: costShield,
       },
       total: {
         work: grandTotalWork,
-        material_info: infoMaterial,
+        material_info: materialInfo,
         grandTotal: grandTotalWork,
       },
     };
 
-    // 5. Внедрение новой функции: Спецификация материалов (BOM)
+    // Строгий массив спецификации (BOM)
     estimateDTO.bom = this.generateMaterialSpecification(estimateDTO.volume);
 
     return estimateDTO;
   },
 
   /**
-   * 🛠 НОВАЯ ФУНКЦИЯ: Авто-генератор спецификации (BOM Generator).
-   * Прогнозирует список закупаемых материалов на основе объемов.
+   * 🛠 Генератор массива спецификации (BOM Generator)
    */
   generateMaterialSpecification(volumes) {
     return [
@@ -329,60 +359,28 @@ export const OrderService = {
   },
 
   /**
-   * 📋 Выгрузка актуального прайс-листа для клиента.
-   */
-  async getPublicPricelist() {
-    const settings = await db.getSettings();
-    const getPrice = (dbKey, fallbackValue) => {
-      const val = parseFloat(settings[dbKey]);
-      return !isNaN(val) && val > 0 ? val : fallbackValue;
-    };
-
-    return {
-      cable: getPrice(DB_KEYS.CABLE_BASE, DEFAULT_PRICING.cable.base),
-      socket: getPrice(DB_KEYS.POINT_SOCKET, DEFAULT_PRICING.points.socket),
-      strobeConcrete: getPrice(
-        DB_KEYS.STROBE_CONCRETE,
-        DEFAULT_PRICING.strobe.concrete,
-      ),
-      strobeBrick: getPrice(DB_KEYS.STROBE_BRICK, DEFAULT_PRICING.strobe.brick),
-      strobeGas: getPrice(DB_KEYS.STROBE_GAS, DEFAULT_PRICING.strobe.gas),
-      drillConcrete: "Включено в розетку", // Логика v9 объединяет лунку и монтаж
-      shield:
-        getPrice(DB_KEYS.SHIELD_BASE_24, DEFAULT_PRICING.shield.base24) +
-        " (до 24 мод.)",
-    };
-  },
-
-  /**
-   * 📝 Создание заказа с инициализацией Финансового Блока (ERP Module).
+   * 📝 Создание заказа (Фикс проблемы "null м2")
    */
   async createOrder(userId, estimate) {
-    // Формируем начальный финансовый слепок заказа
+    const area = estimate.params?.area || 0;
+
     const financials = {
-      final_price: estimate.total.work, // Итоговая цена (можно будет менять вручную)
-      total_expenses: 0, // Сумма всех расходов (такси, материалы за счет фирмы)
-      net_profit: estimate.total.work, // Чистая прибыль (Цена - Расходы)
-      expenses: [], // Массив истории расходов
+      final_price: estimate.total.work,
+      total_expenses: 0,
+      net_profit: estimate.total.work,
+      expenses: [],
     };
 
     const orderData = {
-      area: estimate.params.area,
+      area: area,
       price: estimate.total.work,
-      details: { ...estimate, financials }, // Упаковываем всё в JSONB
+      details: { ...estimate, financials },
     };
 
     return await db.createOrder(userId, orderData);
   },
 
-  /**
-   * 🔄 Смена статуса заказа.
-   */
   async updateOrderStatus(orderId, newStatus) {
-    const valid = Object.values(ORDER_STATUS);
-    if (!valid.includes(newStatus))
-      throw new Error(`Invalid status: ${newStatus}`);
-
     await db.query(
       "UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2",
       [newStatus, orderId],
@@ -390,9 +388,6 @@ export const OrderService = {
     return true;
   },
 
-  /**
-   * 📍 Сохранение метаданных (Адрес, Комментарий и т.д.).
-   */
   async updateOrderDetails(orderId, key, value) {
     const order = await this.getOrderById(orderId);
     if (!order) throw new Error("Заказ не найден");
@@ -408,20 +403,24 @@ export const OrderService = {
   },
 
   // ===========================================================================
-  // 3. 💸 ФИНАНСОВОЕ УПРАВЛЕНИЕ ЗАКАЗОМ (НОВЫЕ ФУНКЦИИ v9.0)
+  // 3. 💸 ФИНАНСОВОЕ УПРАВЛЕНИЕ (SELF-HEALING ERP)
   // ===========================================================================
 
-  /**
-   * 💰 Установка кастомной итоговой цены (Переопределение сметы).
-   * Вызывается, если Владелец договорился на скидку или допы.
-   */
   async updateOrderFinalPrice(orderId, newPrice) {
     const order = await this.getOrderById(orderId);
     if (!order) throw new Error("Заказ не найден");
 
-    const details = order.details;
-    if (!details.financials)
-      details.financials = { expenses: [], total_expenses: 0 };
+    const details = order.details || {};
+
+    // Self-Healing: Инициализация финансового блока, если его убили старые версии
+    if (!details.financials) {
+      details.financials = {
+        final_price: parseFloat(order.total_price) || 0,
+        expenses: [],
+        total_expenses: 0,
+        net_profit: 0,
+      };
+    }
 
     details.financials.final_price = parseFloat(newPrice);
     details.financials.net_profit =
@@ -431,33 +430,36 @@ export const OrderService = {
       "UPDATE orders SET total_price = $1, details = $2, updated_at = NOW() WHERE id = $3",
       [details.financials.final_price, details, orderId],
     );
+
     return details.financials;
   },
 
-  /**
-   * 💸 Добавление расхода по объекту (Такси, Буры, Докупка за счет фирмы).
-   * Автоматически пересчитывает Net Profit.
-   */
   async addOrderExpense(orderId, amount, category, comment, userId) {
     const order = await this.getOrderById(orderId);
     if (!order) throw new Error("Заказ не найден");
 
-    const details = order.details;
+    const details = order.details || {};
+
+    // Self-Healing: Гарантируем наличие массива expenses, чтобы не ловить Cannot read 'length'
     if (!details.financials) {
       details.financials = {
-        final_price: order.total_price,
+        final_price: parseFloat(order.total_price) || 0,
         expenses: [],
         total_expenses: 0,
+        net_profit: 0,
       };
+    }
+    if (!Array.isArray(details.financials.expenses)) {
+      details.financials.expenses = [];
     }
 
     const expenseItem = {
       id: Date.now().toString(),
       amount: parseFloat(amount),
-      category,
-      comment,
+      category: category || "Прочее",
+      comment: comment || "",
       date: new Date().toISOString(),
-      added_by: userId,
+      added_by: userId || "admin",
     };
 
     details.financials.expenses.push(expenseItem);
@@ -470,26 +472,29 @@ export const OrderService = {
       [details, orderId],
     );
 
-    // Логируем в отдельную таблицу object_expenses для сквозной аналитики
-    await db.query(
-      "INSERT INTO object_expenses (order_id, amount, category, comment, created_at) VALUES ($1, $2, $3, $4, NOW())",
-      [orderId, expenseItem.amount, category, comment],
-    );
+    try {
+      await db.query(
+        "INSERT INTO object_expenses (order_id, amount, category, comment, created_at) VALUES ($1, $2, $3, $4, NOW())",
+        [orderId, expenseItem.amount, category, comment],
+      );
+    } catch (e) {
+      console.warn(
+        "History write skipped (object_expenses table might not exist):",
+        e.message,
+      );
+    }
 
     return details.financials;
   },
 
   // ===========================================================================
-  // 4. 📊 АНАЛИТИКА И РЕТЕНШН
+  // 4. 📊 АНАЛИТИКА (DASHBOARD)
   // ===========================================================================
 
-  /**
-   * 📈 Аналитика для Дашборда (Теперь с учетом Net Profit).
-   */
   async getAdminStats() {
     const result = await db.query(`
       SELECT status, COUNT(*) as count, SUM(total_price) as sum,
-             SUM((details->'financials'->>'net_profit')::numeric) as net_profit_sum
+             SUM(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)) as net_profit_sum
       FROM orders
       GROUP BY status
     `);
@@ -499,9 +504,9 @@ export const OrderService = {
       (s) => (stats[s] = { count: 0, sum: 0, netProfit: 0 }),
     );
 
-    let totalRevenue = 0;
-    let totalNetProfit = 0;
-    let potentialRevenue = 0;
+    let totalRevenue = 0,
+      totalNetProfit = 0,
+      potentialRevenue = 0;
 
     for (const row of result.rows) {
       const s = row.status;
@@ -516,23 +521,21 @@ export const OrderService = {
         totalRevenue += val.sum;
         totalNetProfit += val.netProfit;
       }
-
       if (
         ![
           ORDER_STATUS.CANCELED,
           ORDER_STATUS.ARCHIVED,
           ORDER_STATUS.DRAFT,
         ].includes(s)
-      ) {
+      )
         potentialRevenue += val.sum;
-      }
     }
 
     return {
       breakdown: stats,
       metrics: {
         totalRevenue,
-        totalNetProfit, // Чистая прибыль для владельца!
+        totalNetProfit,
         potentialRevenue,
         activeCount:
           stats[ORDER_STATUS.WORK].count + stats[ORDER_STATUS.PROCESSING].count,
@@ -540,19 +543,13 @@ export const OrderService = {
     };
   },
 
-  /**
-   * ♻️ Поиск "Брошенных корзин" (Лиды без действий).
-   */
   async getAbandonedCarts() {
     return (
       await db.query(
         `
       SELECT o.id, o.user_id, u.first_name, o.total_price, o.created_at
-      FROM orders o
-      JOIN users u ON o.user_id = u.telegram_id
-      WHERE o.status IN ($1, $2)
-      AND o.created_at < NOW() - INTERVAL '24 hours'
-      AND o.created_at > NOW() - INTERVAL '72 hours'
+      FROM orders o JOIN users u ON o.user_id = u.telegram_id
+      WHERE o.status IN ($1, $2) AND o.created_at < NOW() - INTERVAL '24 hours' AND o.created_at > NOW() - INTERVAL '72 hours'
     `,
         [ORDER_STATUS.NEW, ORDER_STATUS.DRAFT],
       )
