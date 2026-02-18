@@ -1,29 +1,32 @@
 /**
  * @file public/js/app.js
- * @description SPA Controller v8.0 (Enterprise CRM Edition).
- * Управляет интерфейсом, заказами, редактором цен и массовой рассылкой.
- * Написан на Vanilla JS с применением паттернов Singleton и Event Delegation.
+ * @description Frontend Application Controller (SPA Logic v9.0.0).
+ * Управляет состоянием интерфейса, модальными окнами, финансовыми операциями
+ * и связывает разметку admin.html с методами api.js.
  *
- * @author ProElectric Team
+ * @module AppController
+ * @version 9.0.0 (Enterprise ERP Edition)
  */
 
+import { API } from "./api.js";
+
 // =============================================================================
-// 🛠 UTILS & HELPERS
+// 1. 🛠 УТИЛИТЫ И ФОРМАТТЕРЫ (UTILITIES)
 // =============================================================================
 
 const Utils = {
-  formatMoney: (num) => {
-    if (num === null || num === undefined || isNaN(num)) return "0 ₸";
+  formatCurrency: (value) => {
+    const num = parseFloat(value) || 0;
     return new Intl.NumberFormat("ru-KZ", {
       style: "currency",
       currency: "KZT",
       maximumFractionDigits: 0,
     }).format(num);
   },
-
-  formatDate: (isoDate) => {
-    if (!isoDate) return "—";
-    return new Date(isoDate).toLocaleDateString("ru-RU", {
+  formatDate: (dateString) => {
+    if (!dateString) return "—";
+    const d = new Date(dateString);
+    return d.toLocaleString("ru-RU", {
       day: "2-digit",
       month: "2-digit",
       year: "numeric",
@@ -31,597 +34,553 @@ const Utils = {
       minute: "2-digit",
     });
   },
+  showToast: (message, type = "info") => {
+    const container = document.getElementById("toastContainer");
+    const toast = document.createElement("div");
+    toast.className = `toast toast-${type}`;
 
-  escapeHtml: (unsafe) => {
-    if (typeof unsafe !== "string") return unsafe;
-    return unsafe
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
+    let icon = "info";
+    if (type === "success") icon = "check-circle";
+    if (type === "error") icon = "alert-circle";
+
+    toast.innerHTML = `<i data-feather="${icon}"></i> <span>${message}</span>`;
+    container.appendChild(toast);
+    feather.replace();
+
+    setTimeout(() => toast.classList.add("show"), 10);
+    setTimeout(() => {
+      toast.classList.remove("show");
+      setTimeout(() => toast.remove(), 300);
+    }, 3000);
   },
 };
 
 // =============================================================================
-// 🍞 TOAST NOTIFICATIONS (Система уведомлений)
+// 2. 🧠 СТЭЙТ И ИНИЦИАЛИЗАЦИЯ (STATE MANAGEMENT)
 // =============================================================================
 
-class Toaster {
-  constructor() {
-    this.container = document.createElement("div");
-    this.container.className = "toast-container";
-    document.body.appendChild(this.container);
-    this._injectStyles();
-  }
+const State = {
+  currentView: "dashboardView",
+  orders: [],
+  users: [],
+  selectedOrderId: null,
+};
 
-  _injectStyles() {
-    if (document.getElementById("toast-styles")) return;
-    const css = `
-      .toast-container { position: fixed; top: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 12px; pointer-events: none; }
-      .toast { pointer-events: auto; min-width: 320px; padding: 16px 20px; border-radius: 10px; background: #fff; box-shadow: 0 10px 25px rgba(0,0,0,0.1); display: flex; align-items: center; justify-content: space-between; animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1); border-left: 4px solid #3b82f6; }
-      .toast.success { border-left-color: #10b981; } 
-      .toast.error { border-left-color: #ef4444; } 
-      .toast.warning { border-left-color: #f59e0b; }
-      .toast-content { display: flex; align-items: center; gap: 14px; font-weight: 500; font-size: 14px; color: #111827; }
-      .toast-close { cursor: pointer; color: #9ca3af; background: none; border: none; font-size: 20px; line-height: 1; padding: 0; transition: color 0.2s; }
-      .toast-close:hover { color: #111827; }
-      @keyframes slideIn { from { transform: translateX(120%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-      @keyframes fadeOut { to { transform: translateX(120%); opacity: 0; } }
-    `;
-    const style = document.createElement("style");
-    style.id = "toast-styles";
-    style.textContent = css;
-    document.head.appendChild(style);
-  }
+document.addEventListener("DOMContentLoaded", async () => {
+  bindAuthEvents();
+  await checkSession();
+});
 
-  show(msg, type = "success") {
-    const icons = {
-      success: "check-circle",
-      error: "alert-octagon",
-      warning: "alert-triangle",
-      info: "info",
-    };
-    const toast = document.createElement("div");
-    toast.className = `toast ${type}`;
-    toast.innerHTML = `
-      <div class="toast-content"><i data-feather="${icons[type] || icons.info}"></i><span>${msg}</span></div>
-      <button class="toast-close">&times;</button>
-    `;
-    this.container.appendChild(toast);
+// =============================================================================
+// 3. 🔐 АВТОРИЗАЦИЯ И НАВИГАЦИЯ (AUTH & ROUTING)
+// =============================================================================
 
-    // Инициализация иконки (Feather)
-    if (window.feather) feather.replace();
-
-    // Авто-удаление
-    const timeout = setTimeout(
-      () => this._removeToast(toast),
-      type === "error" ? 5000 : 3000,
-    );
-
-    // Удаление по клику
-    toast.querySelector(".toast-close").onclick = () => {
-      clearTimeout(timeout);
-      this._removeToast(toast);
-    };
-  }
-
-  _removeToast(toast) {
-    toast.style.animation =
-      "fadeOut 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards";
-    setTimeout(() => toast.remove(), 300);
+async function checkSession() {
+  try {
+    const res = await API.checkAuth();
+    if (res.authenticated) {
+      document.getElementById("loginView").classList.remove("active");
+      document.getElementById("appLayout").style.display = "flex";
+      initApp();
+    } else {
+      showLogin();
+    }
+  } catch (e) {
+    showLogin();
   }
 }
-const toast = new Toaster();
 
-// =============================================================================
-// 🚀 MAIN APP CONTROLLER
-// =============================================================================
+function showLogin() {
+  document.getElementById("loginView").classList.add("active");
+  document.getElementById("appLayout").style.display = "none";
+}
 
-class Application {
-  constructor() {
-    this.state = {
-      orders: [],
-      settings: {},
-      currentTab: "dashboard",
-      filterStatus: "all",
-    };
-
-    // Глобальные словари
-    this.statusMap = {
-      draft: { label: "Черновик", color: "badge-default" },
-      new: { label: "Новый лид", color: "badge-new" },
-      processing: { label: "В обработке", color: "badge-work" },
-      work: { label: "На монтаже", color: "badge-work" },
-      payment: { label: "Ждет оплату", color: "badge-warning" },
-      done: { label: "Сдан", color: "badge-done" },
-      cancel: { label: "Отказ", color: "badge-cancel" },
-    };
-
-    this.settingsSchema = {
-      price_strobe_concrete: "Штробление (Бетон)",
-      price_strobe_brick: "Штробление (Кирпич)",
-      price_strobe_gas: "Штробление (Газоблок)",
-      price_drill_concrete: "Точка подрозетника (Бетон)",
-      price_drill_brick: "Точка подрозетника (Кирпич)",
-      price_drill_gas: "Точка подрозетника (Газоблок)",
-      price_cable: "Прокладка кабеля (м)",
-      price_socket_install: "Монтаж мех-ма розетки (шт)",
-      price_shield_module: "Сборка щита (за модуль)",
-      material_factor: "Коэффициент материалов (Например: 0.45)",
-    };
-
-    this.init();
-  }
-
-  async init() {
-    this.cacheDOM();
-    this.bindEvents();
+function bindAuthEvents() {
+  document.getElementById("loginForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const l = document.getElementById("adminLogin").value;
+    const p = document.getElementById("adminPassword").value;
+    const errDiv = document.getElementById("loginError");
 
     try {
-      const isAuth = await api.checkAuth();
-      if (isAuth) {
-        this.showApp();
-      } else {
-        this.showLogin();
-      }
+      errDiv.style.display = "none";
+      await API.login(l, p);
+      Utils.showToast("Успешный вход. Добро пожаловать, Босс!", "success");
+      checkSession();
+    } catch (error) {
+      errDiv.textContent = error.message;
+      errDiv.style.display = "block";
+    }
+  });
+
+  document.getElementById("logoutBtn").addEventListener("click", async () => {
+    try {
+      await API.logout();
+      window.location.reload();
     } catch (e) {
-      this.showLogin();
+      Utils.showToast("Ошибка при выходе", "error");
     }
+  });
+
+  // Навигация
+  document.querySelectorAll(".nav-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      document
+        .querySelectorAll(".nav-btn")
+        .forEach((b) => b.classList.remove("active"));
+      e.currentTarget.classList.add("active");
+
+      const targetId = e.currentTarget.getAttribute("data-target");
+      document.querySelectorAll(".view-section").forEach((v) => {
+        v.style.display = v.id === targetId ? "block" : "none";
+      });
+
+      State.currentView = targetId;
+      loadViewData(targetId);
+    });
+  });
+}
+
+function initApp() {
+  feather.replace();
+  loadViewData(State.currentView);
+  bindGlobalEvents();
+}
+
+function loadViewData(viewId) {
+  switch (viewId) {
+    case "dashboardView":
+      loadDashboard();
+      break;
+    case "ordersView":
+      loadOrders();
+      break;
+    case "settingsView":
+      loadSettings();
+      break;
+    case "usersView":
+      loadUsers();
+      break;
   }
+}
 
-  cacheDOM() {
-    this.loginScreen = document.getElementById("login-screen");
-    this.appScreen = document.getElementById("app");
-    this.loginForm = document.getElementById("login-form");
-    this.loginError = document.getElementById("login-error");
-    this.dateDisplay = document.getElementById("date-display");
+// =============================================================================
+// 4. 📊 ДАШБОРД (DASHBOARD LOGIC)
+// =============================================================================
 
-    // Модалки
-    this.modals = {
-      details: document.getElementById("modal-update-details"),
-      cancel: document.getElementById("modal-cancel-order"),
-      create: document.getElementById("modal-create-order"),
-    };
-  }
+async function loadDashboard() {
+  try {
+    const data = await API.getStats();
 
-  bindEvents() {
-    // --- Авторизация ---
-    this.loginForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const btn = e.target.querySelector("button");
-      const login = e.target.login.value;
-      const pass = e.target.password.value;
-
-      try {
-        btn.disabled = true;
-        await api.login(login, pass);
-        this.showApp();
-        toast.show("Успешный вход в систему");
-      } catch (err) {
-        this.loginError.textContent = err.message;
-        this.loginError.style.display = "block";
-        toast.show("Ошибка авторизации", "error");
-      } finally {
-        btn.disabled = false;
-      }
-    });
-
-    // --- Навигация (Боковое меню) ---
-    document.querySelectorAll(".menu-item").forEach((item) => {
-      item.addEventListener("click", (e) => {
-        const tab = e.currentTarget.dataset.tab;
-        this.switchTab(tab);
-      });
-    });
-
-    // --- Выход ---
-    document
-      .getElementById("logout-btn")
-      .addEventListener("click", async () => {
-        if (confirm("Завершить сеанс?")) {
-          await api.logout();
-          window.location.reload();
-        }
-      });
-
-    // --- Модальные окна (Глобальное открытие/закрытие) ---
-    document.querySelectorAll('[data-action="open-modal"]').forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        const targetId = e.currentTarget.dataset.target;
-        this.openModal(targetId);
-      });
-    });
-
-    document.querySelectorAll('[data-action="close-modal"]').forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        const targetId = e.currentTarget.dataset.target;
-        this.closeModal(targetId);
-      });
-    });
-
-    // --- Фильтры заказов ---
-    document.querySelectorAll(".filter-btn").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        document
-          .querySelectorAll(".filter-btn")
-          .forEach((b) => b.classList.remove("active"));
-        e.currentTarget.classList.add("active");
-        this.state.filterStatus = e.currentTarget.dataset.filter;
-        this.loadOrders();
-      });
-    });
-
-    // --- Формы (Отправка данных) ---
-    document
-      .getElementById("update-details-form")
-      .addEventListener("submit", this.handleUpdateDetails.bind(this));
-    document
-      .getElementById("cancel-order-form")
-      .addEventListener("submit", this.handleCancelOrder.bind(this));
-    document
-      .getElementById("broadcast-form")
-      .addEventListener("submit", this.handleBroadcast.bind(this));
-
-    // Кнопка принудительного обновления
-    document.querySelectorAll('[data-action="refresh"]').forEach((btn) => {
-      btn.addEventListener("click", () =>
-        this.switchTab(this.state.currentTab),
-      );
-    });
-  }
-
-  // =========================================================================
-  // 🧭 UI ROUTING (Навигация)
-  // =========================================================================
-
-  showApp() {
-    this.loginScreen.classList.add("hidden");
-    this.appScreen.classList.remove("hidden");
-
-    // 🔥 ИСПРАВЛЕНИЕ: Снимаем класс невидимости (cloak) и добавляем видимость
-    this.appScreen.classList.remove("cloak");
-    this.appScreen.classList.add("visible");
-    this.appScreen.setAttribute("aria-hidden", "false");
-
-    // Установка даты
-    const options = {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    };
-    this.dateDisplay.textContent = new Date().toLocaleDateString(
-      "ru-RU",
-      options,
+    document.getElementById("statNetProfit").textContent = Utils.formatCurrency(
+      data.overview.totalNetProfit,
     );
-
-    this.switchTab("dashboard");
-  }
-  showLogin() {
-    this.appScreen.classList.add("hidden");
-    this.loginScreen.classList.remove("hidden");
-  }
-
-  async switchTab(tabName) {
-    this.state.currentTab = tabName;
-
-    // Обновляем визуальное состояние меню
-    document.querySelectorAll(".menu-item").forEach((item) => {
-      item.classList.toggle("active", item.dataset.tab === tabName);
-    });
-
-    // Показываем нужную секцию
-    document.querySelectorAll(".tab-content").forEach((section) => {
-      section.hidden = section.id !== `tab-${tabName}`;
-    });
-
-    // Маршрутизация загрузки данных
-    document.getElementById("loading-indicator").style.opacity = "1";
-
-    try {
-      switch (tabName) {
-        case "dashboard":
-          await this.loadDashboard();
-          break;
-        case "orders":
-          await this.loadOrders();
-          break;
-        case "settings":
-          await this.loadSettings();
-          break;
-      }
-    } catch (err) {
-      toast.show(err.message, "error");
-    } finally {
-      document.getElementById("loading-indicator").style.opacity = "0";
-    }
-  }
-
-  // =========================================================================
-  // 📊 ДАШБОРД (DASHBOARD)
-  // =========================================================================
-
-  async loadDashboard() {
-    const data = await api.getDashboardData();
-
-    // Анимация счетчиков или прямая вставка
-    document.getElementById("kpi-active").textContent =
-      data.overview.pendingOrders || 0;
-    document.getElementById("kpi-done").textContent =
-      data.funnel.done?.count || 0;
-    document.getElementById("kpi-users").textContent =
-      data.overview.totalUsers || 0;
-    document.getElementById("kpi-revenue").textContent = Utils.formatMoney(
+    document.getElementById("statRevenue").textContent = Utils.formatCurrency(
       data.overview.totalRevenue,
     );
+    document.getElementById("statActiveOrders").textContent =
+      data.overview.pendingOrders;
+    document.getElementById("statTotalUsers").textContent =
+      data.overview.totalUsers;
 
-    // Убираем скелетоны
-    document
-      .querySelectorAll(".kpi-value")
-      .forEach((el) => el.classList.remove("skeleton-box"));
+    renderFunnel(data.funnel);
+  } catch (e) {
+    Utils.showToast("Ошибка загрузки статистики", "error");
   }
+}
 
-  // =========================================================================
-  // 📦 ЗАКАЗЫ (ORDERS)
-  // =========================================================================
+function renderFunnel(funnelData) {
+  const container = document.getElementById("funnelChart");
+  container.innerHTML = "";
 
-  async loadOrders() {
-    const tbody = document.getElementById("orders-table-body");
-    const emptyState = document.getElementById("orders-empty");
-    const template = document.getElementById("tpl-order-row");
+  const statuses = [
+    { key: "new", label: "Новые лиды", color: "#3b82f6" },
+    { key: "work", label: "В работе", color: "#f59e0b" },
+    { key: "done", label: "Завершено", color: "#10b981" },
+  ];
 
+  statuses.forEach((s) => {
+    const stat = funnelData[s.key] || { count: 0, sum: 0 };
+    const row = document.createElement("div");
+    row.className = "funnel-row";
+    row.innerHTML = `
+            <div class="funnel-label" style="border-left: 4px solid ${s.color}; padding-left: 10px;">${s.label}</div>
+            <div class="funnel-value"><b>${stat.count}</b> шт.</div>
+            <div class="funnel-sum">${Utils.formatCurrency(stat.sum)}</div>
+        `;
+    container.appendChild(row);
+  });
+}
+
+// =============================================================================
+// 5. 📦 УПРАВЛЕНИЕ ЗАКАЗАМИ (ORDERS & OFFLINE LEADS)
+// =============================================================================
+
+async function loadOrders() {
+  try {
+    const status = document.getElementById("orderStatusFilter").value;
+    State.orders = await API.getOrders(status);
+    const tbody = document.getElementById("ordersTableBody");
     tbody.innerHTML = "";
-    const orders = await api.getOrders(this.state.filterStatus);
-    this.state.orders = orders;
 
-    if (orders.length === 0) {
-      emptyState.classList.remove("hidden");
-      return;
-    }
+    State.orders.forEach((o) => {
+      const financials = o.details?.financials || {};
+      const netProfit =
+        financials.net_profit !== undefined
+          ? financials.net_profit
+          : o.total_price;
 
-    emptyState.classList.add("hidden");
-
-    orders.forEach((o) => {
-      const row = template.content.cloneNode(true).querySelector("tr");
-      const details = o.details || {};
-      const params = details.params || {};
-
-      // ID и Клиент
-      row.querySelector(".order-id").textContent = `#${o.id}`;
-      row.querySelector(".client-name").textContent = Utils.escapeHtml(
-        o.client_name || "Неизвестно",
-      );
-      row.querySelector(".client-phone").textContent = Utils.escapeHtml(
-        o.client_phone || "Нет телефона",
-      );
-
-      // Метаданные (Адрес и коммент)
-      row.querySelector(".order-address").textContent = Utils.escapeHtml(
-        details.address || "📍 Адрес не указан",
-      );
-      if (details.comment) {
-        row.querySelector(".order-comment").textContent =
-          `📝 ${Utils.escapeHtml(details.comment)}`;
-      }
-      if (params.area) {
-        row.querySelector(".order-params").textContent =
-          `🏠 ${params.area}м² | Комнат: ${params.rooms} | Стены: ${params.wallType}`;
-      }
-
-      // Статус
-      const statusInfo = this.statusMap[o.status] || {
-        label: o.status,
-        color: "badge-default",
-      };
-      const badge = row.querySelector(".status-badge");
-      badge.textContent = statusInfo.label;
-      badge.classList.add(statusInfo.color);
-
-      // Финансы (Только работа)
-      row.querySelector(".finance-info").textContent = Utils.formatMoney(
-        o.total_price,
-      );
-
-      // Действия (Кнопки)
-      row.querySelector(".action-edit").onclick = () =>
-        this.triggerEditDetails(o.id);
-
-      const cancelBtn = row.querySelector(".action-cancel");
-      if (["cancel", "done", "archived"].includes(o.status)) {
-        cancelBtn.disabled = true; // Блокируем кнопку, если уже отменен или сдан
-        cancelBtn.style.opacity = "0.3";
-        cancelBtn.style.cursor = "not-allowed";
-      } else {
-        cancelBtn.onclick = () => this.triggerCancelOrder(o.id);
-      }
-
-      tbody.appendChild(row);
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+                <td><b>#${o.id}</b><br><small class="text-muted">${Utils.formatDate(o.created_at)}</small></td>
+                <td>${o.client_name || "Неизвестно"}<br><small>${o.client_phone || "—"}</small></td>
+                <td>${o.area} м²</td>
+                <td><span class="badge badge-${o.status}">${o.status.toUpperCase()}</span></td>
+                <td class="text-success fw-bold">${Utils.formatCurrency(netProfit)}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline" onclick="openOrderModal(${o.id})">
+                        Управление
+                    </button>
+                </td>
+            `;
+      tbody.appendChild(tr);
     });
-
-    if (window.feather) feather.replace();
+  } catch (e) {
+    Utils.showToast("Ошибка загрузки заказов", "error");
   }
+}
 
-  // =========================================================================
-  // ⚙️ НАСТРОЙКИ (SETTINGS / PRICING)
-  // =========================================================================
+window.openOrderModal = (orderId) => {
+  const order = State.orders.find((o) => o.id === orderId);
+  if (!order) return;
+  State.selectedOrderId = order.id;
 
-  async loadSettings() {
-    const grid = document.getElementById("settings-grid");
-    grid.innerHTML = ""; // Clear
+  // Инфо
+  document.getElementById("modalOrderTitle").textContent =
+    `Объект #${order.id} (${order.area} м²)`;
+  document.getElementById("modalClientName").textContent =
+    order.client_name || "Оффлайн клиент";
+  document.getElementById("modalClientPhone").textContent =
+    order.client_phone || "—";
 
-    const data = await api.getSettings();
-    this.state.settings = data;
+  // Статус
+  const statusSelect = document.getElementById("modalOrderStatus");
+  statusSelect.innerHTML = `
+        <option value="new">Новый (Лид)</option>
+        <option value="processing">Взят в расчет</option>
+        <option value="work">В работе</option>
+        <option value="done">Завершен успешно</option>
+        <option value="canceled">Отказ</option>
+    `;
+  statusSelect.value = order.status;
 
-    // Генерируем карточки для каждого параметра из нашей схемы
-    Object.entries(this.settingsSchema).forEach(([key, label]) => {
-      const value = data[key] !== undefined ? data[key] : "";
-
-      const item = document.createElement("div");
-      item.className = "setting-item card p-4";
-
-      item.innerHTML = `
-        <label class="setting-label block font-medium mb-2 text-sm">${label}</label>
-        <div class="input-suffix-wrapper relative">
-            <input type="number" 
-                   class="setting-input form-control w-full" 
-                   data-key="${key}" 
-                   value="${value}" 
-                   step="${key === "material_factor" ? "0.01" : "1"}">
-            <span class="suffix absolute right-3 top-2.5 text-muted">${key === "material_factor" ? "" : "₸"}</span>
-        </div>
-      `;
-
-      // Event Listener для Auto-Save при потере фокуса
-      const input = item.querySelector(".setting-input");
-      input.addEventListener("blur", async (e) => {
-        const newVal = parseFloat(e.target.value);
-        if (isNaN(newVal)) return;
-
-        try {
-          e.target.style.borderColor = "#3b82f6";
-          await api.updateSetting(e.target.dataset.key, newVal);
-          toast.show("Сохранено", "success");
-        } catch (err) {
-          toast.show("Ошибка сохранения", "error");
-          e.target.style.borderColor = "#ef4444";
-        } finally {
-          setTimeout(() => (e.target.style.borderColor = ""), 1000);
-        }
-      });
-
-      grid.appendChild(item);
+  // Спецификация (BOM)
+  const bomList = document.getElementById("modalBOMList");
+  bomList.innerHTML = "";
+  if (order.details?.bom && Array.isArray(order.details.bom)) {
+    order.details.bom.forEach((item) => {
+      const li = document.createElement("li");
+      li.innerHTML = `<span>${item.name}</span> <b>${item.qty} ${item.unit}</b>`;
+      bomList.appendChild(li);
     });
+  } else {
+    bomList.innerHTML =
+      '<li class="text-muted">Спецификация не сгенерирована</li>';
   }
 
-  // =========================================================================
-  // 🎛 МОДАЛЬНЫЕ ОКНА И ФОРМЫ (ACTIONS)
-  // =========================================================================
+  // Финансы (ERP Core)
+  renderOrderFinancials(order);
 
-  openModal(id) {
-    const modal = document.getElementById(id);
-    if (modal) modal.showModal();
-  }
+  document.getElementById("orderModal").style.display = "flex";
+  feather.replace();
+};
 
-  closeModal(id) {
-    const modal = document.getElementById(id);
-    if (modal) {
-      modal.close();
-      const form = modal.querySelector("form");
-      if (form) form.reset();
-    }
-  }
+function renderOrderFinancials(order) {
+  const details = order.details || {};
+  const financials = details.financials || {
+    final_price: order.total_price,
+    total_expenses: 0,
+    net_profit: order.total_price,
+    expenses: [],
+  };
 
-  // --- 1. Редактирование Метаданных (Адрес / Коммент) ---
-  triggerEditDetails(orderId) {
-    // Находим заказ в стейте, чтобы подставить текущие данные
-    const order = this.state.orders.find((o) => o.id === orderId);
-    if (!order) return;
+  document.getElementById("modalCalcPrice").textContent = Utils.formatCurrency(
+    details.total?.work || order.total_price,
+  );
+  document.getElementById("modalFinalPrice").value = financials.final_price;
+  document.getElementById("modalTotalExpenses").textContent =
+    Utils.formatCurrency(financials.total_expenses);
+  document.getElementById("modalNetProfit").textContent = Utils.formatCurrency(
+    financials.net_profit,
+  );
 
-    document.getElementById("details-hidden-id").value = order.id;
-    document.getElementById("details-order-id").textContent = `#${order.id}`;
+  const expensesList = document.getElementById("modalExpensesList");
+  expensesList.innerHTML = "";
 
-    // Подставляем старые данные
-    const details = order.details || {};
-    document.getElementById("details-address").value = details.address || "";
-    document.getElementById("details-comment").value = details.comment || "";
-
-    this.openModal("modal-update-details");
-  }
-
-  async handleUpdateDetails(e) {
-    e.preventDefault();
-    const btn = e.target.querySelector('button[type="submit"]');
-    const orderId = document.getElementById("details-hidden-id").value;
-    const address = document.getElementById("details-address").value.trim();
-    const comment = document.getElementById("details-comment").value.trim();
-
-    try {
-      btn.disabled = true;
-      // Отправляем два запроса. В идеале бэкенд должен принимать объект, но мы сделали по одному ключу
-      if (address) await api.updateOrderDetails(orderId, "address", address);
-      if (comment) await api.updateOrderDetails(orderId, "comment", comment);
-
-      toast.show("Данные заказа обновлены");
-      this.closeModal("modal-update-details");
-      this.loadOrders(); // Перерисовываем таблицу
-    } catch (err) {
-      toast.show(err.message, "error");
-    } finally {
-      btn.disabled = false;
-    }
-  }
-
-  // --- 2. Отмена заказа ---
-  triggerCancelOrder(orderId) {
-    document.getElementById("cancel-hidden-id").value = orderId;
-    this.openModal("modal-cancel-order");
-  }
-
-  async handleCancelOrder(e) {
-    e.preventDefault();
-    const btn = e.target.querySelector('button[type="submit"]');
-    const orderId = document.getElementById("cancel-hidden-id").value;
-    const reason = document.getElementById("cancel-reason-select").value;
-
-    try {
-      btn.disabled = true;
-      // 1. Сохраняем причину отмены
-      await api.updateOrderDetails(orderId, "cancel_reason", reason);
-      // 2. Меняем статус на 'cancel'
-      await api.updateOrderStatus(orderId, "cancel");
-
-      toast.show("Заказ успешно отменен", "warning");
-      this.closeModal("modal-cancel-order");
-      this.loadOrders();
-    } catch (err) {
-      toast.show(err.message, "error");
-    } finally {
-      btn.disabled = false;
-    }
-  }
-
-  // --- 3. Массовая Рассылка ---
-  async handleBroadcast(e) {
-    e.preventDefault();
-    const form = e.target;
-    const btn = form.querySelector('button[type="submit"]');
-
-    const targetRole = form.targetRole.value;
-    const imageUrl = form.imageUrl.value.trim() || null;
-    const text = form.text.value.trim();
-
-    if (
-      !confirm("Вы уверены, что хотите отправить это сообщение пользователям?")
-    )
-      return;
-
-    try {
-      btn.disabled = true;
-      btn.innerHTML = `<i class="animate-spin" data-feather="loader"></i> Отправка...`;
-      if (window.feather) feather.replace();
-
-      const res = await api.sendBroadcast(text, imageUrl, targetRole);
-
-      toast.show(
-        `Рассылка запущена! Примерное время: ${res.estimatedTimeSec} сек.`,
-      );
-      form.reset();
-    } catch (err) {
-      toast.show(err.message, "error");
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = `<i data-feather="send"></i> Запустить рассылку`;
-      if (window.feather) feather.replace();
-    }
+  if (financials.expenses.length === 0) {
+    expensesList.innerHTML =
+      '<div class="text-muted text-center p-1">Нет расходов по объекту</div>';
+  } else {
+    financials.expenses.forEach((exp) => {
+      const div = document.createElement("div");
+      div.className = "expense-item";
+      div.innerHTML = `
+                <div>
+                    <strong>${exp.category}</strong> <small class="text-muted">${Utils.formatDate(exp.date)}</small>
+                    <div class="text-sm">${exp.comment || ""}</div>
+                </div>
+                <div class="text-danger fw-bold">-${Utils.formatCurrency(exp.amount)}</div>
+            `;
+      expensesList.appendChild(div);
+    });
   }
 }
 
 // =============================================================================
-// 🏁 ИНИЦИАЛИЗАЦИЯ
+// 6. 💸 ФИНАНСОВЫЕ ОПЕРАЦИИ И СОБЫТИЯ (ERP ACTIONS)
 // =============================================================================
 
-// Ждем загрузки DOM, чтобы элементы гарантированно существовали
-document.addEventListener("DOMContentLoaded", () => {
-  window.app = new Application();
-});
+function bindGlobalEvents() {
+  // --- ДАШБОРД ---
+  document
+    .getElementById("refreshStatsBtn")
+    .addEventListener("click", loadDashboard);
+
+  // --- ФИЛЬТР ЗАКАЗОВ ---
+  document
+    .getElementById("orderStatusFilter")
+    .addEventListener("change", loadOrders);
+
+  // --- ЗАКРЫТИЕ МОДАЛОК ---
+  document
+    .getElementById("btnCloseOrderModal")
+    .addEventListener("click", () => {
+      document.getElementById("orderModal").style.display = "none";
+      State.selectedOrderId = null;
+    });
+
+  document
+    .getElementById("btnCloseManualModal")
+    .addEventListener("click", () => {
+      document.getElementById("manualOrderModal").style.display = "none";
+    });
+
+  // --- ИЗМЕНЕНИЕ СТАТУСА ЗАКАЗА ---
+  document
+    .getElementById("modalOrderStatus")
+    .addEventListener("change", async (e) => {
+      if (!State.selectedOrderId) return;
+      try {
+        await API.updateOrderStatus(State.selectedOrderId, e.target.value);
+        Utils.showToast("Статус обновлен", "success");
+        loadOrders(); // Обновляем таблицу на фоне
+      } catch (err) {
+        Utils.showToast(err.message, "error");
+      }
+    });
+
+  // --- ОБНОВЛЕНИЕ ФИНАЛЬНОЙ ЦЕНЫ ---
+  document
+    .getElementById("btnUpdateFinalPrice")
+    .addEventListener("click", async () => {
+      if (!State.selectedOrderId) return;
+      const newPrice = document.getElementById("modalFinalPrice").value;
+      try {
+        const newFinancials = await API.updateOrderFinalPrice(
+          State.selectedOrderId,
+          newPrice,
+        );
+        // Обновляем локальный стейт
+        const order = State.orders.find((o) => o.id === State.selectedOrderId);
+        order.details.financials = newFinancials;
+        order.total_price = newFinancials.final_price;
+        renderOrderFinancials(order);
+        loadOrders(); // Обновляем таблицу
+        Utils.showToast("Итоговая цена зафиксирована", "success");
+      } catch (err) {
+        Utils.showToast(err.message, "error");
+      }
+    });
+
+  // --- ДОБАВЛЕНИЕ РАСХОДА (ЧЕКА) ---
+  document
+    .getElementById("btnAddExpense")
+    .addEventListener("click", async () => {
+      if (!State.selectedOrderId) return;
+      const amount = document.getElementById("expenseAmount").value;
+      const category = document.getElementById("expenseCategory").value;
+      const comment = document.getElementById("expenseComment").value;
+
+      if (!amount || amount <= 0)
+        return Utils.showToast("Введите корректную сумму", "error");
+
+      try {
+        const newFinancials = await API.addOrderExpense(
+          State.selectedOrderId,
+          amount,
+          category,
+          comment,
+        );
+
+        // Очистка формы
+        document.getElementById("expenseAmount").value = "";
+        document.getElementById("expenseComment").value = "";
+
+        // Обновляем UI
+        const order = State.orders.find((o) => o.id === State.selectedOrderId);
+        order.details.financials = newFinancials;
+        renderOrderFinancials(order);
+        loadOrders();
+        Utils.showToast("Расход успешно списан", "success");
+      } catch (err) {
+        Utils.showToast(err.message, "error");
+      }
+    });
+
+  // --- СОЗДАНИЕ РУЧНОГО ОФФЛАЙН ЛИДА ---
+  document
+    .getElementById("btnOpenManualOrderModal")
+    .addEventListener("click", () => {
+      document.getElementById("manualOrderModal").style.display = "flex";
+    });
+
+  document
+    .getElementById("formManualOrder")
+    .addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const data = {
+        clientName: document.getElementById("manualName").value,
+        clientPhone: document.getElementById("manualPhone").value,
+        area: document.getElementById("manualArea").value,
+        rooms: document.getElementById("manualRooms").value,
+        wallType: document.getElementById("manualWallType").value,
+      };
+
+      try {
+        await API.createManualOrder(data);
+        document.getElementById("manualOrderModal").style.display = "none";
+        document.getElementById("formManualOrder").reset();
+        Utils.showToast("Оффлайн-заказ успешно создан!", "success");
+        loadOrders();
+      } catch (err) {
+        Utils.showToast(err.message, "error");
+      }
+    });
+
+  // --- РАССЫЛКА (BROADCAST) ---
+  document
+    .getElementById("btnSendBroadcast")
+    .addEventListener("click", async () => {
+      const text = document.getElementById("broadcastText").value;
+      const target = document.getElementById("broadcastTarget").value;
+      const image = document.getElementById("broadcastImage").value;
+
+      if (!text) return Utils.showToast("Введите текст рассылки", "error");
+
+      try {
+        const res = await API.sendBroadcast(text, image, target);
+        Utils.showToast(res.message, "success");
+        document.getElementById("broadcastText").value = "";
+        document.getElementById("broadcastImage").value = "";
+      } catch (err) {
+        Utils.showToast(err.message, "error");
+      }
+    });
+}
+
+// =============================================================================
+// 7. ⚙️ НАСТРОЙКИ ПРАЙСА И ПЕРСОНАЛ (SETTINGS & USERS)
+// =============================================================================
+
+async function loadSettings() {
+  try {
+    const settings = await API.getSettings();
+    const container = document.getElementById("settingsFormContainer");
+    container.innerHTML = "";
+
+    // Выводим только важные для ERP настройки (можно расширить)
+    const keysToRender = [
+      { key: "price_point_socket", label: "Точка: Розетка (₸)" },
+      { key: "price_point_box", label: "Точка: Распредкоробка (₸)" },
+      { key: "price_cable_base", label: "Кабель: База (₸/м)" },
+      { key: "price_shield_base_24", label: "Щит: База до 24 мод. (₸)" },
+    ];
+
+    keysToRender.forEach((k) => {
+      const val = settings[k.key] || "";
+      container.innerHTML += `
+                <div class="form-group">
+                    <label>${k.label}</label>
+                    <input type="number" class="form-control setting-input" data-key="${k.key}" value="${val}">
+                </div>
+            `;
+    });
+  } catch (e) {
+    Utils.showToast("Ошибка загрузки настроек", "error");
+  }
+}
+
+document
+  .getElementById("btnSaveSettings")
+  ?.addEventListener("click", async () => {
+    const inputs = document.querySelectorAll(".setting-input");
+    let errors = 0;
+
+    for (let input of inputs) {
+      const key = input.getAttribute("data-key");
+      const val = input.value;
+      try {
+        await API.updateSetting(key, val);
+      } catch (e) {
+        errors++;
+      }
+    }
+
+    if (errors === 0) Utils.showToast("Прайс успешно обновлен", "success");
+    else Utils.showToast(`Обновлено с ошибками (${errors})`, "error");
+  });
+
+async function loadUsers() {
+  try {
+    State.users = await API.getUsers();
+    const tbody = document.getElementById("usersTableBody");
+    tbody.innerHTML = "";
+
+    State.users.forEach((u) => {
+      const isManager = u.role === "manager";
+      const isAdmin = u.role === "admin" || u.role === "owner";
+
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+                <td>${u.telegram_id}</td>
+                <td>${u.first_name} <br> <small class="text-muted">@${u.username || "нет"}</small></td>
+                <td>${u.phone || "—"}</td>
+                <td>
+                    <select class="form-control form-sm role-select" data-uid="${u.telegram_id}" ${isAdmin ? "disabled" : ""}>
+                        <option value="user" ${u.role === "user" ? "selected" : ""}>Клиент</option>
+                        <option value="manager" ${isManager ? "selected" : ""}>Мастер</option>
+                        ${isAdmin ? `<option value="${u.role}" selected>${u.role.toUpperCase()}</option>` : ""}
+                    </select>
+                </td>
+            `;
+      tbody.appendChild(tr);
+    });
+
+    // Биндинг смены роли
+    document.querySelectorAll(".role-select").forEach((select) => {
+      select.addEventListener("change", async (e) => {
+        const uid = e.target.getAttribute("data-uid");
+        const newRole = e.target.value;
+        try {
+          await API.updateUserRole(uid, newRole);
+          Utils.showToast("Роль обновлена", "success");
+        } catch (err) {
+          Utils.showToast(err.message, "error");
+          loadUsers(); // Откат при ошибке
+        }
+      });
+    });
+  } catch (e) {
+    Utils.showToast("Ошибка загрузки пользователей", "error");
+  }
+}

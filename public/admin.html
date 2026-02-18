@@ -1,490 +1,578 @@
 <!doctype html>
-<html lang="ru" class="antialiased">
+<html lang="ru">
   <head>
     <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
-    />
-    <meta name="theme-color" content="#000000" />
-    <meta name="description" content="ProElectric Enterprise CRM" />
-    <title>ProElectric | CRM</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ProElectric ERP | v9.0 Enterprise</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
+
+    <link rel="stylesheet" href="/css/style.css" />
+
     <script src="https://unpkg.com/feather-icons"></script>
-    <link rel="stylesheet" href="css/style.css" />
-
-    <style>
-      .cloak {
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity 0.3s ease;
-      }
-      .visible {
-        opacity: 1;
-        pointer-events: auto;
-      }
-      [hidden] {
-        display: none !important;
-      }
-    </style>
   </head>
-  <body>
-    <main id="login-screen" class="login-container" role="main">
-      <div class="login-box card-elevation">
-        <header class="login-header">
-          <div class="brand-logo-icon">
-            <i data-feather="zap" stroke-width="1.5"></i>
-          </div>
-          <h1 class="brand-title">ProElectric</h1>
-          <p class="text-secondary">Enterprise Control Panel</p>
-        </header>
+  <body class="pe-theme-dark">
+    <div id="loginView" class="view-section active pe-auth-screen">
+      <div class="pe-auth-card">
+        <div class="pe-auth-logo">
+          <div class="pe-logo-icon"><i data-feather="zap"></i></div>
+          <h2>
+            ProElectric <span class="pe-badge pe-badge-primary">ERP</span>
+          </h2>
+          <p class="pe-text-muted">Enterprise Management System v9.0</p>
+        </div>
 
-        <form id="login-form" novalidate>
-          <div class="form-group">
-            <label for="login" class="sr-only">Логин</label>
-            <div class="input-wrapper">
-              <i data-feather="user" class="input-icon"></i>
+        <form id="loginForm" class="pe-form">
+          <div class="pe-form-group">
+            <label>Логин системы</label>
+            <div class="pe-input-group">
+              <i data-feather="user" class="pe-input-icon"></i>
               <input
                 type="text"
-                id="login"
-                name="login"
-                placeholder="Логин"
+                id="adminLogin"
                 required
-                autofocus
-                autocomplete="username"
+                placeholder="Введите логин"
+                class="pe-input"
               />
             </div>
           </div>
-          <div class="form-group">
-            <label for="password" class="sr-only">Пароль</label>
-            <div class="input-wrapper">
-              <i data-feather="lock" class="input-icon"></i>
+          <div class="pe-form-group">
+            <label>Ключ доступа</label>
+            <div class="pe-input-group">
+              <i data-feather="lock" class="pe-input-icon"></i>
               <input
                 type="password"
-                id="password"
-                name="password"
-                placeholder="Пароль"
+                id="adminPassword"
                 required
-                autocomplete="current-password"
+                placeholder="••••••••"
+                class="pe-input"
               />
             </div>
           </div>
           <button
             type="submit"
-            class="btn primary full"
-            data-loading-text="Аутентификация..."
+            class="pe-btn pe-btn-primary pe-btn-block pe-mt-4"
           >
-            <span>Войти в систему</span>
-            <i data-feather="arrow-right"></i>
+            Авторизация <i data-feather="arrow-right"></i>
           </button>
         </form>
         <div
-          id="login-error"
-          class="error-msg"
-          role="alert"
-          aria-live="polite"
+          id="loginError"
+          class="pe-alert pe-alert-danger pe-mt-4"
+          style="display: none"
         ></div>
       </div>
-    </main>
+      <div class="pe-auth-bg-glow"></div>
+    </div>
 
-    <div id="app" class="app-container cloak" aria-hidden="true">
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="logo-circle">
-            <i data-feather="zap" stroke-width="2"></i>
-          </div>
-          <div class="brand-text">
-            <span class="brand-name">ProElectric</span>
-            <span class="brand-desc">Management</span>
-          </div>
+    <div id="appLayout" class="pe-app-layout" style="display: none">
+      <aside class="pe-sidebar">
+        <div class="pe-sidebar-header">
+          <div class="pe-logo-icon pe-icon-sm"><i data-feather="zap"></i></div>
+          <h3 class="pe-brand-text">ProElectric</h3>
         </div>
 
-        <nav class="menu" role="navigation">
+        <nav class="pe-sidebar-nav">
+          <div class="pe-nav-section">Главное меню</div>
           <button
-            class="menu-item active"
-            data-tab="dashboard"
-            aria-current="page"
+            class="nav-btn pe-nav-item active"
+            data-target="dashboardView"
           >
-            <i data-feather="grid"></i> <span>Сводка</span>
+            <i data-feather="grid"></i> <span>Аналитика</span>
           </button>
-          <button class="menu-item" data-tab="orders">
-            <i data-feather="layers"></i> <span>Заказы</span>
+          <button class="nav-btn pe-nav-item" data-target="ordersView">
+            <i data-feather="briefcase"></i> <span>Объекты</span>
           </button>
-          <button class="menu-item" data-tab="broadcast">
-            <i data-feather="send"></i> <span>Рассылка</span>
-          </button>
-          <button class="menu-item" data-tab="settings">
+
+          <div class="pe-nav-section pe-mt-4">Управление</div>
+          <button class="nav-btn pe-nav-item" data-target="settingsView">
             <i data-feather="sliders"></i> <span>Прайс-лист</span>
+          </button>
+          <button class="nav-btn pe-nav-item" data-target="usersView">
+            <i data-feather="users"></i> <span>Персонал</span>
+          </button>
+          <button class="nav-btn pe-nav-item" data-target="broadcastView">
+            <i data-feather="radio"></i> <span>Рассылка</span>
           </button>
         </nav>
 
-        <div class="sidebar-footer">
-          <button id="logout-btn" class="btn-text-danger" data-action="logout">
-            <i data-feather="log-out"></i> <span>Завершить сеанс</span>
+        <div class="pe-sidebar-footer">
+          <div class="pe-user-profile">
+            <div class="pe-avatar"><i data-feather="shield"></i></div>
+            <div class="pe-user-info">
+              <span class="pe-user-name">Ернияз</span>
+              <span class="pe-user-role">Owner / Architect</span>
+            </div>
+          </div>
+          <button
+            id="logoutBtn"
+            class="pe-btn pe-btn-icon pe-btn-ghost"
+            title="Выход"
+          >
+            <i data-feather="log-out"></i>
           </button>
         </div>
       </aside>
 
-      <main class="main-content">
-        <header class="top-bar">
-          <h2 id="page-title" class="page-title">Сводка данных</h2>
-          <div class="user-info">
-            <div
-              id="loading-indicator"
-              class="loader-spinner"
-              aria-label="Синхронизация..."
-            ></div>
-            <div class="user-meta">
-              <span class="badge admin">Administrator</span>
-              <time id="date-display" class="date-text"></time>
+      <div class="pe-main-wrapper">
+        <header class="pe-topbar">
+          <div class="pe-topbar-left">
+            <h2 class="pe-page-title" id="topbarTitle">Рабочая область</h2>
+          </div>
+          <div class="pe-topbar-right">
+            <div class="pe-system-status">
+              <span class="pe-status-dot"></span> Система online
             </div>
           </div>
         </header>
 
-        <section id="tab-dashboard" class="tab-content active" role="tabpanel">
-          <div class="kpi-grid">
-            <article class="card kpi-card">
-              <div class="kpi-icon"><i data-feather="activity"></i></div>
-              <div class="kpi-info">
-                <h3 class="kpi-label">В работе</h3>
-                <p id="kpi-active" class="kpi-value skeleton-box">0</p>
+        <main class="pe-content">
+          <section id="dashboardView" class="view-section pe-view">
+            <div class="pe-section-header">
+              <div>
+                <h2 class="pe-h2">Финансовая сводка</h2>
+                <p class="pe-text-muted">
+                  Аналитика по всем объектам и воронка продаж
+                </p>
               </div>
-            </article>
-            <article class="card kpi-card">
-              <div class="kpi-icon"><i data-feather="check-circle"></i></div>
-              <div class="kpi-info">
-                <h3 class="kpi-label">Завершено</h3>
-                <p id="kpi-done" class="kpi-value skeleton-box">0</p>
-              </div>
-            </article>
-            <article class="card kpi-card">
-              <div class="kpi-icon"><i data-feather="users"></i></div>
-              <div class="kpi-info">
-                <h3 class="kpi-label">Клиенты</h3>
-                <p id="kpi-users" class="kpi-value skeleton-box">0</p>
-              </div>
-            </article>
-            <article class="card kpi-card kpi-highlight">
-              <div class="kpi-icon"><i data-feather="trending-up"></i></div>
-              <div class="kpi-info">
-                <h3 class="kpi-label">Чистая выручка</h3>
-                <p id="kpi-revenue" class="kpi-value skeleton-box">0 ₸</p>
-              </div>
-            </article>
-          </div>
-
-          <div class="section-header mt-8">
-            <h3 class="section-title">Быстрые действия</h3>
-          </div>
-          <div class="actions-grid">
-            <button
-              class="btn primary action-card"
-              data-action="open-modal"
-              data-target="modal-create-order"
-            >
-              <i data-feather="plus"></i>
-              <span>Создать ручной заказ</span>
-            </button>
-            <button class="btn secondary action-card" data-action="refresh">
-              <i data-feather="refresh-cw"></i>
-              <span>Принудительная синхронизация</span>
-            </button>
-          </div>
-        </section>
-
-        <section id="tab-orders" class="tab-content" role="tabpanel" hidden>
-          <div class="filters-bar">
-            <div class="filters" role="group" aria-label="Фильтр статусов">
-              <button class="filter-btn active" data-filter="all">
-                Все записи
+              <button class="pe-btn pe-btn-secondary" id="refreshStatsBtn">
+                <i data-feather="refresh-cw"></i> Обновить данные
               </button>
-              <button class="filter-btn" data-filter="new">Новые лиды</button>
-              <button class="filter-btn" data-filter="processing">
-                В обработке
-              </button>
-              <button class="filter-btn" data-filter="work">На монтаже</button>
-              <button class="filter-btn" data-filter="done">Сданы</button>
-              <button class="filter-btn" data-filter="cancel">Отказы</button>
-            </div>
-          </div>
-
-          <div class="card table-container">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th width="5%">ID</th>
-                  <th width="20%">Клиент</th>
-                  <th width="35%">Объект / Адрес / Заметки</th>
-                  <th width="15%">Статус</th>
-                  <th width="15%">Сумма работ</th>
-                  <th width="10%" class="text-right">Управление</th>
-                </tr>
-              </thead>
-              <tbody id="orders-table-body"></tbody>
-            </table>
-            <div id="orders-empty" class="empty-state hidden">
-              <i data-feather="inbox" class="empty-icon"></i>
-              <p>Данные не найдены</p>
-            </div>
-          </div>
-        </section>
-
-        <section id="tab-broadcast" class="tab-content" role="tabpanel" hidden>
-          <div class="card max-w-4xl">
-            <div class="card-header border-bottom">
-              <h3 class="section-title">Панель массовых уведомлений</h3>
-              <span class="badge outline">Telegram API</span>
             </div>
 
-            <form id="broadcast-form" class="mt-6">
-              <div class="form-group">
-                <label>Целевая аудитория</label>
-                <select name="targetRole" class="form-control">
-                  <option value="all">Все пользователи базы</option>
-                  <option value="user">Только клиенты</option>
-                </select>
+            <div class="pe-grid-kpi">
+              <div class="pe-card pe-card-kpi pe-kpi-success">
+                <div class="pe-kpi-icon">
+                  <i data-feather="dollar-sign"></i>
+                </div>
+                <div class="pe-kpi-data">
+                  <span class="pe-kpi-label">Чистая прибыль (Net Profit)</span>
+                  <h3 id="statNetProfit" class="pe-kpi-value">0 ₸</h3>
+                </div>
               </div>
-              <div class="form-group mt-4">
-                <label
-                  >Медиа-файл (URL картинки)
-                  <span class="text-muted">— Опционально</span></label
+              <div class="pe-card pe-card-kpi pe-kpi-primary">
+                <div class="pe-kpi-icon">
+                  <i data-feather="credit-card"></i>
+                </div>
+                <div class="pe-kpi-data">
+                  <span class="pe-kpi-label">Оборот (Revenue)</span>
+                  <h3 id="statRevenue" class="pe-kpi-value">0 ₸</h3>
+                </div>
+              </div>
+              <div class="pe-card pe-card-kpi pe-kpi-warning">
+                <div class="pe-kpi-icon"><i data-feather="activity"></i></div>
+                <div class="pe-kpi-data">
+                  <span class="pe-kpi-label">Объекты в работе</span>
+                  <h3 id="statActiveOrders" class="pe-kpi-value">0</h3>
+                </div>
+              </div>
+              <div class="pe-card pe-card-kpi pe-kpi-neutral">
+                <div class="pe-kpi-icon"><i data-feather="users"></i></div>
+                <div class="pe-kpi-data">
+                  <span class="pe-kpi-label">Клиентская база</span>
+                  <h3 id="statTotalUsers" class="pe-kpi-value">0</h3>
+                </div>
+              </div>
+            </div>
+
+            <div class="pe-card pe-mt-6">
+              <div class="pe-card-header">
+                <h3 class="pe-h3">Воронка лидов и объектов</h3>
+              </div>
+              <div class="pe-card-body">
+                <div class="pe-funnel" id="funnelChart"></div>
+              </div>
+            </div>
+          </section>
+
+          <section
+            id="ordersView"
+            class="view-section pe-view"
+            style="display: none"
+          >
+            <div class="pe-section-header">
+              <div>
+                <h2 class="pe-h2">Реестр объектов</h2>
+                <p class="pe-text-muted">
+                  Управление заказами, сметами и финансами
+                </p>
+              </div>
+              <div class="pe-header-actions">
+                <select
+                  id="orderStatusFilter"
+                  class="pe-input pe-select-inline"
                 >
-                <input
-                  type="url"
-                  name="imageUrl"
-                  class="form-control"
-                  placeholder="https://example.com/promo.jpg"
-                />
-              </div>
-              <div class="form-group mt-4">
-                <label>Текст сообщения (Поддерживает базовый HTML)</label>
-                <textarea
-                  name="text"
-                  class="form-control"
-                  rows="6"
-                  placeholder="Внимание, акция! Бесплатный замер..."
-                  required
-                ></textarea>
-              </div>
-              <div class="form-actions mt-6">
-                <button type="submit" class="btn primary">
-                  <i data-feather="send"></i> Запустить рассылку
+                  <option value="all">Все статусы</option>
+                  <option value="new">Новые (Лиды)</option>
+                  <option value="work">В работе</option>
+                  <option value="done">Завершенные</option>
+                </select>
+                <button
+                  class="pe-btn pe-btn-primary"
+                  id="btnOpenManualOrderModal"
+                >
+                  <i data-feather="plus"></i> Создать оффлайн-заказ
                 </button>
               </div>
-            </form>
-          </div>
-        </section>
-
-        <section id="tab-settings" class="tab-content" role="tabpanel" hidden>
-          <div class="card max-w-full">
-            <div class="card-header border-bottom">
-              <h3 class="section-title">Система ценообразования</h3>
-              <span class="badge warning"
-                ><i data-feather="save" class="icon-sm"></i> Auto-Save</span
-              >
             </div>
-            <p class="hint mt-4 mb-6 text-muted">
-              Изменения применяются мгновенно. Бот автоматически использует
-              новые тарифы для всех расчетов.
-            </p>
-            <div id="settings-grid" class="settings-grid"></div>
-          </div>
-        </section>
-      </main>
+
+            <div class="pe-card pe-table-card">
+              <div class="pe-table-responsive">
+                <table class="pe-table">
+                  <thead>
+                    <tr>
+                      <th>ID / Дата</th>
+                      <th>Заказчик</th>
+                      <th>Объект</th>
+                      <th>Статус</th>
+                      <th>Чистая Прибыль</th>
+                      <th class="pe-text-right">Управление</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ordersTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <section
+            id="settingsView"
+            class="view-section pe-view"
+            style="display: none"
+          >
+            <div class="pe-section-header">
+              <div>
+                <h2 class="pe-h2">Системный Прайс-лист</h2>
+                <p class="pe-text-muted">
+                  Глобальные расценки для генератора смет
+                </p>
+              </div>
+              <button class="pe-btn pe-btn-success" id="btnSaveSettings">
+                <i data-feather="save"></i> Сохранить изменения
+              </button>
+            </div>
+
+            <div class="pe-card">
+              <div class="pe-card-body">
+                <div class="pe-settings-grid" id="settingsFormContainer"></div>
+              </div>
+            </div>
+          </section>
+
+          <section
+            id="usersView"
+            class="view-section pe-view"
+            style="display: none"
+          >
+            <div class="pe-section-header">
+              <div>
+                <h2 class="pe-h2">Доступы и Персонал</h2>
+                <p class="pe-text-muted">Управление ролями в системе</p>
+              </div>
+            </div>
+            <div class="pe-card pe-table-card">
+              <div class="pe-table-responsive">
+                <table class="pe-table">
+                  <thead>
+                    <tr>
+                      <th>Telegram ID</th>
+                      <th>Пользователь</th>
+                      <th>Контакты</th>
+                      <th>Уровень доступа</th>
+                    </tr>
+                  </thead>
+                  <tbody id="usersTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <section
+            id="broadcastView"
+            class="view-section pe-view"
+            style="display: none"
+          >
+            <div class="pe-section-header">
+              <div>
+                <h2 class="pe-h2">Центр уведомлений</h2>
+                <p class="pe-text-muted">
+                  Массовая рассылка через Telegram-бота
+                </p>
+              </div>
+            </div>
+            <div class="pe-card pe-max-w-md">
+              <div class="pe-card-body pe-form">
+                <div class="pe-form-group">
+                  <label>Аудитория</label>
+                  <select id="broadcastTarget" class="pe-input">
+                    <option value="all">Всем (База полностью)</option>
+                    <option value="user">Только клиентам</option>
+                    <option value="manager">Персоналу (Мастера/Админы)</option>
+                  </select>
+                </div>
+                <div class="pe-form-group">
+                  <label>Текст сообщения (HTML/Markdown)</label>
+                  <textarea
+                    id="broadcastText"
+                    class="pe-input pe-textarea"
+                    rows="6"
+                    placeholder="Введите текст рассылки..."
+                  ></textarea>
+                </div>
+                <div class="pe-form-group">
+                  <label>URL изображения (Необязательно)</label>
+                  <input
+                    type="text"
+                    id="broadcastImage"
+                    class="pe-input"
+                    placeholder="https://example.com/promo.jpg"
+                  />
+                </div>
+                <button
+                  class="pe-btn pe-btn-primary pe-btn-block pe-mt-4"
+                  id="btnSendBroadcast"
+                >
+                  <i data-feather="send"></i> Запустить кампанию
+                </button>
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
     </div>
 
-    <dialog id="modal-update-details" class="modal-native">
-      <form id="update-details-form" method="dialog">
-        <div class="modal-header">
-          <h3 class="modal-title">
-            Данные заказа
-            <span id="details-order-id" class="text-primary"></span>
-          </h3>
-          <button
-            type="button"
-            class="close-btn"
-            data-action="close-modal"
-            data-target="modal-update-details"
-          >
+    <div id="orderModal" class="pe-modal-overlay" style="display: none">
+      <div class="pe-modal pe-modal-xl">
+        <header class="pe-modal-header">
+          <div class="pe-modal-title">
+            <i data-feather="layers"></i>
+            <h3 id="modalOrderTitle">Объект #...</h3>
+          </div>
+          <button class="pe-btn-close" id="btnCloseOrderModal">
             <i data-feather="x"></i>
           </button>
-        </div>
-        <div class="modal-body">
-          <input type="hidden" id="details-hidden-id" name="orderId" />
-          <div class="form-group">
-            <label>Адрес объекта (Студия, Квартира, Дом)</label>
-            <input
-              type="text"
-              id="details-address"
-              name="address"
-              class="form-control"
-              placeholder="г. Алматы, ул. Абая 150, кв 45"
-            />
-          </div>
-          <div class="form-group mt-4">
-            <label>Внутренний комментарий (Видит только администрация)</label>
-            <textarea
-              id="details-comment"
-              name="comment"
-              class="form-control"
-              rows="3"
-              placeholder="Сложный клиент, просит скидку..."
-            ></textarea>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button
-            type="button"
-            class="btn secondary outline"
-            data-action="close-modal"
-            data-target="modal-update-details"
-          >
-            Отмена
-          </button>
-          <button type="submit" class="btn primary">Сохранить изменения</button>
-        </div>
-      </form>
-    </dialog>
+        </header>
 
-    <dialog id="modal-cancel-order" class="modal-native">
-      <form id="cancel-order-form" method="dialog">
-        <div class="modal-header">
-          <h3 class="modal-title text-danger">Отмена заказа</h3>
-          <button
-            type="button"
-            class="close-btn"
-            data-action="close-modal"
-            data-target="modal-cancel-order"
-          >
-            <i data-feather="x"></i>
-          </button>
-        </div>
-        <div class="modal-body">
-          <input type="hidden" id="cancel-hidden-id" name="orderId" />
-          <p class="mb-4 text-secondary">
-            Укажите причину перевода заказа в статус "Отказ" для аналитики:
-          </p>
-          <div class="form-group">
-            <select
-              id="cancel-reason-select"
-              name="reason"
-              class="form-control"
-              required
-            >
-              <option value="" disabled selected>Выберите инициатора...</option>
-              <option value="client">Отказ клиента (дорого, передумал)</option>
-              <option value="firm">Отказ фирмы (нет мастеров, далеко)</option>
-            </select>
+        <div class="pe-modal-body">
+          <div class="pe-grid-2col">
+            <div class="pe-col-info">
+              <div class="pe-info-card">
+                <h4 class="pe-h4"><i data-feather="user"></i> Заказчик</h4>
+                <div class="pe-info-row">
+                  <span class="pe-text-muted">Имя:</span>
+                  <strong id="modalClientName">...</strong>
+                </div>
+                <div class="pe-info-row">
+                  <span class="pe-text-muted">Телефон:</span>
+                  <strong id="modalClientPhone">...</strong>
+                </div>
+                <div class="pe-form-group pe-mt-4">
+                  <label>Стадия объекта:</label>
+                  <select id="modalOrderStatus" class="pe-input"></select>
+                </div>
+              </div>
+
+              <div class="pe-info-card pe-mt-4">
+                <h4 class="pe-h4">
+                  <i data-feather="file-text"></i> Структура сметы
+                </h4>
+                <div id="modalEstimateDetails" class="pe-code-block"></div>
+              </div>
+
+              <div class="pe-info-card pe-mt-4">
+                <h4 class="pe-h4">
+                  <i data-feather="shopping-bag"></i> Спецификация (BOM)
+                </h4>
+                <ul id="modalBOMList" class="pe-bom-list"></ul>
+              </div>
+            </div>
+
+            <div class="pe-col-finance">
+              <div class="pe-finance-header">
+                <h4 class="pe-h4">
+                  <i data-feather="dollar-sign"></i> Финансовый контроллер
+                </h4>
+              </div>
+
+              <div class="pe-finance-summary">
+                <div class="pe-fin-row">
+                  <span>Расчетная база сметы:</span>
+                  <strong id="modalCalcPrice" class="pe-text-muted">0 ₸</strong>
+                </div>
+                <div class="pe-fin-row pe-fin-edit">
+                  <span>Договорная цена клиенту:</span>
+                  <div class="pe-input-group pe-input-group-sm">
+                    <input
+                      type="number"
+                      id="modalFinalPrice"
+                      class="pe-input"
+                    />
+                    <button
+                      class="pe-btn pe-btn-primary"
+                      id="btnUpdateFinalPrice"
+                    >
+                      <i data-feather="check"></i>
+                    </button>
+                  </div>
+                </div>
+                <div class="pe-fin-row">
+                  <span>Сумма затрат (Чеки):</span>
+                  <strong id="modalTotalExpenses" class="pe-text-danger"
+                    >0 ₸</strong
+                  >
+                </div>
+                <div class="pe-fin-divider"></div>
+                <div class="pe-fin-row pe-fin-total">
+                  <span>ЧИСТАЯ ПРИБЫЛЬ:</span>
+                  <strong id="modalNetProfit" class="pe-text-success"
+                    >0 ₸</strong
+                  >
+                </div>
+              </div>
+
+              <div class="pe-expenses-section pe-mt-6">
+                <h5 class="pe-h5">Реестр расходов (Чеки)</h5>
+                <div class="pe-expenses-list" id="modalExpensesList"></div>
+
+                <div class="pe-expense-form pe-mt-4">
+                  <h6 class="pe-h6 pe-mb-2">Списать новый расход</h6>
+                  <div class="pe-form-group">
+                    <input
+                      type="number"
+                      id="expenseAmount"
+                      class="pe-input pe-input-sm"
+                      placeholder="Сумма (₸)"
+                    />
+                  </div>
+                  <div class="pe-form-group">
+                    <select id="expenseCategory" class="pe-input pe-input-sm">
+                      <option value="Материалы">Докупка материалов</option>
+                      <option value="Транспорт">Логистика / Такси</option>
+                      <option value="Инструмент">
+                        Инструмент / Расходники
+                      </option>
+                      <option value="Прочее">Прочие расходы</option>
+                    </select>
+                  </div>
+                  <div class="pe-form-group">
+                    <input
+                      type="text"
+                      id="expenseComment"
+                      class="pe-input pe-input-sm"
+                      placeholder="Назначение (комментарий)"
+                    />
+                  </div>
+                  <button
+                    class="pe-btn pe-btn-danger pe-btn-block pe-btn-sm"
+                    id="btnAddExpense"
+                  >
+                    <i data-feather="minus-circle"></i> Провести списание
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-        <div class="modal-footer">
-          <button
-            type="button"
-            class="btn secondary outline"
-            data-action="close-modal"
-            data-target="modal-cancel-order"
-          >
-            Вернуться
-          </button>
-          <button type="submit" class="btn danger">Подтвердить отмену</button>
-        </div>
-      </form>
-    </dialog>
+      </div>
+    </div>
 
-    <dialog id="modal-create-order" class="modal-native">
-      <form id="create-order-form" method="dialog">
-        <div class="modal-header">
-          <h3 class="modal-title">Регистрация лида</h3>
-          <button
-            type="button"
-            class="close-btn"
-            data-action="close-modal"
-            data-target="modal-create-order"
-          >
+    <div id="manualOrderModal" class="pe-modal-overlay" style="display: none">
+      <div class="pe-modal pe-modal-md">
+        <header class="pe-modal-header">
+          <div class="pe-modal-title">
+            <i data-feather="plus-square"></i>
+            <h3>Новый оффлайн-объект</h3>
+          </div>
+          <button class="pe-btn-close" id="btnCloseManualModal">
             <i data-feather="x"></i>
           </button>
-        </div>
-        <div class="modal-body">
-          <div class="form-grid two-cols">
-            <div class="form-group">
-              <label>Имя клиента</label>
+        </header>
+        <div class="pe-modal-body">
+          <form id="formManualOrder" class="pe-form">
+            <div class="pe-form-group">
+              <label>ФИО Заказчика</label>
               <input
                 type="text"
-                name="clientName"
-                class="form-control"
-                placeholder="Иван Иванов"
+                id="manualName"
+                class="pe-input"
                 required
+                placeholder="Иванов Иван"
               />
             </div>
-            <div class="form-group">
-              <label>Телефон</label>
+            <div class="pe-form-group">
+              <label>Контактный телефон</label>
               <input
                 type="tel"
-                name="clientPhone"
-                class="form-control"
-                placeholder="+7 700 000 00 00"
+                id="manualPhone"
+                class="pe-input"
                 required
+                placeholder="+7 (777) 000-00-00"
               />
             </div>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button
-            type="button"
-            class="btn secondary outline"
-            data-action="close-modal"
-            data-target="modal-create-order"
-          >
-            Отмена
-          </button>
-          <button type="submit" class="btn primary">Создать карточку</button>
-        </div>
-      </form>
-    </dialog>
-
-    <template id="tpl-order-row">
-      <tr>
-        <td class="font-mono text-sm order-id text-muted"></td>
-        <td>
-          <div class="client-name font-medium"></div>
-          <div class="client-phone text-xs text-muted mt-1"></div>
-        </td>
-        <td class="order-details-cell">
-          <div class="order-address text-sm font-medium"></div>
-          <div
-            class="order-comment text-xs text-muted mt-1 truncate-text"
-          ></div>
-          <div class="order-params text-xs text-primary mt-1"></div>
-        </td>
-        <td><span class="badge status-badge"></span></td>
-        <td class="finance-info font-mono font-medium text-lg"></td>
-        <td class="actions-cell text-right">
-          <div class="btn-group">
+            <div class="pe-grid-2col-sm">
+              <div class="pe-form-group">
+                <label>Площадь (м²)</label>
+                <input
+                  type="number"
+                  id="manualArea"
+                  class="pe-input"
+                  required
+                  value="50"
+                  min="10"
+                />
+              </div>
+              <div class="pe-form-group">
+                <label>Комнат</label>
+                <input
+                  type="number"
+                  id="manualRooms"
+                  class="pe-input"
+                  required
+                  value="2"
+                  min="1"
+                />
+              </div>
+            </div>
+            <div class="pe-form-group">
+              <label>Материал конструктива (Стены)</label>
+              <select id="manualWallType" class="pe-input">
+                <option value="wall_concrete">Бетон / Монолит</option>
+                <option value="wall_brick">Кирпич</option>
+                <option value="wall_gas">Газоблок / ГКЛ</option>
+              </select>
+            </div>
             <button
-              class="btn-icon outline action-edit"
-              title="Детали (Адрес/Коммент)"
+              type="submit"
+              class="pe-btn pe-btn-success pe-btn-block pe-mt-4"
             >
-              <i data-feather="edit-2"></i>
+              <i data-feather="cpu"></i> Сгенерировать расчет и создать
             </button>
-            <button class="btn-icon outline action-cancel" title="Отменить">
-              <i data-feather="slash"></i>
-            </button>
-          </div>
-        </td>
-      </tr>
-    </template>
+          </form>
+        </div>
+      </div>
+    </div>
 
-    <script src="js/api.js"></script>
-    <script src="js/app.js"></script>
+    <div id="toastContainer" class="toast-container pe-toast-container"></div>
+
     <script>
-      document.addEventListener("DOMContentLoaded", () => feather.replace());
+      document.addEventListener("DOMContentLoaded", () => {
+        feather.replace();
+
+        // Легкий скрипт для смены заголовка Topbar
+        document.querySelectorAll(".nav-btn").forEach((btn) => {
+          btn.addEventListener("click", (e) => {
+            const text = e.currentTarget.querySelector("span").innerText;
+            document.getElementById("topbarTitle").innerText = text;
+          });
+        });
+      });
     </script>
+
+    <script type="module" src="/js/app.js"></script>
   </body>
 </html>
-
