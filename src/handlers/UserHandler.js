@@ -2,10 +2,10 @@
  * @file src/handlers/UserHandler.js
  * @description Обработчик действий пользователя (Client Side Controller).
  * Реализует полный цикл взаимодействия с акцентом на продажу услуг.
- * Исправлены ошибки с кнопками, состояниями и уведомлениями.
+ * Интегрирован с динамическими прайсами из БД и расширенными уведомлениями владельцу.
  *
  * @author ProElectric Team
- * @version 6.6.0 (Stable Senior Edition)
+ * @version 7.1.0 (Senior Architect Edition)
  */
 
 import { Markup } from "telegraf";
@@ -17,12 +17,12 @@ import { OrderService } from "../services/OrderService.js";
 // =============================================================================
 
 /**
- * ID Владельца. Используем твой ID как fallback, чтобы ошибки не падали.
+ * ID Владельца. Используется для отправки уведомлений о новых лидах и заказах.
  */
 const OWNER_ID = process.env.OWNER_ID || 2041384570;
 
 /**
- * Состояния пользователя (FSM).
+ * Состояния пользователя (FSM - Конечный автомат).
  */
 const USER_STATES = Object.freeze({
   IDLE: "IDLE",
@@ -33,8 +33,7 @@ const USER_STATES = Object.freeze({
 });
 
 /**
- * Тексты кнопок.
- * Должны совпадать с TRIGGERS в bot.js.
+ * Тексты кнопок. Должны совпадать с TRIGGERS в bot.js.
  */
 const BUTTONS = Object.freeze({
   CALCULATE: "🚀 Рассчитать стоимость",
@@ -54,8 +53,7 @@ const BUTTONS = Object.freeze({
 
 const Keyboards = {
   /**
-   * Главное меню.
-   * Адаптируется под роль пользователя.
+   * Главное меню. Адаптируется под роль пользователя (RBAC).
    */
   mainMenu: (role = "user") => {
     const buttons = [
@@ -64,7 +62,7 @@ const Keyboards = {
       [BUTTONS.CONTACTS, BUTTONS.HOW_WORK],
     ];
 
-    // Добавляем кнопку админки только для персонала
+    // Добавляем кнопку админки только для управляющего персонала
     if (["owner", "admin", "manager"].includes(role)) {
       buttons.push([BUTTONS.ADMIN_PANEL]);
     }
@@ -74,7 +72,6 @@ const Keyboards = {
 
   /**
    * Кнопка запроса телефона.
-   * FIX: Используем правильный формат объекта для Telegraf 4.x
    */
   requestPhone: Markup.keyboard([
     [{ text: BUTTONS.SHARE_PHONE, request_contact: true }],
@@ -112,7 +109,7 @@ export const UserHandler = {
 
   async startCommand(ctx) {
     try {
-      // 1. Сброс состояния (FIX: Решает проблему "зависшего" бота)
+      // 1. Сброс состояния (Решает проблему "зависшего" бота)
       if (ctx.session) {
         ctx.session.state = USER_STATES.IDLE;
         ctx.session.calcData = {};
@@ -138,7 +135,6 @@ export const UserHandler = {
         }
       } catch (dbError) {
         console.error("[UserHandler] Auth Warning:", dbError.message);
-        // Если БД упала, пускаем как юзера, чтобы бот не "молчал"
       }
 
       // 3. Показ меню
@@ -158,32 +154,48 @@ export const UserHandler = {
     );
   },
 
+  /**
+   * Перехват отправки контакта.
+   * Отправляет максимально подробный отчет Владельцу о новом лиде.
+   */
   async handleContact(ctx) {
     try {
-      // Игнорируем контакты, если мы их не ждем
       if (ctx.session.state !== USER_STATES.WAIT_PHONE) return;
 
       const contact = ctx.message.contact;
+      
       // Проверка: контакт должен принадлежать отправителю
       if (contact && contact.user_id === ctx.from.id) {
         await UserService.updateUserPhone(ctx.from.id, contact.phone_number);
 
-        // Уведомление админу (безопасно)
+        // Формируем уведомление для Владельца со всеми данными
+        const userLink = ctx.from.username ? `@${ctx.from.username}` : `Без Username`;
+        
         ctx.telegram
           .sendMessage(
             OWNER_ID,
-            `🔔 <b>РЕГИСТРАЦИЯ</b>\n👤 ${ctx.from.first_name}\n📱 ${contact.phone_number}`,
+            `🔔 <b>РЕГИСТРАЦИЯ НОВОГО КЛИЕНТА</b>\n` +
+            `➖➖➖➖➖➖➖➖➖➖\n` +
+            `👤 <b>Имя:</b> ${ctx.from.first_name}\n` +
+            `🔗 <b>Username:</b> ${userLink}\n` +
+            `🆔 <b>ID:</b> <code>${ctx.from.id}</code>\n` +
+            `📱 <b>Телефон:</b> <code>${contact.phone_number}</code>\n` +
+            `➖➖➖➖➖➖➖➖➖➖\n` +
+            `<i>Клиент успешно авторизован и получил доступ к калькулятору.</i>`,
             { parse_mode: "HTML" },
           )
           .catch((e) => console.warn("Admin notification failed:", e.message));
 
         ctx.session.state = USER_STATES.IDLE;
-        await ctx.reply("✅ Спасибо! Доступ открыт.", {
+        await ctx.reply("✅ Спасибо! Номер успешно привязан. Доступ открыт.", {
           reply_markup: { remove_keyboard: true },
         });
-        await this.showMainMenu(ctx, "user");
+        
+        // Получаем актуальную роль и показываем меню
+        const role = await UserService.getUserRole(ctx.from.id);
+        await this.showMainMenu(ctx, role);
       } else {
-        await ctx.reply("⛔ Пожалуйста, используйте кнопку снизу.");
+        await ctx.reply("⛔ Пожалуйста, используйте кнопку снизу для отправки именно вашего контакта.");
       }
     } catch (error) {
       console.error("[UserHandler] Contact Error:", error);
@@ -201,7 +213,7 @@ export const UserHandler = {
       const text = ctx.message.text;
       const state = ctx.session?.state || USER_STATES.IDLE;
 
-      // Глобальные команды меню (работают всегда)
+      // Глобальные команды меню
       switch (text) {
         case BUTTONS.CALCULATE:
           return this.enterCalculationMode(ctx);
@@ -232,7 +244,7 @@ export const UserHandler = {
           return this.returnToMainMenu(ctx);
       }
 
-      // Обработка состояний (Wizard)
+      // Маршрутизация по стейтам FSM
       if (state === USER_STATES.WAIT_PHONE) {
         return ctx.reply("👇 Нажмите кнопку 'Отправить телефон' для входа.");
       }
@@ -243,8 +255,6 @@ export const UserHandler = {
         return this.processRoomsInput(ctx);
       }
 
-      // Если ничего не подошло
-      // ctx.reply("🤖 Я не понял команду. Воспользуйтесь меню.");
     } catch (error) {
       console.error("[UserHandler] Router Error:", error);
     }
@@ -252,7 +262,7 @@ export const UserHandler = {
 
   /**
    * ===========================================================================
-   * 3. 🧮 CALCULATION LOGIC
+   * 3. 🧮 CALCULATION LOGIC (FSM WIZARD)
    * ===========================================================================
    */
 
@@ -282,12 +292,11 @@ export const UserHandler = {
   },
 
   async handleWallSelection(ctx) {
-    // Проверка сессии (чтобы не жали старые кнопки)
     if (ctx.session.state !== USER_STATES.CALC_WALL) {
       return ctx.answerCbQuery("⚠️ Расчет был прерван. Начните заново.");
     }
 
-    ctx.session.calcData.wallType = ctx.match[0]; // wall_brick etc.
+    ctx.session.calcData.wallType = ctx.match[0];
     ctx.session.state = USER_STATES.CALC_ROOMS;
 
     await ctx.answerCbQuery();
@@ -306,7 +315,7 @@ export const UserHandler = {
     const data = ctx.session.calcData;
     data.rooms = rooms;
 
-    // Расчет через сервис
+    // Вызываем логику расчета из OrderService
     const estimate = await OrderService.calculateComplexEstimate(
       data.area,
       data.rooms,
@@ -314,7 +323,6 @@ export const UserHandler = {
     );
     ctx.session.lastEstimate = estimate;
 
-    // Форматирование
     const fmt = (n) => new Intl.NumberFormat("ru-RU").format(n);
     const wallNames = {
       wall_gas: "Газоблок",
@@ -334,7 +342,8 @@ export const UserHandler = {
       `• Автоматы в щит: ${estimate.volume.modules} шт.\n` +
       `➖➖➖➖➖➖➖➖➖➖\n` +
       `💰 <b>СТОИМОСТЬ РАБОТ: ${fmt(estimate.total.work)} ₸</b>\n\n` +
-      `<i>⚠️ Это предварительный расчет. Точная смета составляется инженером после осмотра объекта.</i>`;
+      `<i>⚠️ Обратите внимание: Это стоимость ТОЛЬКО ЗА РАБОТУ. Материалы закупаются отдельно по чекам или спецификации после выезда инженера на замер (Примерный прогноз на материалы: ~${fmt(estimate.total.material_info)} ₸).</i>\n\n` +
+      `<i>Нажмите "Оформить выезд инженера", чтобы зафиксировать заявку.</i>`;
 
     ctx.session.state = USER_STATES.IDLE;
     await ctx.replyWithHTML(invoice, Keyboards.estimateActions);
@@ -349,47 +358,56 @@ export const UserHandler = {
   async saveOrderAction(ctx) {
     try {
       const estimate = ctx.session.lastEstimate;
-      if (!estimate) return ctx.answerCbQuery("⚠️ Время сессии истекло.");
+      if (!estimate) return ctx.answerCbQuery("⚠️ Время сессии истекло. Начните расчет заново.");
 
       // Создаем заказ в БД
       const order = await OrderService.createOrder(ctx.from.id, estimate);
+      
+      // Вытягиваем профиль юзера, чтобы получить телефон для отчета
+      const userProfile = await UserService.getUserProfile(ctx.from.id);
 
-      // 1. Сначала отвечаем юзеру (чтобы интерфейс не висел)
+      // 1. Сообщение пользователю
       await ctx.answerCbQuery("✅ Заявка создана!");
       await ctx.editMessageText(
         `✅ <b>Заявка #${order.id} принята!</b>\n\n` +
-          `Мы свяжемся с вами в ближайшее время для уточнения деталей.\n` +
-          `Статус заявки можно проверить в разделе "Мои заявки".`,
+          `Мы свяжемся с вами в ближайшее время для уточнения деталей и согласования времени замера.\n` +
+          `Статус заявки можно проверять в разделе "Мои заявки".`,
         { parse_mode: "HTML" },
       );
 
-      // Очистка
       ctx.session.lastEstimate = null;
       ctx.session.calcData = null;
 
-      // 2. Уведомление Владельцу (фоном, с защитой от ошибок)
-      const userLink = ctx.from.username
-        ? `@${ctx.from.username}`
-        : `ID ${ctx.from.id}`;
-
+      // 2. Детальный отчет Владельцу (Все данные в одном сообщении)
+      const userLink = ctx.from.username ? `@${ctx.from.username}` : `Без Username`;
       const fmt = (n) => new Intl.NumberFormat("ru-RU").format(n);
+      const wallNames = { wall_gas: "Газоблок", wall_brick: "Кирпич", wall_concrete: "Бетон" };
 
       ctx.telegram
         .sendMessage(
           OWNER_ID,
           `🆕 <b>НОВЫЙ ЗАКАЗ #${order.id}</b>\n` +
-            `👤 ${ctx.from.first_name} (${userLink})\n` +
-            `💰 <b>${fmt(estimate.total.work)} ₸</b>\n` +
-            `🏠 ${estimate.params.area}м², ${estimate.params.wallType}`,
+          `➖➖➖➖➖➖➖➖➖➖\n` +
+          `👤 <b>Клиент:</b> ${ctx.from.first_name}\n` +
+          `🔗 <b>Username:</b> ${userLink}\n` +
+          `🆔 <b>ID:</b> <code>${ctx.from.id}</code>\n` +
+          `📱 <b>Телефон:</b> <code>${userProfile?.phone || "Не указан"}</code>\n` +
+          `➖➖➖➖➖➖➖➖➖➖\n` +
+          `🏠 <b>Объект:</b>\n` +
+          `• Площадь: ${estimate.params.area} м²\n` +
+          `• Комнат: ${estimate.params.rooms}\n` +
+          `• Стены: ${wallNames[estimate.params.wallType] || estimate.params.wallType}\n` +
+          `➖➖➖➖➖➖➖➖➖➖\n` +
+          `💰 <b>Сумма работ: ${fmt(estimate.total.work)} ₸</b>\n` +
+          `📦 Прогноз материалов: ~${fmt(estimate.total.material_info)} ₸\n\n` +
+          `<i>Перейдите в админ-панель (или используйте команду /order ${order.id}), чтобы взять заказ в работу.</i>`,
           { parse_mode: "HTML" },
         )
-        .catch((e) =>
-          console.warn(
-            `⚠️ Failed to notify owner about order #${order.id}: ${e.message}`,
-          ),
-        );
+        .catch((e) => console.warn(`⚠️ Failed to notify owner about order #${order.id}: ${e.message}`));
+
     } catch (error) {
       console.error("[UserHandler] Save Error:", error);
+      ctx.answerCbQuery("❌ Ошибка").catch(()=>{});
       ctx.reply("❌ Не удалось сохранить заявку. Попробуйте позже.");
     }
   },
@@ -413,7 +431,7 @@ export const UserHandler = {
         .map(
           (o) =>
             `<b>Заказ #${o.id}</b> | ${statusMap[o.status] || o.status}\n` +
-            `Сумма: ${new Intl.NumberFormat("ru-RU").format(o.total_price)} ₸`,
+            `Сумма работ: ${new Intl.NumberFormat("ru-RU").format(o.total_price)} ₸`,
         )
         .join("\n\n");
 
@@ -423,41 +441,39 @@ export const UserHandler = {
     }
   },
 
+  /**
+   * 📋 Вывод актуального прайс-листа прямо из Базы Данных.
+   */
   async showPriceList(ctx) {
     try {
-      // Пытаемся получить актуальные цены, или берем дефолт
-      let p = {
-        cable: 350,
-        socket: 1200,
-        strobeConcrete: 2000,
-      };
-
-      try {
-        if (OrderService.getPublicPricelist) {
-          p = { ...p, ...(await OrderService.getPublicPricelist()) };
-        }
-      } catch (e) {
-        console.warn("Failed to fetch prices from DB, using defaults.");
-      }
+      // Подтягиваем свежие данные из БД (метод реализован на Шаге 1)
+      let p = await OrderService.getPublicPricelist();
 
       await ctx.replyWithHTML(
-        `💰 <b>ПРАЙС-ЛИСТ 2026</b>\n\n` +
-          `🔹 Штробление (бетон): <b>${p.strobeConcrete} ₸/м</b>\n` +
-          `🔹 Прокладка кабеля: <b>${p.cable} ₸/м</b>\n` +
-          `🔹 Установка розетки: <b>${p.socket} ₸/шт</b>\n\n` +
-          `<i>Полный прайс уточняйте у инженера.</i>`,
+        `💰 <b>АКТУАЛЬНЫЙ ПРАЙС-ЛИСТ</b>\n\n` +
+        `<b>🧱 Черновые работы:</b>\n` +
+        `🔹 Штробление (Бетон): <b>${p.strobeConcrete} ₸/м</b>\n` +
+        `🔹 Штробление (Кирпич): <b>${p.strobeBrick} ₸/м</b>\n` +
+        `🔹 Штробление (Газоблок): <b>${p.strobeGas} ₸/м</b>\n` +
+        `🔹 Точка подрозетника (Бетон): <b>${p.drillConcrete} ₸/шт</b>\n\n` +
+        `<b>⚡️ Монтажные работы:</b>\n` +
+        `🔹 Прокладка кабеля: <b>${p.cable} ₸/м</b>\n` +
+        `🔹 Установка розетки/выкл.: <b>${p.socket} ₸/шт</b>\n` +
+        `🔹 Сборка щита (за 1 модуль): <b>${p.shield} ₸/шт</b>\n\n` +
+        `<i>* Указаны базовые цены за работу. Точная смета формируется после выезда инженера на замер. Материалы оплачиваются отдельно по чекам.</i>`,
       );
     } catch (e) {
-      ctx.reply("⚠️ Прайс временно недоступен.");
+      console.error(e);
+      ctx.reply("⚠️ Прайс-лист временно недоступен. Ведутся технические работы.");
     }
   },
 
   /**
-   * Возврат в меню и сброс состояния
+   * 🔙 Возврат в главное меню
    */
   async returnToMainMenu(ctx) {
-    ctx.session.state = USER_STATES.IDLE;
-    // Определяем роль (если в сессии нет, пробуем 'user', startCommand исправит при перезапуске)
-    await this.showMainMenu(ctx, "user");
+    if (ctx.session) ctx.session.state = USER_STATES.IDLE;
+    const role = await UserService.getUserRole(ctx.from.id);
+    await this.showMainMenu(ctx, role);
   },
 };

@@ -2,10 +2,11 @@
  * @file src/handlers/AdminHandler.js
  * @description Контроллер панели администратора (Enterprise CRM Controller).
  * Реализует полный цикл управления бизнесом, персоналом и системой.
+ * Включает FSM (Finite State Machine) для безопасного ввода метаданных.
  * Архитектура: Monolithic Controller with Direct DB Access for Analytics.
  *
  * @author ProElectric Team
- * @version 7.0.0 (Senior Architect Edition)
+ * @version 7.5.0 (Senior Architect Edition)
  */
 
 import { Markup } from "telegraf";
@@ -43,6 +44,13 @@ const BUTTONS = Object.freeze({
   REFRESH: "🔄 Обновить данные",
 });
 
+// Состояния администратора (FSM) для ввода дополнительных данных
+export const ADMIN_STATES = Object.freeze({
+  IDLE: "IDLE",
+  WAIT_ADDRESS: "WAIT_ADDRESS",
+  WAIT_COMMENT: "WAIT_COMMENT",
+});
+
 // =============================================================================
 // 🎹 KEYBOARDS FACTORY
 // =============================================================================
@@ -78,12 +86,16 @@ const AdminKeyboards = {
           `status_${orderId}_processing`,
         ),
       ]);
+      // ИЗМЕНЕНИЕ: Теперь мы не просто отменяем, а спрашиваем причину
       actions.push([
-        Markup.button.callback("❌ Отклонить", `status_${orderId}_cancel`),
+        Markup.button.callback("❌ Отклонить", `prompt_cancel_${orderId}`),
       ]);
     } else if (status === "processing") {
       actions.push([
         Markup.button.callback("🛠 Начать монтаж", `status_${orderId}_work`),
+      ]);
+      actions.push([
+        Markup.button.callback("❌ Отклонить", `prompt_cancel_${orderId}`),
       ]);
       actions.push([
         Markup.button.callback("↩️ Вернуть в новые", `status_${orderId}_new`),
@@ -101,7 +113,41 @@ const AdminKeyboards = {
       ]);
     }
 
+    // ИЗМЕНЕНИЕ: Кнопки добавления Адреса и Комментария доступны для всех активных статусов
+    if (status !== "cancel" && status !== "archived") {
+      actions.push([
+        Markup.button.callback("📍 Указать адрес", `prompt_address_${orderId}`),
+        Markup.button.callback("📝 Комментарий", `prompt_comment_${orderId}`),
+      ]);
+    }
+
     return Markup.inlineKeyboard(actions);
+  },
+
+  /**
+   * Клавиатура выбора причины отказа
+   */
+  cancelReasonControl: (orderId) => {
+    return Markup.inlineKeyboard([
+      [
+        Markup.button.callback(
+          "👤 Отказ: Клиент передумал",
+          `cancel_reason_${orderId}_client`,
+        ),
+      ],
+      [
+        Markup.button.callback(
+          "🏢 Отказ: Наша Фирма",
+          `cancel_reason_${orderId}_firm`,
+        ),
+      ],
+      [
+        Markup.button.callback(
+          "🔙 Вернуться к заказу",
+          `refresh_order_${orderId}`,
+        ),
+      ],
+    ]);
   },
 
   refresh: Markup.inlineKeyboard([
@@ -132,6 +178,9 @@ export const AdminHandler = {
         );
       }
 
+      // Сбрасываем любые зависшие стейты ввода
+      if (ctx.session) ctx.session.adminState = ADMIN_STATES.IDLE;
+
       await ctx.replyWithHTML(
         `💼 <b>ПАНЕЛЬ УПРАВЛЕНИЯ</b>\n` +
           `👤 Пользователь: <b>${ctx.from.first_name}</b>\n` +
@@ -146,14 +195,37 @@ export const AdminHandler = {
   },
 
   async handleMessage(ctx) {
-    const text = ctx.message.text;
+    const text = ctx.message?.text;
+    if (!text) return;
+
     const userId = ctx.from.id;
     const role = await UserService.getUserRole(userId);
 
     // Security Guard
     if (![ROLES.OWNER, ROLES.ADMIN, ROLES.MANAGER].includes(role)) return;
 
-    // Command Router
+    // --- FSM (STATE MACHINE) INTERCEPTOR ---
+    const state = ctx.session?.adminState || ADMIN_STATES.IDLE;
+
+    // Прерывание ввода
+    if (text === BUTTONS.BACK || text.toLowerCase() === "отмена") {
+      if (state !== ADMIN_STATES.IDLE) {
+        ctx.session.adminState = ADMIN_STATES.IDLE;
+        await ctx.reply("❌ Действие отменено.");
+        // Возвращаем главное меню админа или просто игнорируем, позволяя коду идти дальше
+        if (text.toLowerCase() === "отмена") return;
+      }
+    }
+
+    // Маршрутизация по состояниям
+    if (state === ADMIN_STATES.WAIT_ADDRESS) {
+      return this.processAddressInput(ctx);
+    }
+    if (state === ADMIN_STATES.WAIT_COMMENT) {
+      return this.processCommentInput(ctx);
+    }
+
+    // --- REGULAR COMMAND ROUTER ---
     if (text === BUTTONS.DASHBOARD) return this.showDashboard(ctx);
     if (text === BUTTONS.ORDERS) return this.showOrdersInstruction(ctx);
     if (text === BUTTONS.SETTINGS) return this.showSettings(ctx);
@@ -197,7 +269,6 @@ export const AdminHandler = {
     const loading = await ctx.reply("⏳ Сбор аналитики...");
 
     try {
-      // Сложный агрегирующий запрос для получения всей статистики за один раз
       const query = `
         SELECT 
           COUNT(*) as total_count,
@@ -207,14 +278,13 @@ export const AdminHandler = {
           COUNT(*) FILTER (WHERE status = 'done') as done_count,
           COUNT(*) FILTER (WHERE status = 'cancel') as cancel_count,
           COALESCE(SUM(total_price) FILTER (WHERE status = 'done'), 0) as revenue,
-          COALESCE(SUM((details->'total'->>'material')::numeric) FILTER (WHERE status = 'done'), 0) as material_cost
+          COALESCE(SUM((details->'total'->>'material_info')::numeric) FILTER (WHERE status = 'done'), 0) as material_cost
         FROM orders
       `;
 
       const res = await db.query(query);
       const data = res.rows[0];
 
-      // Вычисления KPI
       const revenue = parseFloat(data.revenue);
       const materials = parseFloat(data.material_cost);
       const grossProfit = revenue - materials;
@@ -225,20 +295,19 @@ export const AdminHandler = {
           ? ((data.done_count / data.total_count) * 100).toFixed(1)
           : 0;
       const aov =
-        data.done_count > 0 ? (revenue / data.done_count).toFixed(0) : 0; // Average Order Value
+        data.done_count > 0 ? (revenue / data.done_count).toFixed(0) : 0;
 
       const fmt = (n) => new Intl.NumberFormat("ru-RU").format(n);
 
       const report =
         `📊 <b>ФИНАНСОВЫЙ ОТЧЕТ (Real-Time)</b>\n` +
         `➖➖➖➖➖➖➖➖➖➖\n` +
-        `💰 <b>ВЫРУЧКА:</b> ${fmt(revenue)} ₸\n` +
-        `📉 <b>Расход (Мат.):</b> ${fmt(materials)} ₸\n` +
-        `💎 <b>ПРИБЫЛЬ: ${fmt(grossProfit)} ₸</b> (Маржа: ${margin}%)\n` +
+        `💰 <b>ВЫРУЧКА (За работу):</b> ${fmt(revenue)} ₸\n` +
+        `📉 <i>Расход (Мат. прогноз): ~${fmt(materials)} ₸</i>\n` +
         `➖➖➖➖➖➖➖➖➖➖\n` +
         `📈 <b>KPI Продаж:</b>\n` +
         `• Конверсия: <b>${conversion}%</b>\n` +
-        `• Средний чек: <b>${fmt(aov)} ₸</b>\n` +
+        `• Средний чек (Работа): <b>${fmt(aov)} ₸</b>\n` +
         `• Всего лидов: <b>${data.total_count}</b>\n\n` +
         `📂 <b>Воронка заказов:</b>\n` +
         `🆕 Новые: ${data.new_count}\n` +
@@ -247,13 +316,30 @@ export const AdminHandler = {
         `✅ Завершены: ${data.done_count}\n` +
         `❌ Отмены: ${data.cancel_count}`;
 
-      await ctx.telegram.editMessageText(
-        ctx.chat.id,
-        loading.message_id,
-        null,
-        report,
-        { parse_mode: "HTML" },
-      );
+      // В зависимости от того, как вызвали (команда или коллбэк), обновляем или шлем новое
+      if (ctx.callbackQuery) {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id,
+          ctx.callbackQuery.message.message_id,
+          null,
+          report,
+          {
+            parse_mode: "HTML",
+            reply_markup: AdminKeyboards.refresh.reply_markup,
+          },
+        );
+      } else {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id,
+          loading.message_id,
+          null,
+          report,
+          {
+            parse_mode: "HTML",
+            reply_markup: AdminKeyboards.refresh.reply_markup,
+          },
+        );
+      }
     } catch (e) {
       console.error(e);
       await ctx.telegram.editMessageText(
@@ -267,7 +353,7 @@ export const AdminHandler = {
 
   /**
    * ===========================================================================
-   * 3. 📦 ORDER MANAGEMENT SYSTEM (OMS)
+   * 3. 📦 ORDER MANAGEMENT SYSTEM & METADATA
    * ===========================================================================
    */
 
@@ -280,13 +366,20 @@ export const AdminHandler = {
         `📋 <b>Действия:</b>\n` +
         `• Смена статусов (New -> Work -> Done)\n` +
         `• Просмотр сметы и контактов\n` +
-        `• Фиксация расходов`,
+        `• Добавление адреса и комментариев\n` +
+        `• Фиксация причин отмены`,
     );
   },
 
   async findOrder(ctx) {
-    const parts = ctx.message.text.split(" ");
-    const orderId = parts[1];
+    const text = ctx.message?.text || ctx.callbackQuery?.data; // Обработка и команд и коллбэков (refresh)
+    let orderId;
+
+    if (text.startsWith("/order")) {
+      orderId = text.split(" ")[1];
+    } else if (text.startsWith("refresh_order_")) {
+      orderId = text.split("_")[2];
+    }
 
     if (!orderId || isNaN(orderId)) {
       return ctx.reply(
@@ -319,26 +412,58 @@ export const AdminHandler = {
         cancel: "❌",
       };
 
+      // ИЗМЕНЕНИЕ: Форматируем новые поля JSONB (Адрес, Коммент, Причина отказа)
+      const addressLine = details.address
+        ? `\n📍 <b>Адрес:</b> ${details.address}`
+        : `\n📍 <b>Адрес:</b> <i>Не указан</i>`;
+      const commentLine = details.comment
+        ? `\n📝 <b>Комментарий:</b> <i>${details.comment}</i>`
+        : ``;
+
+      let cancelLine = ``;
+      if (order.status === "cancel") {
+        const reasonStr =
+          details.cancel_reason === "client"
+            ? "Отказ клиента"
+            : details.cancel_reason === "firm"
+              ? "Отказала фирма"
+              : "Не указана";
+        cancelLine = `\n⚠️ <b>Причина отмены:</b> ${reasonStr}\n`;
+      }
+
       const info =
         `📦 <b>ЗАКАЗ #${order.id}</b>\n` +
         `Статус: <b>${statusEmoji[order.status] || "❓"} ${order.status.toUpperCase()}</b>\n` +
-        `Дата: ${new Date(order.created_at).toLocaleString("ru-RU")}\n\n` +
-        `👤 <b>Клиент:</b>\n` +
+        `Дата: ${new Date(order.created_at).toLocaleString("ru-RU")}\n` +
+        cancelLine +
+        `\n👤 <b>Клиент:</b>\n` +
         `Имя: ${order.first_name}\n` +
         `Тел: <code>${order.phone || "Не указан"}</code>\n` +
-        `TG: @${order.username || "N/A"}\n\n` +
+        `TG: @${order.username || "N/A"}\n` +
+        addressLine +
+        commentLine +
+        `\n\n` +
         `🏠 <b>Объект:</b>\n` +
         `Площадь: ${details.params?.area} м²\n` +
         `Комнат: ${details.params?.rooms}\n` +
         `Стены: ${details.params?.wallType}\n\n` +
         `💰 <b>Финансы:</b>\n` +
-        `Сумма работ: <b>${fmt(order.total_price)} ₸</b>\n` +
-        `Прогноз мат.: ~${fmt(details.total?.material || 0)} ₸`;
+        `Стоимость работ: <b>${fmt(order.total_price)} ₸</b>\n` +
+        `<i>Прогноз мат. (справочно): ~${fmt(details.total?.material_info || 0)} ₸</i>`;
 
-      await ctx.replyWithHTML(
-        info,
-        AdminKeyboards.orderControl(order.id, order.status),
-      );
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(info, {
+          parse_mode: "HTML",
+          reply_markup: AdminKeyboards.orderControl(order.id, order.status)
+            .reply_markup,
+        });
+        await ctx.answerCbQuery();
+      } else {
+        await ctx.replyWithHTML(
+          info,
+          AdminKeyboards.orderControl(order.id, order.status),
+        );
+      }
     } catch (e) {
       console.error(e);
       ctx.reply("❌ Ошибка при поиске заказа.");
@@ -347,7 +472,6 @@ export const AdminHandler = {
 
   async handleOrderStatusChange(ctx, orderId, newStatus) {
     try {
-      // Транзакционное обновление
       await db.query(
         `UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2`,
         [newStatus, orderId],
@@ -355,21 +479,97 @@ export const AdminHandler = {
 
       await ctx.answerCbQuery(`✅ Статус изменен: ${newStatus.toUpperCase()}`);
 
-      // Обновляем сообщение (чтобы кнопки перерисовались под новый статус)
-      // Для этого нам нужно получить обновленный заказ, но для скорости просто скажем "Обновите меню"
-      // Или вызовем findOrder логику, но в рамках callback это сложно.
-      // Проще всего отредактировать текст:
-      await ctx.editMessageText(
-        `✅ <b>Заказ #${orderId} обновлен!</b>\n` +
-          `Новый статус: <b>${newStatus.toUpperCase()}</b>\n\n` +
-          `Для дальнейших действий введите /order ${orderId} снова.`,
-        { parse_mode: "HTML" },
-      );
-
-      // TODO: Здесь можно добавить уведомление клиенту о смене статуса
+      // Авто-обновление карточки заказа
+      ctx.callbackQuery.data = `refresh_order_${orderId}`;
+      return this.findOrder(ctx);
     } catch (e) {
       console.error(e);
       ctx.answerCbQuery("❌ Ошибка смены статуса");
+    }
+  },
+
+  // --- ACTIONS: ADDRESS & COMMENTS (FSM Logic) ---
+
+  async promptAddress(ctx, orderId) {
+    ctx.session.adminState = ADMIN_STATES.WAIT_ADDRESS;
+    ctx.session.targetOrderId = orderId;
+    await ctx.answerCbQuery();
+    await ctx.replyWithHTML(
+      `📍 <b>Заказ #${orderId}</b>\nВведите адрес объекта (Улица, Дом, Кв):\n<i>(Или напишите "Отмена")</i>`,
+    );
+  },
+
+  async processAddressInput(ctx) {
+    const orderId = ctx.session.targetOrderId;
+    const address = ctx.message.text;
+
+    try {
+      await OrderService.updateOrderDetails(orderId, "address", address);
+      ctx.session.adminState = ADMIN_STATES.IDLE;
+      await ctx.reply(`✅ Адрес для заказа #${orderId} успешно сохранен.`);
+
+      // Имитируем запрос для обновления карточки заказа
+      ctx.message.text = `/order ${orderId}`;
+      return this.findOrder(ctx);
+    } catch (e) {
+      ctx.reply("❌ Ошибка при сохранении адреса.");
+    }
+  },
+
+  async promptComment(ctx, orderId) {
+    ctx.session.adminState = ADMIN_STATES.WAIT_COMMENT;
+    ctx.session.targetOrderId = orderId;
+    await ctx.answerCbQuery();
+    await ctx.replyWithHTML(
+      `📝 <b>Заказ #${orderId}</b>\nВведите ваш комментарий (заметку):\n<i>(Или напишите "Отмена")</i>`,
+    );
+  },
+
+  async processCommentInput(ctx) {
+    const orderId = ctx.session.targetOrderId;
+    const comment = ctx.message.text;
+
+    try {
+      await OrderService.updateOrderDetails(orderId, "comment", comment);
+      ctx.session.adminState = ADMIN_STATES.IDLE;
+      await ctx.reply(`✅ Комментарий к заказу #${orderId} успешно сохранен.`);
+
+      ctx.message.text = `/order ${orderId}`;
+      return this.findOrder(ctx);
+    } catch (e) {
+      ctx.reply("❌ Ошибка при сохранении комментария.");
+    }
+  },
+
+  // --- ACTIONS: CANCEL ORDER (Split Reason) ---
+
+  async promptCancel(ctx, orderId) {
+    await ctx.editMessageText(
+      `⚠️ <b>Подтверждение отмены заказа #${orderId}</b>\n\nУкажите, по чьей инициативе произошла отмена:`,
+      {
+        parse_mode: "HTML",
+        reply_markup: AdminKeyboards.cancelReasonControl(orderId).reply_markup,
+      },
+    );
+  },
+
+  async processCancelReason(ctx, orderId, reason) {
+    try {
+      // 1. Сохраняем причину в JSONB
+      await OrderService.updateOrderDetails(orderId, "cancel_reason", reason);
+      // 2. Меняем статус на cancel
+      await db.query(
+        `UPDATE orders SET status = 'cancel', updated_at = NOW() WHERE id = $1`,
+        [orderId],
+      );
+
+      await ctx.answerCbQuery("✅ Заказ успешно отменен.");
+
+      ctx.callbackQuery.data = `refresh_order_${orderId}`;
+      return this.findOrder(ctx);
+    } catch (e) {
+      console.error(e);
+      ctx.answerCbQuery("❌ Ошибка отмены заказа");
     }
   },
 
@@ -425,7 +625,6 @@ export const AdminHandler = {
     }
 
     try {
-      // Защита: Нельзя менять роль самому себе (чтобы случайно не лишить себя админки)
       if (String(targetId) === String(ctx.from.id)) {
         return ctx.reply("⛔ Нельзя менять роль самому себе.");
       }
@@ -437,7 +636,6 @@ export const AdminHandler = {
         { parse_mode: "HTML" },
       );
 
-      // Уведомление сотрудника
       ctx.telegram
         .sendMessage(
           targetId,
@@ -472,7 +670,10 @@ export const AdminHandler = {
 
       msg += `\n📝 <b>Изменить цену:</b>\n`;
       msg += `<code>/setprice key value</code>\n`;
-      msg += `<i>Пример: /setprice price_cable 450</i>`;
+      msg += `<i>Пример: /setprice price_cable 450</i>\n\n`;
+
+      // ИЗМЕНЕНИЕ: Добавлено четкое предупреждение для администратора
+      msg += `⚠️ <b>ВНИМАНИЕ:</b> Любые изменения цен здесь <b>МОМЕНТАЛЬНО</b> применяются к калькулятору в боте для всех новых клиентов.`;
 
       await ctx.replyWithHTML(msg);
     } catch (e) {
@@ -488,7 +689,6 @@ export const AdminHandler = {
     const value = args[2];
 
     try {
-      // Upsert Logic
       await db.query(
         `
             INSERT INTO settings (key, value, updated_at) 
@@ -524,7 +724,6 @@ export const AdminHandler = {
     const load = os.loadavg()[0].toFixed(2);
 
     try {
-      // Проверка соединения с БД
       const start = Date.now();
       await db.query("SELECT 1");
       const dbPing = Date.now() - start;
