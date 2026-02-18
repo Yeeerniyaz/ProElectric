@@ -39,7 +39,7 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       SESSION_SECRET: ${SESSION_SECRET}
       ADMIN_LOGIN: ${ADMIN_LOGIN}
-      ADMIN_PASS_HASH: ${ADMIN_PASS_HASH}
+      ADMIN_PASS: ${ADMIN_PASS} # <-- ИСПРАВЛЕНО ЗДЕСЬ
     # Мы убрали volumes, чтобы Docker брал файлы из образа
     ports:
       - "${WEB_PORT:-3000}:3000"
