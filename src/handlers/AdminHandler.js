@@ -1,26 +1,23 @@
 /**
  * @file src/handlers/AdminHandler.js
  * @description Контроллер панели администратора (Enterprise CRM Controller).
- * Реализует: Финансовый дашборд, Управление персоналом (RBAC), SQL-терминал, Бэкапы.
- * Архитектура: Self-Contained (все константы внутри).
+ * Реализует полный цикл управления бизнесом, персоналом и системой.
+ * Архитектура: Monolithic Controller with Direct DB Access for Analytics.
  *
  * @author ProElectric Team
- * @version 6.5.0 (Owner Edition)
+ * @version 7.0.0 (Senior Architect Edition)
  */
 
 import { Markup } from "telegraf";
 import { UserService } from "../services/UserService.js";
 import { OrderService } from "../services/OrderService.js";
 import * as db from "../database/index.js";
+import os from "os";
 
 // =============================================================================
 // 🔧 INTERNAL CONSTANTS & CONFIGURATION
 // =============================================================================
 
-/**
- * Роли пользователей (дублируем для автономности, либо берем из UserService если он экспортирует)
- * Для надежности определим локально маппинг.
- */
 const ROLES = Object.freeze({
   OWNER: "owner",
   ADMIN: "admin",
@@ -29,42 +26,37 @@ const ROLES = Object.freeze({
   BANNED: "banned",
 });
 
-/**
- * Тексты кнопок (Admin UI).
- */
 const BUTTONS = Object.freeze({
-  // Главная
+  // Главное меню
   DASHBOARD: "📊 P&L Отчет",
   ORDERS: "📦 Управление заказами",
   SETTINGS: "⚙️ Настройки цен",
   STAFF: "👥 Персонал",
 
-  // Owner Specific
+  // Owner Exclusive
   SQL_CONSOLE: "👨‍💻 SQL Терминал",
   BACKUP: "💾 Бэкап базы",
+  SERVER_STATS: "🖥 Состояние сервера",
 
   // Навигация
   BACK: "🔙 В главное меню",
-  REFRESH: "🔄 Обновить",
+  REFRESH: "🔄 Обновить данные",
 });
 
-/**
- * Клавиатуры (Admin Keyboards Factory).
- */
+// =============================================================================
+// 🎹 KEYBOARDS FACTORY
+// =============================================================================
+
 const AdminKeyboards = {
-  /**
-   * Главное меню админа.
-   * Динамически добавляет кнопки Владельца.
-   */
   mainMenu: (role) => {
     const buttons = [
       [BUTTONS.DASHBOARD, BUTTONS.ORDERS],
       [BUTTONS.SETTINGS, BUTTONS.STAFF],
     ];
 
-    // 🔒 Эксклюзив для Владельца
     if (role === ROLES.OWNER) {
       buttons.push([BUTTONS.SQL_CONSOLE, BUTTONS.BACKUP]);
+      buttons.push([BUTTONS.SERVER_STATS]);
     }
 
     buttons.push([BUTTONS.BACK]);
@@ -72,19 +64,49 @@ const AdminKeyboards = {
   },
 
   /**
-   * Меню управления заказом (Inline).
+   * Клавиатура управления конкретным заказом.
+   * Динамически меняется в зависимости от статуса.
    */
-  orderActions: (orderId) =>
-    Markup.inlineKeyboard([
-      [
-        Markup.button.callback("🛠 В работу", `status_${orderId}_work`),
-        Markup.button.callback("✅ Завершить", `status_${orderId}_done`),
-      ],
-      [
-        Markup.button.callback("❌ Отменить", `status_${orderId}_cancel`),
-        Markup.button.callback("💰 Расход", `expense_${orderId}`),
-      ],
-    ]),
+  orderControl: (orderId, status) => {
+    const actions = [];
+
+    // Логика переходов (State Machine Transition UI)
+    if (status === "new") {
+      actions.push([
+        Markup.button.callback(
+          "👷 Взять в работу",
+          `status_${orderId}_processing`,
+        ),
+      ]);
+      actions.push([
+        Markup.button.callback("❌ Отклонить", `status_${orderId}_cancel`),
+      ]);
+    } else if (status === "processing") {
+      actions.push([
+        Markup.button.callback("🛠 Начать монтаж", `status_${orderId}_work`),
+      ]);
+      actions.push([
+        Markup.button.callback("↩️ Вернуть в новые", `status_${orderId}_new`),
+      ]);
+    } else if (status === "work") {
+      actions.push([
+        Markup.button.callback("✅ Завершить заказ", `status_${orderId}_done`),
+      ]);
+      actions.push([
+        Markup.button.callback("💸 Добавить расход", `expense_${orderId}`),
+      ]);
+    } else if (status === "done") {
+      actions.push([
+        Markup.button.callback("📜 Скачать акт", `download_${orderId}`),
+      ]);
+    }
+
+    return Markup.inlineKeyboard(actions);
+  },
+
+  refresh: Markup.inlineKeyboard([
+    [Markup.button.callback("🔄 Обновить", "admin_refresh_dashboard")],
+  ]),
 };
 
 // =============================================================================
@@ -94,284 +116,328 @@ const AdminKeyboards = {
 export const AdminHandler = {
   /**
    * ===========================================================================
-   * 1. 🚦 ГЛАВНОЕ МЕНЮ И РОУТИНГ
+   * 1. 🚦 ENTRY POINT & ROUTING
    * ===========================================================================
    */
 
-  /**
-   * Точка входа в админку.
-   */
   async showAdminMenu(ctx) {
     try {
       const userId = ctx.from.id;
       const role = await UserService.getUserRole(userId);
 
-      // Проверка прав (Middleware level check)
       if (![ROLES.OWNER, ROLES.ADMIN, ROLES.MANAGER].includes(role)) {
         return ctx.reply(
-          "⛔ <b>Доступ запрещен.</b>\nЭта секция только для персонала.",
+          "⛔ <b>Доступ запрещен.</b>\nОбратитесь к администратору.",
           { parse_mode: "HTML" },
         );
       }
 
-      const title =
-        role === ROLES.OWNER
-          ? "👑 ЦЕНТР УПРАВЛЕНИЯ (OWNER)"
-          : "💼 ПАНЕЛЬ МЕНЕДЖЕРА";
-
       await ctx.replyWithHTML(
-        `<b>${title}</b>\n` +
-          `Система работает в штатном режиме.\n` +
-          `Выберите раздел:`,
+        `💼 <b>ПАНЕЛЬ УПРАВЛЕНИЯ</b>\n` +
+          `👤 Пользователь: <b>${ctx.from.first_name}</b>\n` +
+          `🔑 Уровень доступа: <code>${role.toUpperCase()}</code>\n\n` +
+          `Выберите модуль управления:`,
         AdminKeyboards.mainMenu(role),
       );
     } catch (e) {
-      console.error("[AdminHandler] Menu Error:", e);
+      console.error("[AdminHandler] Init Error:", e);
+      ctx.reply("⚠️ Ошибка инициализации панели.");
     }
   },
 
-  /**
-   * Роутер текстовых сообщений Админки.
-   */
   async handleMessage(ctx) {
     const text = ctx.message.text;
     const userId = ctx.from.id;
-
-    // 1. Проверяем права перед выполнением любой команды
     const role = await UserService.getUserRole(userId);
+
+    // Security Guard
     if (![ROLES.OWNER, ROLES.ADMIN, ROLES.MANAGER].includes(role)) return;
 
-    // 2. Маршрутизация
-    switch (text) {
-      case BUTTONS.DASHBOARD:
-        return this.showDashboard(ctx);
-      case BUTTONS.ORDERS:
-        return this.showOrdersInstruction(ctx);
-      case BUTTONS.SETTINGS:
-        return this.showSettingsInstruction(ctx);
-      case BUTTONS.STAFF:
-        return this.showStaffInstruction(ctx);
+    // Command Router
+    if (text === BUTTONS.DASHBOARD) return this.showDashboard(ctx);
+    if (text === BUTTONS.ORDERS) return this.showOrdersInstruction(ctx);
+    if (text === BUTTONS.SETTINGS) return this.showSettings(ctx);
+    if (text === BUTTONS.STAFF) return this.showStaffList(ctx);
 
-      // Owner Only Routes
-      case BUTTONS.SQL_CONSOLE:
-        return role === ROLES.OWNER
-          ? this.showSQLInstruction(ctx)
-          : ctx.reply("⛔ Доступно только Владельцу.");
-      case BUTTONS.BACKUP:
-        return role === ROLES.OWNER
-          ? this.processBackup(ctx)
-          : ctx.reply("⛔ Доступно только Владельцу.");
-
-      case BUTTONS.BACK:
-        return ctx.reply(
-          "Выход в главное меню.",
-          Markup.keyboard([
-            ["🚀 Рассчитать стоимость"],
-            ["📂 Мои заявки", "💰 Прайс-лист"],
-            ["📞 Контакты", "ℹ️ Как мы работаем"],
-            ["👑 Админ-панель"],
-          ]).resize(),
-        );
-
-      default:
-        // Если это не команда меню, возможно это контекстная команда (например SQL)
-        if (text.startsWith("/sql") && role === ROLES.OWNER)
-          return this.processSQL(ctx);
-      // return ctx.reply("⚠️ Используйте кнопки меню.");
+    // Owner Only Routes
+    if (role === ROLES.OWNER) {
+      if (text === BUTTONS.SQL_CONSOLE) return this.showSQLInstruction(ctx);
+      if (text === BUTTONS.BACKUP) return this.processBackup(ctx);
+      if (text === BUTTONS.SERVER_STATS) return this.showServerStats(ctx);
     }
+
+    // Navigation
+    if (text === BUTTONS.BACK) {
+      return ctx.reply(
+        "🏠 Главное меню",
+        Markup.keyboard([
+          ["🚀 Рассчитать стоимость"],
+          ["📂 Мои заявки", "💰 Прайс-лист"],
+          ["📞 Контакты", "ℹ️ Как мы работаем"],
+          ["👑 Админ-панель"],
+        ]).resize(),
+      );
+    }
+
+    // Context Commands
+    if (text.startsWith("/setprice")) return this.processSetPrice(ctx);
+    if (text.startsWith("/setrole")) return this.processSetRole(ctx);
+    if (text.startsWith("/sql") && role === ROLES.OWNER)
+      return this.processSQL(ctx);
+    if (text.startsWith("/order")) return this.findOrder(ctx);
   },
 
   /**
    * ===========================================================================
-   * 2. 💰 ФИНАНСОВЫЙ ДАШБОРД (P&L)
+   * 2. 📊 ANALYTICS DASHBOARD (P&L)
    * ===========================================================================
    */
 
   async showDashboard(ctx) {
-    const msg = await ctx.reply("⏳ Агрегация финансовых данных...");
-    try {
-      // Получаем сводку через UserService (он там дергает 3 запроса параллельно)
-      // Или пишем прямой SQL для детального P&L
-      const res = await db.query(`
-          SELECT 
-            COUNT(*) as total_orders,
-            SUM(CASE WHEN status = 'done' THEN total_price ELSE 0 END) as gross_revenue,
-            SUM(CASE WHEN status = 'done' THEN (details->'total'->>'material')::numeric ELSE 0 END) as mat_cost
-          FROM orders
-      `);
+    const loading = await ctx.reply("⏳ Сбор аналитики...");
 
+    try {
+      // Сложный агрегирующий запрос для получения всей статистики за один раз
+      const query = `
+        SELECT 
+          COUNT(*) as total_count,
+          COUNT(*) FILTER (WHERE status = 'new') as new_count,
+          COUNT(*) FILTER (WHERE status = 'processing') as processing_count,
+          COUNT(*) FILTER (WHERE status = 'work') as work_count,
+          COUNT(*) FILTER (WHERE status = 'done') as done_count,
+          COUNT(*) FILTER (WHERE status = 'cancel') as cancel_count,
+          COALESCE(SUM(total_price) FILTER (WHERE status = 'done'), 0) as revenue,
+          COALESCE(SUM((details->'total'->>'material')::numeric) FILTER (WHERE status = 'done'), 0) as material_cost
+        FROM orders
+      `;
+
+      const res = await db.query(query);
       const data = res.rows[0];
-      const revenue = parseFloat(data.gross_revenue || 0);
-      const materials = parseFloat(data.mat_cost || 0); // Это примерная себестоимость из сметы
-      const profit = revenue - materials; // Грязная прибыль
+
+      // Вычисления KPI
+      const revenue = parseFloat(data.revenue);
+      const materials = parseFloat(data.material_cost);
+      const grossProfit = revenue - materials;
+      const margin =
+        revenue > 0 ? ((grossProfit / revenue) * 100).toFixed(1) : 0;
+      const conversion =
+        data.total_count > 0
+          ? ((data.done_count / data.total_count) * 100).toFixed(1)
+          : 0;
+      const aov =
+        data.done_count > 0 ? (revenue / data.done_count).toFixed(0) : 0; // Average Order Value
 
       const fmt = (n) => new Intl.NumberFormat("ru-RU").format(n);
 
       const report =
-        `📊 <b>ФИНАНСОВЫЙ ОТЧЕТ (P&L)</b>\n` +
+        `📊 <b>ФИНАНСОВЫЙ ОТЧЕТ (Real-Time)</b>\n` +
         `➖➖➖➖➖➖➖➖➖➖\n` +
-        `📦 <b>Всего заказов:</b> ${data.total_orders}\n` +
-        `💰 <b>Оборот (Выручка):</b> ${fmt(revenue)} ₸\n` +
-        `📉 <b>Материалы (Est.):</b> ${fmt(materials)} ₸\n` +
+        `💰 <b>ВЫРУЧКА:</b> ${fmt(revenue)} ₸\n` +
+        `📉 <b>Расход (Мат.):</b> ${fmt(materials)} ₸\n` +
+        `💎 <b>ПРИБЫЛЬ: ${fmt(grossProfit)} ₸</b> (Маржа: ${margin}%)\n` +
         `➖➖➖➖➖➖➖➖➖➖\n` +
-        `💎 <b>ГРЯЗНАЯ ПРИБЫЛЬ: ${fmt(profit)} ₸</b>\n` +
-        `<i>* Данные основаны на статусе 'done'.</i>`;
+        `📈 <b>KPI Продаж:</b>\n` +
+        `• Конверсия: <b>${conversion}%</b>\n` +
+        `• Средний чек: <b>${fmt(aov)} ₸</b>\n` +
+        `• Всего лидов: <b>${data.total_count}</b>\n\n` +
+        `📂 <b>Воронка заказов:</b>\n` +
+        `🆕 Новые: ${data.new_count}\n` +
+        `👨‍🔧 В обработке: ${data.processing_count}\n` +
+        `🛠 В работе: ${data.work_count}\n` +
+        `✅ Завершены: ${data.done_count}\n` +
+        `❌ Отмены: ${data.cancel_count}`;
 
       await ctx.telegram.editMessageText(
         ctx.chat.id,
-        msg.message_id,
+        loading.message_id,
         null,
         report,
         { parse_mode: "HTML" },
       );
     } catch (e) {
       console.error(e);
-      ctx.reply("❌ Ошибка расчета P&L.");
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        loading.message_id,
+        null,
+        "❌ Ошибка формирования отчета.",
+      );
     }
   },
 
   /**
    * ===========================================================================
-   * 3. 👨‍💻 SQL ТЕРМИНАЛ (OWNER ONLY)
+   * 3. 📦 ORDER MANAGEMENT SYSTEM (OMS)
    * ===========================================================================
    */
 
-  async showSQLInstruction(ctx) {
+  async showOrdersInstruction(ctx) {
     await ctx.replyWithHTML(
-      `👨‍💻 <b>SQL КОНСОЛЬ (Direct Access)</b>\n\n` +
-        `Позволяет выполнять произвольные запросы к базе данных.\n` +
-        `⚠️ <b>ВНИМАНИЕ:</b> Вы имеете полные права. ` +
-        `Команды <code>DROP</code>, <code>DELETE</code>, <code>TRUNCATE</code> необратимы!\n\n` +
-        `📝 <b>Синтаксис:</b>\n` +
-        `<code>/sql SELECT * FROM users LIMIT 5</code>\n` +
-        `<code>/sql UPDATE users SET role='admin' WHERE telegram_id=123</code>`,
+      `📦 <b>ЦЕНТР УПРАВЛЕНИЯ ЗАКАЗАМИ</b>\n\n` +
+        `🔎 <b>Поиск заказа:</b>\n` +
+        `Введите команду: <code>/order ID</code>\n` +
+        `<i>Пример: /order 15</i>\n\n` +
+        `📋 <b>Действия:</b>\n` +
+        `• Смена статусов (New -> Work -> Done)\n` +
+        `• Просмотр сметы и контактов\n` +
+        `• Фиксация расходов`,
     );
   },
 
-  async processSQL(ctx) {
-    // 1. Парсинг
-    const queryText = ctx.message.text.replace(/^\/sql\s+/, "").trim();
-    if (!queryText)
-      return ctx.reply("⚠️ Введите SQL запрос после команды /sql");
+  async findOrder(ctx) {
+    const parts = ctx.message.text.split(" ");
+    const orderId = parts[1];
 
-    // 2. Логирование безопасности
-    console.warn(`[SECURITY] SQL Executed by ${ctx.from.id}: ${queryText}`);
-
-    const start = Date.now();
-    try {
-      // 3. Выполнение
-      const res = await db.query(queryText);
-      const duration = Date.now() - start;
-
-      // 4. Форматирование результата
-      let message = `✅ <b>SQL SUCCESS</b> (${duration}ms)\n`;
-      message += `Affected Rows: ${res.rowCount}\n\n`;
-
-      if (res.command === "SELECT" && res.rows.length > 0) {
-        const json = JSON.stringify(res.rows, null, 2);
-
-        // Если ответ слишком большой для Телеграма (4096 символов)
-        if (json.length > 3500) {
-          const buffer = Buffer.from(json, "utf-8");
-          await ctx.replyWithDocument({
-            source: buffer,
-            filename: `sql_result_${Date.now()}.json`,
-          });
-          return;
-        } else {
-          message += `<pre>${json}</pre>`;
-        }
-      } else if (res.rows.length === 0 && res.command === "SELECT") {
-        message += `<i>(Пустой результат)</i>`;
-      }
-
-      await ctx.replyWithHTML(message);
-    } catch (e) {
-      await ctx.replyWithHTML(`❌ <b>SQL ERROR</b>\n<pre>${e.message}</pre>`);
+    if (!orderId || isNaN(orderId)) {
+      return ctx.reply(
+        "⚠️ Некорректный ID заказа. Используйте: /order <число>",
+      );
     }
-  },
 
-  /**
-   * ===========================================================================
-   * 4. 💾 БЭКАП СИСТЕМЫ (OWNER ONLY)
-   * ===========================================================================
-   */
-
-  async processBackup(ctx) {
     try {
-      await ctx.reply("💾 Создаю дамп базы данных...");
+      const res = await db.query(
+        `SELECT o.*, u.first_name, u.username, u.phone 
+             FROM orders o 
+             JOIN users u ON o.user_id = u.telegram_id 
+             WHERE o.id = $1`,
+        [orderId],
+      );
 
-      // В реальном проекте тут можно использовать pg_dump через child_process
-      // Но в рамках Node.js драйвера мы можем выгрузить основные таблицы в JSON
-
-      const tables = ["users", "orders", "settings"];
-      const dump = {};
-
-      for (const table of tables) {
-        const res = await db.query(`SELECT * FROM ${table}`);
-        dump[table] = res.rows;
+      if (res.rows.length === 0) {
+        return ctx.reply("❌ Заказ не найден.");
       }
 
-      const json = JSON.stringify(dump, null, 2);
-      const buffer = Buffer.from(json, "utf-8");
+      const order = res.rows[0];
+      const details = order.details || {};
+      const fmt = (n) => new Intl.NumberFormat("ru-RU").format(n);
 
-      const date = new Date().toISOString().slice(0, 10);
-      await ctx.replyWithDocument(
-        {
-          source: buffer,
-          filename: `backup_proelectric_${date}.json`,
-        },
-        {
-          caption: `✅ <b>Полный бэкап системы</b>\nТаблицы: ${tables.join(", ")}`,
-        },
+      const statusEmoji = {
+        new: "🆕",
+        processing: "⏳",
+        work: "🛠",
+        done: "✅",
+        cancel: "❌",
+      };
+
+      const info =
+        `📦 <b>ЗАКАЗ #${order.id}</b>\n` +
+        `Статус: <b>${statusEmoji[order.status] || "❓"} ${order.status.toUpperCase()}</b>\n` +
+        `Дата: ${new Date(order.created_at).toLocaleString("ru-RU")}\n\n` +
+        `👤 <b>Клиент:</b>\n` +
+        `Имя: ${order.first_name}\n` +
+        `Тел: <code>${order.phone || "Не указан"}</code>\n` +
+        `TG: @${order.username || "N/A"}\n\n` +
+        `🏠 <b>Объект:</b>\n` +
+        `Площадь: ${details.params?.area} м²\n` +
+        `Комнат: ${details.params?.rooms}\n` +
+        `Стены: ${details.params?.wallType}\n\n` +
+        `💰 <b>Финансы:</b>\n` +
+        `Сумма работ: <b>${fmt(order.total_price)} ₸</b>\n` +
+        `Прогноз мат.: ~${fmt(details.total?.material || 0)} ₸`;
+
+      await ctx.replyWithHTML(
+        info,
+        AdminKeyboards.orderControl(order.id, order.status),
       );
     } catch (e) {
-      ctx.reply(`❌ Ошибка бэкапа: ${e.message}`);
+      console.error(e);
+      ctx.reply("❌ Ошибка при поиске заказа.");
+    }
+  },
+
+  async handleOrderStatusChange(ctx, orderId, newStatus) {
+    try {
+      // Транзакционное обновление
+      await db.query(
+        `UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2`,
+        [newStatus, orderId],
+      );
+
+      await ctx.answerCbQuery(`✅ Статус изменен: ${newStatus.toUpperCase()}`);
+
+      // Обновляем сообщение (чтобы кнопки перерисовались под новый статус)
+      // Для этого нам нужно получить обновленный заказ, но для скорости просто скажем "Обновите меню"
+      // Или вызовем findOrder логику, но в рамках callback это сложно.
+      // Проще всего отредактировать текст:
+      await ctx.editMessageText(
+        `✅ <b>Заказ #${orderId} обновлен!</b>\n` +
+          `Новый статус: <b>${newStatus.toUpperCase()}</b>\n\n` +
+          `Для дальнейших действий введите /order ${orderId} снова.`,
+        { parse_mode: "HTML" },
+      );
+
+      // TODO: Здесь можно добавить уведомление клиенту о смене статуса
+    } catch (e) {
+      console.error(e);
+      ctx.answerCbQuery("❌ Ошибка смены статуса");
     }
   },
 
   /**
    * ===========================================================================
-   * 5. 👥 УПРАВЛЕНИЕ ПЕРСОНАЛОМ
+   * 4. 👥 STAFF MANAGEMENT (RBAC)
    * ===========================================================================
    */
 
-  async showStaffInstruction(ctx) {
-    await ctx.replyWithHTML(
-      `👥 <b>УПРАВЛЕНИЕ КОМАНДОЙ</b>\n\n` +
-        `Чтобы назначить роль, используйте команду:\n` +
-        `<code>/setrole ID ROLE</code>\n\n` +
-        `<b>Доступные роли:</b>\n` +
-        `🔹 <code>admin</code> — Полный доступ (кроме SQL)\n` +
-        `🔹 <code>manager</code> — Управление заказами\n` +
-        `🔹 <code>user</code> — Снять права (обычный клиент)\n` +
-        `🚫 <code>banned</code> — Заблокировать доступ\n\n` +
-        `<i>Пример: /setrole 123456789 manager</i>`,
-    );
+  async showStaffList(ctx) {
+    try {
+      const res = await db.query(`
+            SELECT telegram_id, first_name, username, role, created_at 
+            FROM users 
+            WHERE role IN ('owner', 'admin', 'manager')
+            ORDER BY role DESC, created_at ASC
+        `);
+
+      if (res.rows.length === 0)
+        return ctx.reply("👥 Список персонала пуст (кроме вас).");
+
+      let msg = "👥 <b>КОМАНДА PRO ELECTRIC</b>\n\n";
+      res.rows.forEach((u, i) => {
+        const icon =
+          u.role === "owner" ? "👑" : u.role === "admin" ? "🛡" : "💼";
+        msg += `${i + 1}. ${icon} <b>${u.first_name}</b> (@${u.username || "NoLink"})\n`;
+        msg += `   ID: <code>${u.telegram_id}</code> | Роль: ${u.role.toUpperCase()}\n\n`;
+      });
+
+      msg += `➖➖➖➖➖➖➖➖➖➖\n`;
+      msg += `📝 <b>Назначить роль:</b>\n`;
+      msg += `<code>/setrole ID ROLE</code>\n\n`;
+      msg += `<i>Доступные роли: admin, manager, user, banned</i>`;
+
+      await ctx.replyWithHTML(msg);
+    } catch (e) {
+      ctx.reply("❌ Ошибка загрузки списка персонала.");
+    }
   },
 
-  // Этот метод должен вызываться из server.js через bot.hears(/^\/setrole/...)
   async processSetRole(ctx) {
-    // Проверка на Владельца или Админа
-    if (!(await UserService.isAdmin(ctx.from.id))) return;
+    const args = ctx.message.text.split(" ");
+    if (args.length < 3) return ctx.reply("⚠️ Формат: /setrole <ID> <ROLE>");
 
-    const parts = ctx.message.text.split(" "); // /setrole 123 admin
-    if (parts.length < 3) return ctx.reply("⚠️ Формат: /setrole ID ROLE");
+    const targetId = args[1];
+    const newRole = args[2].toLowerCase();
+    const validRoles = Object.values(ROLES);
 
-    const targetId = parts[1];
-    const newRole = parts[2].toLowerCase();
+    if (!validRoles.includes(newRole)) {
+      return ctx.reply(
+        `❌ Недопустимая роль. Используйте: ${validRoles.join(", ")}`,
+      );
+    }
 
     try {
-      const result = await UserService.changeUserRole(
-        ctx.from.id,
-        targetId,
-        newRole,
-      );
+      // Защита: Нельзя менять роль самому себе (чтобы случайно не лишить себя админки)
+      if (String(targetId) === String(ctx.from.id)) {
+        return ctx.reply("⛔ Нельзя менять роль самому себе.");
+      }
+
+      await UserService.changeUserRole(ctx.from.id, targetId, newRole);
+
       await ctx.reply(
-        `✅ <b>Успешно!</b>\nПользователь ${targetId} теперь <b>${newRole.toUpperCase()}</b>.`,
+        `✅ Пользователю <code>${targetId}</code> назначена роль <b>${newRole.toUpperCase()}</b>`,
+        { parse_mode: "HTML" },
       );
 
-      // Уведомляем жертву/счастливчика
+      // Уведомление сотрудника
       ctx.telegram
         .sendMessage(
           targetId,
@@ -386,80 +452,162 @@ export const AdminHandler = {
 
   /**
    * ===========================================================================
-   * 6. ⚙️ НАСТРОЙКИ (ЦЕНООБРАЗОВАНИЕ)
+   * 5. ⚙️ DYNAMIC PRICING ENGINE
    * ===========================================================================
    */
 
-  async showSettingsInstruction(ctx) {
-    await ctx.replyWithHTML(
-      `⚙️ <b>НАСТРОЙКИ ЦЕН</b>\n` +
-        `Изменение цен влияет на ВСЕ новые расчеты мгновенно.\n\n` +
-        `Команда: <code>/setprice KEY VALUE</code>\n\n` +
-        `<b>Основные ключи:</b>\n` +
-        `🔸 <code>price_strobe_concrete</code> (Штроба бетон)\n` +
-        `🔸 <code>price_cable</code> (Кабель м.п.)\n` +
-        `🔸 <code>price_shield_module</code> (Щит, модуль)\n` +
-        `🔸 <code>material_factor</code> (Коэф. материалов, напр 0.45)\n\n` +
-        `<i>Пример: /setprice price_cable 400</i>`,
-    );
+  async showSettings(ctx) {
+    try {
+      const res = await db.query(
+        "SELECT key, value, updated_at FROM settings ORDER BY key",
+      );
+
+      let msg = "⚙️ <b>ТЕКУЩИЕ ЦЕНЫ И НАСТРОЙКИ</b>\n\n";
+
+      res.rows.forEach((row) => {
+        const date = new Date(row.updated_at).toLocaleDateString("ru-RU");
+        msg += `🔸 <b>${row.key}</b>: <code>${row.value}</code>\n`;
+        msg += `   <i>(Обн: ${date})</i>\n`;
+      });
+
+      msg += `\n📝 <b>Изменить цену:</b>\n`;
+      msg += `<code>/setprice key value</code>\n`;
+      msg += `<i>Пример: /setprice price_cable 450</i>`;
+
+      await ctx.replyWithHTML(msg);
+    } catch (e) {
+      ctx.reply("❌ Ошибка загрузки настроек.");
+    }
   },
 
-  // Вызывается из server.js
   async processSetPrice(ctx) {
-    if (!(await UserService.isAdmin(ctx.from.id))) return;
+    const args = ctx.message.text.split(" ");
+    if (args.length < 3) return ctx.reply("⚠️ Формат: /setprice <KEY> <VALUE>");
 
-    const parts = ctx.message.text.split(" ");
-    if (parts.length < 3) return ctx.reply("⚠️ Формат: /setprice KEY VALUE");
-
-    const key = parts[1];
-    const value = parts[2];
+    const key = args[1];
+    const value = args[2];
 
     try {
-      // Прямой SQL UPSERT в таблицу settings
+      // Upsert Logic
       await db.query(
         `
-        INSERT INTO settings (key, value, updated_at)
-        VALUES ($1, $2, NOW())
-        ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()
-      `,
+            INSERT INTO settings (key, value, updated_at) 
+            VALUES ($1, $2, NOW()) 
+            ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()
+        `,
         [key, value],
       );
 
-      await ctx.reply(`✅ Цена <b>${key}</b> установлена: <b>${value}</b>`, {
-        parse_mode: "HTML",
-      });
+      await ctx.reply(
+        `✅ Настройка <b>${key}</b> успешно обновлена до <b>${value}</b>`,
+        { parse_mode: "HTML" },
+      );
     } catch (e) {
-      ctx.reply("❌ Ошибка записи в БД.");
+      console.error(e);
+      ctx.reply("❌ Ошибка записи в базу данных.");
     }
   },
 
   /**
    * ===========================================================================
-   * 7. 📦 УПРАВЛЕНИЕ ЗАКАЗАМИ
+   * 6. 🛠 DEVOPS TOOLS (OWNER ONLY)
    * ===========================================================================
    */
 
-  async showOrdersInstruction(ctx) {
+  async showServerStats(ctx) {
+    const uptime = os.uptime();
+    const hours = Math.floor(uptime / 3600);
+    const minutes = Math.floor((uptime % 3600) / 60);
+
+    const memTotal = (os.totalmem() / 1024 / 1024 / 1024).toFixed(2);
+    const memFree = (os.freemem() / 1024 / 1024 / 1024).toFixed(2);
+    const load = os.loadavg()[0].toFixed(2);
+
+    try {
+      // Проверка соединения с БД
+      const start = Date.now();
+      await db.query("SELECT 1");
+      const dbPing = Date.now() - start;
+
+      await ctx.replyWithHTML(
+        `🖥 <b>СИСТЕМНЫЙ МОНИТОР</b>\n` +
+          `➖➖➖➖➖➖➖➖➖➖\n` +
+          `⏱ <b>Uptime:</b> ${hours}ч ${minutes}м\n` +
+          `💾 <b>RAM:</b> ${memFree} GB free / ${memTotal} GB total\n` +
+          `⚙️ <b>CPU Load:</b> ${load}\n` +
+          `🔌 <b>DB Ping:</b> ${dbPing}ms\n` +
+          `🐧 <b>OS:</b> ${os.type()} ${os.release()}`,
+      );
+    } catch (e) {
+      ctx.reply("❌ Ошибка получения метрик.");
+    }
+  },
+
+  async processBackup(ctx) {
+    const loading = await ctx.reply("💾 Создание полного дампа БД...");
+    try {
+      const tables = ["users", "orders", "settings"];
+      const dump = { timestamp: new Date(), data: {} };
+
+      for (const table of tables) {
+        const res = await db.query(`SELECT * FROM ${table}`);
+        dump.data[table] = res.rows;
+      }
+
+      const json = JSON.stringify(dump, null, 2);
+      const buffer = Buffer.from(json, "utf-8");
+      const filename = `backup_${new Date().toISOString().slice(0, 10)}.json`;
+
+      await ctx.replyWithDocument(
+        { source: buffer, filename: filename },
+        { caption: "✅ Бэкап успешно создан." },
+      );
+      await ctx.telegram.deleteMessage(ctx.chat.id, loading.message_id);
+    } catch (e) {
+      ctx.reply(`❌ Ошибка бэкапа: ${e.message}`);
+    }
+  },
+
+  async showSQLInstruction(ctx) {
     await ctx.replyWithHTML(
-      `📦 <b>УПРАВЛЕНИЕ ЗАКАЗАМИ</b>\n` +
-        `Напишите <code>/order ID</code> чтобы открыть меню управления заказом.\n\n` +
-        `Или используйте поиск: <code>/findorder Имя</code>`,
+      `👨‍💻 <b>SQL TERMINAL</b>\n\n` +
+        `Прямой доступ к базе данных Postgres.\n` +
+        `⚠️ <b>Осторожно:</b> изменения необратимы.\n\n` +
+        `📝 Введите запрос после команды /sql:\n` +
+        `<code>/sql SELECT * FROM users LIMIT 5</code>`,
     );
   },
 
-  // Обработка инлайн-кнопок статусов (из server.js bot.action)
-  async handleOrderStatusChange(ctx, orderId, newStatus) {
-    try {
-      await OrderService.updateOrderStatus(orderId, newStatus);
-      await ctx.answerCbQuery(`Статус изменен на ${newStatus}`);
-      await ctx.editMessageText(
-        `✅ Заказ #${orderId} переведен в статус: <b>${newStatus.toUpperCase()}</b>`,
-        { parse_mode: "HTML" },
-      );
+  async processSQL(ctx) {
+    const query = ctx.message.text.replace(/^\/sql\s+/, "").trim();
+    if (!query) return ctx.reply("⚠️ Запрос пуст.");
 
-      // Можно уведомить клиента здесь
+    const start = Date.now();
+    try {
+      const res = await db.query(query);
+      const time = Date.now() - start;
+
+      let msg = `✅ <b>SQL SUCCESS</b> (${time}ms)\n`;
+      msg += `Rows affected: ${res.rowCount}\n\n`;
+
+      if (res.rows.length > 0) {
+        const json = JSON.stringify(res.rows, null, 2);
+        if (json.length > 4000) {
+          const buffer = Buffer.from(json, "utf-8");
+          await ctx.replyWithDocument({
+            source: buffer,
+            filename: "query_result.json",
+          });
+        } else {
+          msg += `<pre>${json}</pre>`;
+          await ctx.replyWithHTML(msg);
+        }
+      } else {
+        msg += `<i>(Нет данных для отображения)</i>`;
+        await ctx.replyWithHTML(msg);
+      }
     } catch (e) {
-      await ctx.answerCbQuery("Ошибка обновления");
+      await ctx.replyWithHTML(`❌ <b>SQL ERROR</b>\n<pre>${e.message}</pre>`);
     }
   },
 };
