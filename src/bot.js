@@ -1,176 +1,153 @@
 /**
  * @file src/bot.js
- * @description Модуль инициализации и маршрутизации Telegram бота.
- * Выполняет роль Router/Dispatcher: перенаправляет входящие события в контроллеры.
- * Полностью автономен (Self-Contained): не зависит от внешних файлов констант.
+ * @description Ядро Telegram-бота (Dispatcher & Router v9.0.0 Enterprise).
+ * Выполняет маршрутизацию всех входящих событий, управляет сессиями (FSM)
+ * и экспортирует экземпляр бота для интеграции с Express (Web CRM).
  *
  * @module BotCore
- * @version 7.5.0 (Senior Architect Edition)
- * @author ProElectric Team
+ * @version 9.0.0 (Senior Architect Edition)
  */
 
 import { Telegraf, session } from "telegraf";
 import { config } from "./config.js";
 
-// Импорт контроллеров (Handlers)
+// Импорт контроллеров бизнес-логики
 import { UserHandler } from "./handlers/UserHandler.js";
 import { AdminHandler } from "./handlers/AdminHandler.js";
 
-// =============================================================================
-// 🔧 LOCAL ROUTING TRIGGERS
-// =============================================================================
-const TRIGGERS = {
-  // --- Пользовательское меню ---
-  CALCULATE: "🚀 Рассчитать стоимость",
-  ORDERS: "📂 Мои заявки",
-  PRICE_LIST: "💰 Прайс-лист",
-  CONTACTS: "📞 Контакты",
-  HOW_WORK: "ℹ️ Как мы работаем",
-  BACK: "🔙 Назад",
-  CANCEL: "❌ Отмена",
-  MAIN_MENU: "🏠 Главное меню",
-  SHARE_PHONE: "📱 Отправить мой номер телефона",
-
-  // --- Админское меню (Вход) ---
-  ADMIN_PANEL: "👑 Админ-панель",
-
-  // --- Внутри админки ---
-  ADMIN_DASHBOARD: "📊 P&L Отчет",
-  ADMIN_ORDERS: "📦 Управление заказами",
-  ADMIN_SETTINGS: "⚙️ Настройки цен",
-  ADMIN_STAFF: "👥 Персонал",
-  ADMIN_SQL: "👨‍💻 SQL Терминал",
-  ADMIN_BACKUP: "💾 Бэкап базы",
-  ADMIN_SERVER: "🖥 Состояние сервера",
-};
+// Инициализация инстанса (Экспортируем для использования в app.js)
+export const bot = new Telegraf(config.telegram.botToken);
 
 // =============================================================================
-// 1. ИНИЦИАЛИЗАЦИЯ (BOOTSTRAP)
+// 1. MIDDLEWARES (СЕССИИ И КОНТЕКСТ)
 // =============================================================================
 
-if (!config.bot.token) {
-  console.error("❌ [FATAL] BOT_TOKEN is missing in configuration.");
-  process.exit(1);
-}
+// Подключаем хранилище сессий (критично для калькулятора и FSM админа)
+bot.use(session());
 
-// Создаем инстанс бота
-export const bot = new Telegraf(config.bot.token);
-
-// =============================================================================
-// 2. MIDDLEWARE (PIPELINE)
-// =============================================================================
-
-// 2.1. Session Middleware
-// Убедимся, что сессия работает корректно и всегда возвращает объект
-bot.use(session({ defaultSession: () => ({}) }));
-
-// 2.2. Logger Middleware (Audit)
-bot.use(async (ctx, next) => {
-  if (!config.system.isProduction) {
-    const user = ctx.from
-      ? `${ctx.from.id} (${ctx.from.first_name})`
-      : "System";
-    const type = ctx.updateType;
-    const content =
-      ctx.message?.text || ctx.callbackQuery?.data || "media/action";
-
-    console.log(
-      `📡 [Bot] Update from ${user} | Type: ${type} | Content: ${content}`,
-    );
-  }
-  await next();
+// Гарантируем, что объект сессии всегда существует, чтобы избежать TypeError
+bot.use((ctx, next) => {
+  if (!ctx.session) ctx.session = {};
+  return next();
 });
 
 // =============================================================================
-// 3. МАРШРУТИЗАЦИЯ (ROUTING MAP)
+// 2. СИСТЕМНЫЕ КОМАНДЫ (COMMANDS)
 // =============================================================================
 
-// --- 👑 ADMIN COMMANDS (Regex Routers) ---
-bot.hears(/^\/setrole/, (ctx) => AdminHandler.processSetRole(ctx));
-bot.hears(/^\/setprice/, (ctx) => AdminHandler.processSetPrice(ctx));
-bot.hears(/^\/sql/, (ctx) => AdminHandler.processSQL(ctx));
-bot.hears(/^\/order/, (ctx) => AdminHandler.findOrder(ctx));
+bot.start((ctx) => UserHandler.startCommand(ctx));
 
-// Явный вызов админ-панели
-bot.command("admin", (ctx) => AdminHandler.showAdminMenu(ctx));
+// =============================================================================
+// 3. МАРШРУТИЗАТОР ТЕКСТОВЫХ КНОПОК (HEARS)
+// =============================================================================
 
-// --- 🕹 ADMIN MENU HANDLERS ---
-bot.hears(TRIGGERS.ADMIN_PANEL, (ctx) => AdminHandler.showAdminMenu(ctx));
-bot.hears(TRIGGERS.ADMIN_DASHBOARD, (ctx) => AdminHandler.showDashboard(ctx));
-bot.hears(TRIGGERS.ADMIN_ORDERS, (ctx) => AdminHandler.showOrdersInstruction(ctx));
-bot.hears(TRIGGERS.ADMIN_SETTINGS, (ctx) => AdminHandler.showSettings(ctx));
-bot.hears(TRIGGERS.ADMIN_STAFF, (ctx) => AdminHandler.showStaffList(ctx));
-bot.hears(TRIGGERS.ADMIN_SQL, (ctx) => AdminHandler.showSQLInstruction(ctx));
-bot.hears(TRIGGERS.ADMIN_BACKUP, (ctx) => AdminHandler.processBackup(ctx));
-bot.hears(TRIGGERS.ADMIN_SERVER, (ctx) => AdminHandler.showServerStats(ctx));
+// --- Клиентский интерфейс ---
+const USER_TRIGGERS = [
+  "🚀 Рассчитать стоимость",
+  "📂 Мои заявки",
+  "💰 Прайс-лист",
+  "📞 Контакты",
+  "ℹ️ Как мы работаем",
+  "🔙 Назад",
+  "❌ Отмена",
+];
+bot.hears(USER_TRIGGERS, (ctx) => UserHandler.handleTextMessage(ctx));
 
-// Кнопка "Назад" в админке
-bot.hears("🔙 В главное меню", (ctx) => UserHandler.returnToMainMenu(ctx));
+// --- Интерфейс управления (CRM) ---
+bot.hears("👑 Админ-панель", (ctx) => AdminHandler.showAdminMenu(ctx));
 
-// --- 👤 USER COMMANDS ---
-bot.command("start", (ctx) => UserHandler.startCommand(ctx));
-bot.command("cancel", (ctx) => UserHandler.returnToMainMenu(ctx));
-bot.command("menu", (ctx) => UserHandler.returnToMainMenu(ctx));
+const ADMIN_TRIGGERS = [
+  "📊 Финансовый Отчет",
+  "📦 Реестр объектов",
+  "⚙️ Настройки цен",
+  "👥 Персонал",
+  "👨‍💻 SQL Терминал",
+  "💾 Дамп базы",
+  "🖥 Статус сервера",
+  "🔙 В главное меню",
+];
+bot.hears(ADMIN_TRIGGERS, (ctx) => AdminHandler.handleMessage(ctx));
 
-// --- 🖱 CALLBACK ACTIONS (Inline Buttons) ---
+// =============================================================================
+// 4. МАРШРУТИЗАТОР INLINE-КНОПОК (CALLBACK QUERIES)
+// =============================================================================
 
-// 1. Клиентские экшены (Калькулятор)
-bot.action(/^wall_/, (ctx) => UserHandler.handleWallSelection(ctx));
+// --- Клиент: Калькулятор и Заказы ---
+bot.action(/wall_(gas|brick|concrete)/, (ctx) =>
+  UserHandler.handleWallSelection(ctx),
+);
 bot.action("action_save_order", (ctx) => UserHandler.saveOrderAction(ctx));
-bot.action("action_recalc", (ctx) => UserHandler.enterCalculationMode(ctx));
+bot.action("action_recalc", (ctx) => {
+  ctx.answerCbQuery().catch(() => {}); // Гасим часики
+  return UserHandler.enterCalculationMode(ctx);
+});
 
-// 2. Админские экшены (Управление заказами)
-bot.action(/^status_(\d+)_(.+)$/, (ctx) => {
+// --- Админ: Управление объектами (ERP Controller) ---
+bot.action(/status_(\d+)_([a-zA-Z_]+)/, (ctx) => {
   return AdminHandler.handleOrderStatusChange(ctx, ctx.match[1], ctx.match[2]);
 });
 
-// Новые экшены для работы с метаданными (Адрес, Комменты, Причина отмены)
-bot.action(/^prompt_address_(\d+)$/, (ctx) => AdminHandler.promptAddress(ctx, ctx.match[1]));
-bot.action(/^prompt_comment_(\d+)$/, (ctx) => AdminHandler.promptComment(ctx, ctx.match[1]));
-bot.action(/^prompt_cancel_(\d+)$/, (ctx) => AdminHandler.promptCancel(ctx, ctx.match[1]));
-bot.action(/^cancel_reason_(\d+)_(client|firm)$/, (ctx) => AdminHandler.processCancelReason(ctx, ctx.match[1], ctx.match[2]));
-bot.action(/^refresh_order_(\d+)$/, (ctx) => AdminHandler.findOrder(ctx)); // Обновление карточки заказа
+bot.action(/prompt_cancel_(\d+)/, (ctx) =>
+  AdminHandler.promptCancel(ctx, ctx.match[1]),
+);
 
-// Мелкие заглушки для кнопок, которые не обрабатываются бэкендом
-bot.action(/^expense_(\d+)$/, (ctx) => ctx.answerCbQuery("💸 Перейдите в Web-версию (CRM) для учета финансов", { show_alert: true }));
-bot.action(/^download_(\d+)$/, (ctx) => ctx.answerCbQuery("🚧 Генерация акта в разработке"));
-
-// Обновление дашборда
-bot.action("admin_refresh_dashboard", (ctx) => AdminHandler.showDashboard(ctx));
-
-
-// --- 💬 TEXT MENU (Navigation) ---
-bot.hears([TRIGGERS.CALCULATE, TRIGGERS.MAIN_MENU], (ctx) => UserHandler.enterCalculationMode(ctx));
-bot.hears(TRIGGERS.ORDERS, (ctx) => UserHandler.showMyOrders(ctx));
-bot.hears(TRIGGERS.PRICE_LIST, (ctx) => UserHandler.showPriceList(ctx));
-bot.hears(TRIGGERS.CONTACTS, (ctx) => UserHandler.handleTextMessage(ctx));
-bot.hears(TRIGGERS.HOW_WORK, (ctx) => UserHandler.handleTextMessage(ctx));
-bot.hears([TRIGGERS.BACK, TRIGGERS.CANCEL], (ctx) => UserHandler.returnToMainMenu(ctx));
-
-// --- 📥 GLOBAL TEXT INTERCEPTOR (FSM) ---
-// Ловит любой текст, который не подошел под команды и кнопки меню
-bot.on("text", async (ctx) => {
-  // 1. Сначала прокидываем текст в AdminHandler, чтобы он перехватил ввод адреса/комментария
-  await AdminHandler.handleMessage(ctx);
-  
-  // 2. Затем в UserHandler для обработки ввода площади/комнат в калькуляторе
-  await UserHandler.handleTextMessage(ctx);
+bot.action(/cancel_reason_(\d+)_([a-zA-Z_]+)/, (ctx) => {
+  return AdminHandler.processCancelReason(ctx, ctx.match[1], ctx.match[2]);
 });
 
-// --- 📱 CONTACT HANDLER ---
-bot.on("contact", (ctx) => UserHandler.handleContact(ctx));
+bot.action(/refresh_order_(\d+)/, (ctx) => AdminHandler.findOrder(ctx));
+
+bot.action(/prompt_address_(\d+)/, (ctx) =>
+  AdminHandler.promptAddress(ctx, ctx.match[1]),
+);
+
+bot.action(/prompt_comment_(\d+)/, (ctx) =>
+  AdminHandler.promptComment(ctx, ctx.match[1]),
+);
+
+bot.action("admin_refresh_dashboard", (ctx) => AdminHandler.showDashboard(ctx));
 
 // =============================================================================
-// 4. ERROR HANDLING (GLOBAL CATCH)
+// 5. ГЛОБАЛЬНЫЙ ПЕРЕХВАТЧИК (SMART INTERCEPTOR)
+// =============================================================================
+
+// Перехват отправки номера телефона (Авторизация)
+bot.on("contact", (ctx) => UserHandler.handleContact(ctx));
+
+// Умный роутинг любого свободного текста (FSM + Команды)
+bot.on("text", async (ctx) => {
+  const text = ctx.message.text;
+
+  // 1. Direct Commands (Команды администратора из любой точки)
+  if (
+    text.startsWith("/order") ||
+    text.startsWith("/setprice") ||
+    text.startsWith("/setrole") ||
+    text.startsWith("/sql")
+  ) {
+    return AdminHandler.handleMessage(ctx);
+  }
+
+  // 2. FSM Admin (Состояния ожидания ввода адреса или комментария)
+  if (ctx.session?.adminState && ctx.session.adminState !== "IDLE") {
+    return AdminHandler.handleMessage(ctx);
+  }
+
+  // 3. FSM User (Состояния ожидания площади или количества комнат)
+  if (ctx.session?.state && ctx.session.state !== "IDLE") {
+    return UserHandler.handleTextMessage(ctx);
+  }
+
+  // Если текст никуда не подошел, можно добавить fallback (тихое игнорирование)
+});
+
+// =============================================================================
+// 6. ГЛОБАЛЬНАЯ ОБРАБОТКА ОШИБОК (ERROR BOUNDARY)
 // =============================================================================
 
 bot.catch((err, ctx) => {
-  console.error(`🔥 [Bot Catch] Error for ${ctx.updateType}:`, err);
-  try {
-    if (ctx.chat?.type === "private") {
-      // ctx.reply("⚠️ Ошибка сервера. Мы уже чиним.");
-    }
-  } catch (e) {
-    console.error("Failed to send error notification.");
-  }
+  console.error(
+    `[Telegraf Error] Update ID: ${ctx.update.update_id} | Type: ${ctx.updateType}`,
+    err,
+  );
 });

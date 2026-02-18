@@ -1,362 +1,174 @@
 /**
  * @file src/services/UserService.js
- * @description Сервис управления пользователями (Business Logic Layer).
- * Реализует расширенную логику RBAC (Role-Based Access Control), профилирование, поиск и аналитику.
- * Полностью автономен и не зависит от глобальных констант.
+ * @description Сервис управления пользователями (Identity & RBAC Module v9.0.0).
+ * Отвечает за аутентификацию, профилирование, управление ролями и клиентскую аналитику.
+ * Оптимизирован под использование как из Telegram-бота, так и из Web CRM.
  *
  * @module UserService
- * @version 5.1.0 (Senior Edition)
+ * @version 9.0.0 (Enterprise ERP Edition)
  */
 
 import * as db from "../database/index.js";
 
 // =============================================================================
-// 🔒 INTERNAL CONSTANTS & CONFIGURATION
+// 🔒 ROLES DEFINITION (RBAC)
 // =============================================================================
 
-/**
- * Определения ролей пользователей (RBAC).
- * Зафиксированы через Object.freeze для предотвращения мутаций в рантайме.
- */
 export const ROLES = Object.freeze({
-  OWNER: "owner", // Владелец системы (Супер-админ)
-  ADMIN: "admin", // Администратор (Управляет персоналом и настройками)
-  MANAGER: "manager", // Менеджер / Мастер (Работает с заказами)
-  CLIENT: "user", // Обычный клиент (Потребитель)
-  BANNED: "banned", // Заблокированный пользователь
-});
-
-/**
- * Определение прав доступа для проверок (Policy Definitions).
- */
-const POLICIES = Object.freeze({
-  // Кто считается административным персоналом
-  ADMIN_STAFF: [ROLES.OWNER, ROLES.ADMIN, ROLES.MANAGER],
-  // Кого можно назначать через бота
-  ASSIGNABLE_ROLES: [ROLES.ADMIN, ROLES.MANAGER, ROLES.CLIENT, ROLES.BANNED],
+  OWNER: "owner", // Владелец бизнеса (Super Admin)
+  ADMIN: "admin", // Администратор (Доступ к CRM)
+  MANAGER: "manager", // Мастер / Инженер (Работает с заказами)
+  USER: "user", // Клиент бота
+  BANNED: "banned", // Заблокирован
 });
 
 // =============================================================================
-// 🧠 BUSINESS LOGIC SERVICE
+// 🧠 BUSINESS LOGIC IMPLEMENTATION
 // =============================================================================
 
 export const UserService = {
-  // Экспортируем константы, чтобы другие модули могли их использовать (UserHandler, AdminHandler)
   ROLES,
 
-  // ===========================================================================
-  // 1. CORE AUTH & REGISTRATION
-  // ===========================================================================
+  /**
+   * Получение текущей роли пользователя.
+   * @param {number|string} telegramId - Telegram ID пользователя.
+   * @returns {Promise<string>} Роль пользователя (по умолчанию 'user').
+   */
+  async getUserRole(telegramId) {
+    const res = await db.query(
+      "SELECT role FROM users WHERE telegram_id = $1 LIMIT 1",
+      [telegramId],
+    );
+    return res.rows.length ? res.rows[0].role : ROLES.USER;
+  },
 
   /**
-   * 👤 Регистрация или обновление пользователя (Upsert Pattern).
-   * Вызывается при каждом входящем сообщении. Обновляет дату последней активности.
-   * Гарантирует актуальность данных профиля (имя, username).
-   *
-   * @param {Object} telegramUser - Объект пользователя из Telegram (ctx.from)
-   * @returns {Promise<Object|null>} Объект пользователя из БД или null, если это бот
+   * Получение полного профиля пользователя.
+   * @param {number|string} telegramId
+   * @returns {Promise<Object|null>}
+   */
+  async getUserProfile(telegramId) {
+    const res = await db.query(
+      "SELECT * FROM users WHERE telegram_id = $1 LIMIT 1",
+      [telegramId],
+    );
+    return res.rows[0] || null;
+  },
+
+  /**
+   * 📝 Регистрация или обновление пользователя (Авторизация при /start).
+   * Реализует паттерн UPSERT.
+   * @param {Object} telegramUser - Объект пользователя из Telegraf (ctx.from)
+   * @returns {Promise<Object>} Обновленная запись пользователя
    */
   async registerOrUpdateUser(telegramUser) {
-    const { id, first_name, username, is_bot } = telegramUser;
+    const { id, first_name, username } = telegramUser;
 
-    // 1. Фильтрация ботов (они не должны попадать в бизнес-статистику)
-    if (is_bot) return null;
-
-    // 2. Подготовка данных (Sanitization)
-    // Защита от отсутствующего имени или username
-    const safeName = first_name || "Пользователь";
-    const safeUsername = username || null;
-
-    // 3. Выполнение запроса (Direct SQL for Performance)
-    // Используем ON CONFLICT для атомарной операции "Вставь или Обнови".
-    // Это предотвращает Race Conditions при параллельных запросах.
     const sql = `
-        INSERT INTO users (telegram_id, first_name, username, updated_at)
-        VALUES ($1, $2, $3, NOW())
-        ON CONFLICT (telegram_id) DO UPDATE SET 
-            first_name = EXCLUDED.first_name,
-            username = EXCLUDED.username,
-            updated_at = NOW()
-        RETURNING *
+      INSERT INTO users (telegram_id, first_name, username, updated_at)
+      VALUES ($1, $2, $3, NOW())
+      ON CONFLICT (telegram_id) DO UPDATE SET
+        first_name = EXCLUDED.first_name,
+        username = EXCLUDED.username,
+        updated_at = NOW()
+      RETURNING *
     `;
 
-    try {
-      const res = await db.query(sql, [id, safeName, safeUsername]);
-      return res.rows[0];
-    } catch (error) {
-      console.error("[UserService] Register Error:", error);
-      throw new Error("Системная ошибка регистрации пользователя.");
-    }
+    const res = await db.query(sql, [id, first_name, username || null]);
+    return res.rows[0];
   },
 
   /**
-   * 📱 Обновление контактных данных.
-   * Критически важно для конверсии лида в клиента.
-   *
-   * @param {number} userId - Telegram ID
-   * @param {string} phoneNumber - Номер телефона (формат не валидируем жестко, доверяем Телеграму)
+   * 📱 Привязка или обновление номера телефона.
+   * Очищает номер от лишних символов перед сохранением.
    */
-  async updateUserPhone(userId, phoneNumber) {
-    const sql = `
-        UPDATE users 
-        SET phone = $1, updated_at = NOW() 
-        WHERE telegram_id = $2
-    `;
-    await db.query(sql, [phoneNumber, userId]);
-  },
+  async updateUserPhone(telegramId, phone) {
+    // Оставляем только плюс и цифры
+    const cleanPhone = phone.replace(/[^\d+]/g, "");
 
-  // ===========================================================================
-  // 2. PERMISSIONS & ROLES (RBAC)
-  // ===========================================================================
-
-  /**
-   * 🕵️‍♂️ Получение текущей роли пользователя.
-   * Если пользователь не найден в БД, считается обычным клиентом.
-   *
-   * @param {number} userId
-   * @returns {Promise<string>} Роль (owner, admin, manager, user, banned)
-   */
-  async getUserRole(userId) {
     const res = await db.query(
-      "SELECT role FROM users WHERE telegram_id = $1",
-      [userId],
+      "UPDATE users SET phone = $1, updated_at = NOW() WHERE telegram_id = $2 RETURNING *",
+      [cleanPhone, telegramId],
     );
-    return res.rows[0]?.role || ROLES.CLIENT;
+    return res.rows[0];
   },
 
   /**
-   * 🛡️ Проверка прав Администратора.
-   * Возвращает true, если пользователь входит в управляющий состав (Owner, Admin, Manager).
-   * Используется для защиты роутов админ-панели.
-   *
-   * @param {number} userId
-   * @returns {Promise<boolean>}
+   * 🛡 Управление правами доступа (RBAC Mutator).
+   * @param {number} initiatorId - ID того, кто меняет роль (0 если запрос идет из защищенной Web API)
+   * @param {number|string} targetId - ID пользователя, которому меняем роль
+   * @param {string} newRole - Назначаемая роль
    */
-  async isAdmin(userId) {
-    const role = await this.getUserRole(userId);
-    return POLICIES.ADMIN_STAFF.includes(role);
-  },
-
-  /**
-   * 👑 Безопасное изменение роли (Secure Role Promotion).
-   * Реализует жесткую защиту от повышения привилегий (Privilege Escalation).
-   *
-   * @param {number} initiatorId - ID того, кто меняет роль
-   * @param {number} targetUserId - ID того, кому меняют роль
-   * @param {string} newRole - Новая роль
-   * @returns {Promise<Object>} Обновленный объект пользователя
-   * @throws {Error} Если нарушены правила безопасности
-   */
-  async changeUserRole(initiatorId, targetUserId, newRole) {
-    // 1. Параллельная загрузка ролей для оптимизации
-    const [initiatorRole, targetRole] = await Promise.all([
-      this.getUserRole(initiatorId),
-      this.getUserRole(targetUserId),
-    ]);
-
-    // 2. Валидация существования роли
-    if (
-      !POLICIES.ASSIGNABLE_ROLES.includes(newRole) &&
-      newRole !== ROLES.OWNER
-    ) {
-      throw new Error(
-        `⛔ Ошибка: Роли "${newRole}" не существует. Доступные: ${POLICIES.ASSIGNABLE_ROLES.join(", ")}`,
-      );
-    }
-
-    // 3. ПРАВИЛА БЕЗОПАСНОСТИ (Security Policy Enforcement)
-
-    // Правило A: Иммунитет Владельца. Никто не может разжаловать Владельца (даже другой Владелец).
-    // Это защита от случайного "выстрела в ногу".
-    if (targetRole === ROLES.OWNER) {
-      throw new Error("⛔ Отказано: Нельзя изменять права Владельца системы.");
-    }
-
-    // Правило B: Ограничение Менеджеров. Менеджеры управляют заказами, а не людьми.
-    if (initiatorRole === ROLES.MANAGER) {
-      throw new Error(
-        "⛔ Отказано: Менеджеры не имеют прав управления персоналом.",
-      );
-    }
-
-    // Правило C: Иерархия Администраторов.
-    // Админ не может назначать Владельцев или других Админов.
-    // Админ не может менять роль равного себе или старшего.
-    if (initiatorRole === ROLES.ADMIN) {
-      if (newRole === ROLES.OWNER || newRole === ROLES.ADMIN) {
-        throw new Error(
-          "⛔ Отказано: Администратор не может выдавать права уровня Admin/Owner.",
-        );
-      }
-      if (targetRole === ROLES.ADMIN || targetRole === ROLES.OWNER) {
-        throw new Error(
-          "⛔ Отказано: Вы не можете менять роль равного или старшего по званию.",
-        );
+  async changeUserRole(initiatorId, targetId, newRole) {
+    // Проверка прав инициатора (если это не системный вызов из Web API)
+    if (initiatorId !== 0) {
+      const initiatorRole = await this.getUserRole(initiatorId);
+      if (initiatorRole !== ROLES.OWNER && initiatorRole !== ROLES.ADMIN) {
+        throw new Error("Недостаточно прав для изменения ролей.");
       }
     }
 
-    // Правило D: Владелец (Owner) может всё.
-
-    // 4. Атомарное обновление
-    const sql = `
-        UPDATE users 
-        SET role = $1, updated_at = NOW() 
-        WHERE telegram_id = $2 
-        RETURNING *
-    `;
-    const result = await db.query(sql, [newRole, targetUserId]);
-
-    if (result.rowCount === 0) {
-      throw new Error("❌ Пользователь не найден в базе данных.");
+    if (!Object.values(ROLES).includes(newRole)) {
+      throw new Error(`Недопустимая роль системы: ${newRole}`);
     }
 
-    return result.rows[0];
-  },
-
-  /**
-   * 📢 Получение списка ID персонала для уведомлений.
-   * Используется при создании нового заказа, чтобы оповестить команду.
-   */
-  async getAdminIdsForNotification() {
-    const sql = `
-        SELECT telegram_id 
-        FROM users 
-        WHERE role IN ($1, $2, $3)
-    `;
-    const result = await db.query(sql, [
-      ROLES.OWNER,
-      ROLES.ADMIN,
-      ROLES.MANAGER,
-    ]);
-    return result.rows.map((row) => row.telegram_id);
-  },
-
-  // ===========================================================================
-  // 3. PROFILE & ANALYTICS
-  // ===========================================================================
-
-  /**
-   * 📊 Получение расширенного профиля пользователя (360-View).
-   * Собирает данные из разных таблиц: профиль + агрегированная статистика заказов.
-   */
-  async getUserProfile(userId) {
-    // Шаг 1: Данные пользователя
-    const userRes = await db.query(
-      "SELECT * FROM users WHERE telegram_id = $1",
-      [userId],
+    const res = await db.query(
+      "UPDATE users SET role = $1, updated_at = NOW() WHERE telegram_id = $2 RETURNING *",
+      [newRole, targetId],
     );
-    const user = userRes.rows[0];
-    if (!user) return null;
 
-    // Шаг 2: Финансовая статистика (LTV)
-    // Исключаем отмененные заказы из подсчета денег
-    const statsSql = `
-        SELECT 
-            COUNT(*) as total_orders,
-            SUM(total_price) as total_spent,
-            MAX(created_at) as last_order_date
-        FROM orders 
-        WHERE user_id = $1 AND status != 'cancel'
-    `;
-    const statsRes = await db.query(statsSql, [userId]);
-    const stats = statsRes.rows[0];
+    if (res.rowCount === 0) {
+      throw new Error("Пользователь не найден в базе данных.");
+    }
 
-    return {
-      ...user,
-      stats: {
-        ordersCount: parseInt(stats.total_orders) || 0,
-        totalSpent: parseInt(stats.total_spent) || 0,
-        lastOrderDate: stats.last_order_date || null,
-      },
-    };
+    return res.rows[0];
   },
 
   /**
-   * 📋 Получение списка всех пользователей с пагинацией.
-   * Оптимизировано для рендеринга больших списков в админке.
+   * 👥 Выгрузка списка пользователей для Web CRM (с пагинацией).
    */
-  async getAllUsers(limit = 50, offset = 0) {
-    const sql = `
-        SELECT telegram_id, first_name, username, phone, role, created_at, updated_at 
-        FROM users 
-        ORDER BY created_at DESC 
-        LIMIT $1 OFFSET $2
-    `;
-    const res = await db.query(sql, [limit, offset]);
+  async getAllUsers(limit = 100, offset = 0) {
+    const res = await db.query(
+      `SELECT telegram_id, first_name, username, phone, role, created_at, updated_at 
+       FROM users 
+       ORDER BY created_at DESC 
+       LIMIT $1 OFFSET $2`,
+      [limit, offset],
+    );
     return res.rows;
   },
 
   /**
-   * 🔍 Полнотекстовый поиск пользователей.
-   * Ищет по ID, Имени, Username или Телефону.
-   * Использует ILIKE для регистронезависимого поиска.
-   *
-   * @param {string} query - Поисковый запрос
+   * 🎯 Получение списка пользователей для массовой рассылки.
+   * @param {string} roleFilter - 'all', 'user', 'manager', 'admin'
    */
-  async findUsers(query) {
-    const searchQuery = `%${query}%`;
-    const sql = `
-        SELECT telegram_id, first_name, username, phone, role 
-        FROM users 
-        WHERE 
-            first_name ILIKE $1 OR 
-            username ILIKE $1 OR 
-            phone ILIKE $1 OR
-            CAST(telegram_id AS TEXT) ILIKE $1
-        LIMIT 10
-    `;
-    const res = await db.query(sql, [searchQuery]);
+  async getUsersForBroadcast(roleFilter = "all") {
+    let sql = "SELECT telegram_id FROM users WHERE telegram_id > 0"; // Исключаем виртуальных оффлайн-клиентов
+    const params = [];
+
+    if (roleFilter !== "all") {
+      sql += " AND role = $1";
+      params.push(roleFilter);
+    }
+
+    const res = await db.query(sql, params);
     return res.rows;
   },
 
   /**
-   * 📈 Глобальная статистика (KPI Dashboard).
-   * Выполняет 3 параллельных запроса для формирования сводки.
+   * 📊 Аналитика по базе клиентов для дашборда CRM.
    */
   async getDashboardStats() {
-    const [usersData, ordersData, activeData] = await Promise.all([
-      // KPI 1: База пользователей
+    const [usersData, activeData] = await Promise.all([
       db.query("SELECT COUNT(*) as count FROM users"),
-
-      // KPI 2: Общая выручка (Только завершенные заказы)
-      db.query(
-        "SELECT SUM(total_price) as revenue FROM orders WHERE status = 'done'",
-      ),
-
-      // KPI 3: DAU (Daily Active Users) - кто обновлялся за 24ч
       db.query(
         "SELECT COUNT(*) as count FROM users WHERE updated_at > NOW() - INTERVAL '24 hours'",
       ),
     ]);
 
     return {
-      totalUsers: parseInt(usersData.rows[0].count),
-      totalRevenue: parseInt(ordersData.rows[0].revenue) || 0,
-      activeUsers24h: parseInt(activeData.rows[0].count),
+      totalUsers: parseInt(usersData.rows[0].count, 10),
+      activeUsers24h: parseInt(activeData.rows[0].count, 10),
     };
-  },
-
-  /**
-   * 🎯 Таргетинг аудитории для рассылок (Broadcast).
-   * Позволяет сегментировать получателей по ролям.
-   *
-   * @param {string} roleFilter - 'all' | 'admins' | 'clients'
-   */
-  async getUsersForBroadcast(roleFilter = "all") {
-    let sql = "SELECT telegram_id FROM users";
-    const params = [];
-
-    if (roleFilter === "admins") {
-      sql += ` WHERE role IN ($1, $2, $3)`;
-      params.push(ROLES.OWNER, ROLES.ADMIN, ROLES.MANAGER);
-    } else if (roleFilter === "clients") {
-      // Клиентами считаем всех, у кого роль 'user'
-      sql += ` WHERE role = $1`;
-      params.push(ROLES.CLIENT);
-    }
-    // 'all' берет всех без WHERE
-
-    const res = await db.query(sql, params);
-    return res.rows.map((r) => r.telegram_id);
   },
 };
