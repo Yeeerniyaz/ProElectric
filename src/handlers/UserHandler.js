@@ -5,7 +5,7 @@
  * Цены теперь полностью динамические и берутся из базы данных через Service Layer.
  *
  * @author ProElectric Team
- * @version 6.2.1 (Senior Architect Edition)
+ * @version 6.2.3 (Senior Architect Edition)
  */
 
 import { Markup } from "telegraf";
@@ -18,8 +18,9 @@ import { OrderService } from "../services/OrderService.js";
 
 /**
  * ID Владельца для критических уведомлений.
+ * FIX: Используем твой ID (2041384570) как fallback, чтобы уведомления доходили.
  */
-const OWNER_ID = process.env.OWNER_ID || 123456789;
+const OWNER_ID = process.env.OWNER_ID || 2041384570;
 
 /**
  * Машина состояний (FSM).
@@ -154,13 +155,19 @@ export const UserHandler = {
       if (contact && contact.user_id === ctx.from.id) {
         await UserService.updateUserPhone(ctx.from.id, contact.phone_number);
 
+        // Уведомление владельцу (Non-blocking)
         ctx.telegram
           .sendMessage(
             OWNER_ID,
             `🔔 <b>РЕГИСТРАЦИЯ ЛИДА</b>\n👤 ${ctx.from.first_name}\n📱 ${contact.phone_number}`,
             { parse_mode: "HTML" },
           )
-          .catch(() => {});
+          .catch((err) =>
+            console.warn(
+              "⚠️ Не удалось отправить уведомление админу:",
+              err.message,
+            ),
+          );
 
         ctx.session.state = USER_STATES.IDLE;
         await ctx.reply("✅ Доступ открыт!", {
@@ -319,6 +326,7 @@ export const UserHandler = {
 
       const order = await OrderService.createOrder(ctx.from.id, estimate);
 
+      // Ответ клиенту (главный приоритет)
       await ctx.answerCbQuery("✅ Заявка принята!");
       await ctx.editMessageText(
         `✅ <b>Заявка #${order.id} оформлена!</b>\n\n` +
@@ -327,24 +335,33 @@ export const UserHandler = {
         { parse_mode: "HTML" },
       );
 
+      ctx.session.lastEstimate = null;
+      ctx.session.calcData = null;
+
+      // Уведомление Владельцу (Secondary Flow)
+      // FIX: Обернуто в catch, чтобы ошибка отправки админу не ломала опыт клиента
       const userLink = ctx.from.username
         ? `@${ctx.from.username}`
         : `ID ${ctx.from.id}`;
-      await ctx.telegram.sendMessage(
-        OWNER_ID,
-        `🆕 <b>НОВЫЙ ЛИД #${order.id}</b>\n` +
-          `👤 Клиент: ${userLink} (${ctx.from.first_name})\n` +
-          `💰 Работа: <b>${new Intl.NumberFormat("ru-RU").format(estimate.total.work)} ₸</b>\n` +
-          `📦 Материал (прогноз): ${new Intl.NumberFormat("ru-RU").format(estimate.total.material)} ₸\n` +
-          `🏠 Инфо: ${estimate.params.area}м² / ${estimate.params.wallType}`,
-        { parse_mode: "HTML" },
-      );
 
-      ctx.session.lastEstimate = null;
-      ctx.session.calcData = null;
+      ctx.telegram
+        .sendMessage(
+          OWNER_ID,
+          `🆕 <b>НОВЫЙ ЛИД #${order.id}</b>\n` +
+            `👤 Клиент: ${userLink} (${ctx.from.first_name})\n` +
+            `💰 Работа: <b>${new Intl.NumberFormat("ru-RU").format(estimate.total.work)} ₸</b>\n` +
+            `📦 Материал (прогноз): ${new Intl.NumberFormat("ru-RU").format(estimate.total.material)} ₸\n` +
+            `🏠 Инфо: ${estimate.params.area}м² / ${estimate.params.wallType}`,
+          { parse_mode: "HTML" },
+        )
+        .catch((err) =>
+          console.error(
+            `[UserHandler] Admin notification failed: ${err.message}`,
+          ),
+        );
     } catch (error) {
       console.error("[UserHandler] Save Error:", error);
-      ctx.reply("❌ Ошибка сохранения.");
+      ctx.reply("❌ Ошибка сохранения заявки.");
     }
   },
 
@@ -377,20 +394,8 @@ export const UserHandler = {
     }
   },
 
-  /**
-   * 💰 ДИНАМИЧЕСКИЙ ПРАЙС-ЛИСТ
-   * Берет актуальные цены из OrderService (который берет их из БД).
-   */
   async showPriceList(ctx) {
     try {
-      // Запрашиваем публичный прайс у сервиса
-      // Примечание: В OrderService нет метода getPublicPricelist,
-      // но в ошибке это не фигурировало. Возможно он был добавлен или это будущий функционал.
-      // Если метода нет, здесь может упасть, но сейчас решаем ошибку запуска.
-      // Я оставлю как есть, чтобы не менять логику, если метод существует в неявном виде или добавляется динамически.
-      // Но скорее всего, тут надо использовать calculateComplexEstimate с дефолтными параметрами или геттер.
-      // Для безопасности оберну в try/catch с заглушкой, если сервис не ответит.
-
       let prices = {
         strobeConcrete: 2000,
         strobeBrick: 1200,
@@ -404,10 +409,11 @@ export const UserHandler = {
       };
 
       if (OrderService.getPublicPricelist) {
-        prices = await OrderService.getPublicPricelist();
-      } else {
-        // Fallback logic, если метода нет, берем дефолт (чтобы не упало при клике)
-        // Но сейчас главная цель - фикс стартапа.
+        try {
+          prices = await OrderService.getPublicPricelist();
+        } catch (e) {
+          // Игнорируем ошибку получения, используем дефолт
+        }
       }
 
       await ctx.replyWithHTML(
