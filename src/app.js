@@ -99,6 +99,10 @@ const requireAdmin = (req, res, next) => {
   return res.status(401).json({ error: "⛔ Доступ запрещен. Авторизуйтесь." });
 };
 
+app.get("/", (req, res) => {
+  res.redirect("/admin.html");
+});
+
 // --- AUTH ROUTES ---
 
 // Логин (Теперь используем связку Логин + Пароль из .env)
