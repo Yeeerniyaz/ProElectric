@@ -437,7 +437,7 @@ export const UserHandler = {
           p = { ...p, ...(await OrderService.getPublicPricelist()) };
         }
       } catch (e) {
-        // Игнор ошибок БД при получении прайса
+        console.warn("Failed to fetch prices from DB, using defaults.");
       }
 
       await ctx.replyWithHTML(
