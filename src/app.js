@@ -1,11 +1,11 @@
 /**
  * @file src/app.js
- * @description Конфигурация Express приложения (API Gateway & ERP Backend v9.1.1).
- * Отвечает за обработку HTTP-запросов, маршрутизацию CRM и интеграцию с OrderService.
- * Исправлен баг загрузки динамического прайс-листа (добавлен /api/pricelist).
+ * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.0.0).
+ * Отвечает за обработку HTTP-запросов, маршрутизацию CRM и интеграцию с сервисами.
+ * Включает Глобальный Финансовый Модуль (Корпоративная касса).
  *
  * @module Application
- * @version 9.1.1 (Enterprise ERP Edition)
+ * @version 10.0.0 (Enterprise Finance Edition)
  * @author ProElectric Team
  */
 
@@ -264,7 +264,7 @@ app.patch("/api/orders/:id/details", requireAdmin, async (req, res) => {
 });
 
 // =============================================================================
-// 💸 5. FINANCIAL MANAGEMENT (ERP MODULE)
+// 💸 5. ORDER FINANCIAL MANAGEMENT (PROJECT LEVEL)
 // =============================================================================
 
 app.patch("/api/orders/:id/finance/price", requireAdmin, async (req, res) => {
@@ -310,7 +310,59 @@ app.post("/api/orders/:id/finance/expense", requireAdmin, async (req, res) => {
 });
 
 // =============================================================================
-// ⚙️ 6. SYSTEM SETTINGS (DYNAMIC PRICING v9.1.1)
+// 🏢 6. CORPORATE FINANCE (GLOBAL CASHBOX v10.0)
+// =============================================================================
+
+app.get("/api/finance/accounts", requireAdmin, async (req, res) => {
+  try {
+    const accounts = await db.getAccounts();
+    res.json(accounts);
+  } catch (error) {
+    console.error("[API] Get Accounts Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/finance/transactions", requireAdmin, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 100;
+    const transactions = await db.getCompanyTransactions(limit);
+    res.json(transactions);
+  } catch (error) {
+    console.error("[API] Get Transactions Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/finance/transactions", requireAdmin, async (req, res) => {
+  try {
+    const { accountId, amount, type, category, comment } = req.body;
+
+    if (!accountId || !amount || isNaN(amount) || amount <= 0 || !type) {
+      return res.status(400).json({ error: "Некорректные данные транзакции" });
+    }
+
+    // Идентификатор Web-администратора (системный = 0)
+    const userId = 0;
+
+    const transaction = await db.addCompanyTransaction({
+      accountId,
+      userId,
+      amount: parseFloat(amount),
+      type, // 'income' или 'expense'
+      category: category || "Прочее",
+      comment: comment || "",
+    });
+
+    res.json({ success: true, transaction });
+  } catch (error) {
+    console.error("[API] Add Transaction Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// =============================================================================
+// ⚙️ 7. SYSTEM SETTINGS (DYNAMIC PRICING)
 // =============================================================================
 
 app.get("/api/settings", requireAdmin, async (req, res) => {
@@ -322,9 +374,6 @@ app.get("/api/settings", requireAdmin, async (req, res) => {
   }
 });
 
-/**
- * 🔥 ЭНДПОИНТ ДЛЯ ПРАЙС-ЛИСТА (ИСПРАВЛЯЕТ "ОШИБКУ ЗАГРУЗКИ")
- */
 app.get("/api/pricelist", requireAdmin, async (req, res) => {
   try {
     const pricelist = await OrderService.getPublicPricelist();
@@ -335,14 +384,11 @@ app.get("/api/pricelist", requireAdmin, async (req, res) => {
   }
 });
 
-/**
- * СОХРАНЕНИЕ НАСТРОЕК (ПОДДЕРЖКА МАССИВОВ И ОДИНОЧНЫХ ЗАПИСЕЙ)
- */
 app.post("/api/settings", requireAdmin, async (req, res) => {
   try {
     const payload = req.body;
 
-    // Массовое обновление (Bulk Update) из формы прайс-листа
+    // Массовое обновление (Bulk Update)
     if (Array.isArray(payload)) {
       await db.saveBulkSettings(payload);
       return res.json({ success: true, message: "Bulk update successful" });
@@ -363,7 +409,7 @@ app.post("/api/settings", requireAdmin, async (req, res) => {
 });
 
 // =============================================================================
-// 👥 7. STAFF & BROADCAST
+// 👥 8. STAFF & BROADCAST
 // =============================================================================
 
 app.get("/api/users", requireAdmin, async (req, res) => {
@@ -454,7 +500,7 @@ app.post("/api/broadcast", requireAdmin, async (req, res) => {
 });
 
 // =============================================================================
-// 🚑 8. ERROR HANDLING
+// 🚑 9. ERROR HANDLING
 // =============================================================================
 
 app.use((req, res) => {

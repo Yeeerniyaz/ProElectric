@@ -1,12 +1,11 @@
 /**
  * @file public/js/app.js
- * @description Frontend Application Controller (SPA Logic v9.1.2).
- * Управляет состоянием интерфейса, модальными окнами, финансовыми операциями.
- * Включает динамический редактор массива BOM, массовое обновление прайс-листа
- * и Self-Healing логику для защиты от багов со старыми данными (null area, undefined expenses).
+ * @description Frontend Application Controller (SPA Logic v10.0.0).
+ * Управляет состоянием интерфейса, модальными окнами, заказами и настройками.
+ * Включает новый Глобальный Финансовый Модуль (Касса, Счета, Транзакции).
  *
  * @module AppController
- * @version 9.1.2 (Enterprise ERP Edition - Resilience Update)
+ * @version 10.0.0 (Enterprise Finance Edition)
  */
 
 import { API } from "./api.js";
@@ -66,6 +65,7 @@ const State = {
   users: [],
   selectedOrderId: null,
   currentBOM: [], // Временное хранилище редактируемого массива спецификации
+  financeAccounts: [], // Хранилище счетов (Касса)
 };
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -156,6 +156,9 @@ function loadViewData(viewId) {
       break;
     case "ordersView":
       loadOrders();
+      break;
+    case "financeView":
+      loadFinance(); // NEW: Инициализация Глобальной Кассы
       break;
     case "settingsView":
       loadSettings();
@@ -283,7 +286,6 @@ window.openOrderModal = (orderId) => {
   statusSelect.value = order.status;
 
   // 🚀 ИНИЦИАЛИЗАЦИЯ ИНТЕРАКТИВНОГО BOM
-  // Безопасное чтение массива: защита от "Cannot read properties of undefined"
   State.currentBOM = Array.isArray(order.details?.bom)
     ? JSON.parse(JSON.stringify(order.details.bom))
     : [];
@@ -318,7 +320,7 @@ function renderOrderFinancials(order) {
   const expensesList = document.getElementById("modalExpensesList");
   expensesList.innerHTML = "";
 
-  // Self-Healing: Гарантируем, что expenses - это массив (защита от краша length)
+  // Self-Healing: Гарантируем, что expenses - это массив
   const expensesArray = Array.isArray(financials.expenses)
     ? financials.expenses
     : [];
@@ -343,7 +345,7 @@ function renderOrderFinancials(order) {
 }
 
 // =============================================================================
-// 6. 🛠 РЕДАКТОР СПЕЦИФИКАЦИИ (BOM ARRAY MANAGER v9.1.0)
+// 6. 🛠 РЕДАКТОР СПЕЦИФИКАЦИИ (BOM ARRAY MANAGER)
 // =============================================================================
 
 function renderBOMEditor() {
@@ -356,7 +358,6 @@ function renderBOMEditor() {
   } else {
     State.currentBOM.forEach((item, index) => {
       const row = document.createElement("div");
-      // Инлайн-стили для жесткой фиксации сетки
       row.style.display = "flex";
       row.style.gap = "0.5rem";
       row.style.marginBottom = "0.5rem";
@@ -374,7 +375,6 @@ function renderBOMEditor() {
     });
   }
 
-  // Панель управления массивом BOM
   const controls = document.createElement("div");
   controls.style.display = "flex";
   controls.style.gap = "0.5rem";
@@ -388,34 +388,27 @@ function renderBOMEditor() {
   if (typeof feather !== "undefined") feather.replace();
 }
 
-// Глобальные методы для инлайн-событий в HTML строках
 window.updateBOMItem = (index, field, value) => {
   State.currentBOM[index][field] =
     field === "qty" ? parseFloat(value) || 0 : value;
 };
-
 window.removeBOMItem = (index) => {
   State.currentBOM.splice(index, 1);
   renderBOMEditor();
 };
-
 window.addBOMItem = () => {
   State.currentBOM.push({ name: "", qty: 1, unit: "шт" });
   renderBOMEditor();
 };
-
 window.saveBOMArray = async () => {
   if (!State.selectedOrderId) return;
   try {
-    // Отправляем весь массив на сервер в поле 'bom'
     await API.updateOrderDetails(
       State.selectedOrderId,
       "bom",
       State.currentBOM,
     );
     Utils.showToast("Спецификация объекта успешно обновлена", "success");
-
-    // Синхронизируем локальный стейт, чтобы при переоткрытии окна данные сохранились
     const order = State.orders.find((o) => o.id === State.selectedOrderId);
     if (order) order.details.bom = JSON.parse(JSON.stringify(State.currentBOM));
   } catch (err) {
@@ -424,7 +417,79 @@ window.saveBOMArray = async () => {
 };
 
 // =============================================================================
-// 7. 💸 ФИНАНСОВЫЕ ОПЕРАЦИИ И СОБЫТИЯ
+// 7. 🏢 ГЛОБАЛЬНАЯ КАССА (CORPORATE FINANCE v10.0)
+// =============================================================================
+
+async function loadFinance() {
+  try {
+    // 1. Загружаем балансы счетов
+    const accounts = await API.getFinanceAccounts();
+    State.financeAccounts = accounts; // Кешируем для селектора
+
+    const grid = document.getElementById("financeAccountsGrid");
+    grid.innerHTML = "";
+
+    // Подготовка селектора счетов в модалке
+    const accountSelect = document.getElementById("txAccount");
+    accountSelect.innerHTML = "";
+
+    accounts.forEach((acc) => {
+      // Иконка и цвет в зависимости от типа
+      const icon = acc.type === "cash" ? "dollar-sign" : "credit-card";
+      const colorClass = acc.balance >= 0 ? "pe-kpi-primary" : "pe-kpi-warning";
+
+      grid.innerHTML += `
+        <div class="pe-card pe-card-kpi ${colorClass}">
+            <div class="pe-kpi-icon"><i data-feather="${icon}"></i></div>
+            <div class="pe-kpi-data">
+                <span class="pe-kpi-label">${acc.name}</span>
+                <h3 class="pe-kpi-value">${Utils.formatCurrency(acc.balance)}</h3>
+            </div>
+        </div>
+      `;
+
+      accountSelect.innerHTML += `<option value="${acc.id}">${acc.name} (Доступно: ${Utils.formatCurrency(acc.balance)})</option>`;
+    });
+
+    // 2. Загружаем историю транзакций
+    const transactions = await API.getFinanceTransactions(50);
+    const tbody = document.getElementById("transactionsTableBody");
+    tbody.innerHTML = "";
+
+    if (transactions.length === 0) {
+      tbody.innerHTML =
+        '<tr><td colspan="6" class="pe-text-center pe-text-muted">Финансовых операций пока нет</td></tr>';
+    } else {
+      transactions.forEach((tx) => {
+        const isIncome = tx.type === "income";
+        const amountStr = isIncome
+          ? `+${Utils.formatCurrency(tx.amount)}`
+          : `-${Utils.formatCurrency(tx.amount)}`;
+        const amountClass = isIncome ? "pe-text-success" : "pe-text-danger";
+        const typeLabel = isIncome ? "ДОХОД" : "РАСХОД";
+        const badgeClass = isIncome ? "badge-done" : "badge-cancel";
+
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${Utils.formatDate(tx.created_at)}</td>
+          <td><span class="pe-badge ${badgeClass}">${typeLabel}</span></td>
+          <td><b>${tx.account_name || "Неизвестный счет"}</b></td>
+          <td>${tx.category || "—"}</td>
+          <td class="${amountClass} fw-bold">${amountStr}</td>
+          <td>${tx.comment || "—"}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    if (typeof feather !== "undefined") feather.replace();
+  } catch (e) {
+    Utils.showToast("Ошибка загрузки финансового модуля", "error");
+  }
+}
+
+// =============================================================================
+// 8. 💸 ФИНАНСОВЫЕ ОПЕРАЦИИ, МОДАЛКИ И ГЛОБАЛЬНЫЕ СОБЫТИЯ
 // =============================================================================
 
 function bindGlobalEvents() {
@@ -435,6 +500,7 @@ function bindGlobalEvents() {
     .getElementById("orderStatusFilter")
     .addEventListener("change", loadOrders);
 
+  // Управление заказами
   document
     .getElementById("btnCloseOrderModal")
     .addEventListener("click", () => {
@@ -448,6 +514,50 @@ function bindGlobalEvents() {
       document.getElementById("manualOrderModal").style.display = "none";
     });
 
+  document
+    .getElementById("btnOpenManualOrderModal")
+    .addEventListener("click", () => {
+      document.getElementById("manualOrderModal").style.display = "flex";
+    });
+
+  // УПРАВЛЕНИЕ КАССЕЙ (v10.0)
+  document
+    .getElementById("btnOpenTransactionModal")
+    ?.addEventListener("click", () => {
+      document.getElementById("transactionModal").style.display = "flex";
+    });
+
+  document
+    .getElementById("btnCloseTransactionModal")
+    ?.addEventListener("click", () => {
+      document.getElementById("transactionModal").style.display = "none";
+    });
+
+  // Обработка отправки формы Глобальной транзакции
+  document
+    .getElementById("formTransaction")
+    ?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const data = {
+        accountId: document.getElementById("txAccount").value,
+        type: document.getElementById("txType").value,
+        amount: document.getElementById("txAmount").value,
+        category: document.getElementById("txCategory").value,
+        comment: document.getElementById("txComment").value,
+      };
+
+      try {
+        await API.addFinanceTransaction(data);
+        document.getElementById("transactionModal").style.display = "none";
+        document.getElementById("formTransaction").reset();
+        Utils.showToast("Операция успешно проведена", "success");
+        loadFinance(); // Реактивное обновление таблицы и балансов
+      } catch (err) {
+        Utils.showToast(err.message, "error");
+      }
+    });
+
+  // Обработка статусов и локальных расходов (Orders Level)
   document
     .getElementById("modalOrderStatus")
     .addEventListener("change", async (e) => {
@@ -507,16 +617,10 @@ function bindGlobalEvents() {
         order.details.financials = newFinancials;
         renderOrderFinancials(order);
         loadOrders();
-        Utils.showToast("Расход успешно списан", "success");
+        Utils.showToast("Расход по объекту списан", "success");
       } catch (err) {
         Utils.showToast(err.message, "error");
       }
-    });
-
-  document
-    .getElementById("btnOpenManualOrderModal")
-    .addEventListener("click", () => {
-      document.getElementById("manualOrderModal").style.display = "flex";
     });
 
   document
@@ -563,12 +667,11 @@ function bindGlobalEvents() {
 }
 
 // =============================================================================
-// 8. ⚙️ НАСТРОЙКИ ПРАЙСА И ПЕРСОНАЛ (DYNAMIC PRICELIST v9.1.1)
+// 9. ⚙️ НАСТРОЙКИ ПРАЙСА И ПЕРСОНАЛ
 // =============================================================================
 
 async function loadSettings() {
   try {
-    // Динамический рендер прайса, категории приходят с бэкенда
     const pricelist = await API.getPricelist();
     const container = document.getElementById("settingsFormContainer");
     container.innerHTML = "";
@@ -599,7 +702,6 @@ async function loadSettings() {
   }
 }
 
-// Bulk Update: сбор всех инпутов и отправка одним запросом
 document
   .getElementById("btnSaveSettings")
   ?.addEventListener("click", async () => {
@@ -656,7 +758,7 @@ async function loadUsers() {
           Utils.showToast("Роль успешно изменена", "success");
         } catch (err) {
           Utils.showToast(err.message, "error");
-          loadUsers(); // Возврат к предыдущему значению при ошибке
+          loadUsers();
         }
       });
     });

@@ -1,11 +1,11 @@
 /**
  * @file public/js/api.js
- * @description Frontend API Client (ERP Middleware v9.1.2).
+ * @description Frontend API Client (ERP Middleware v10.0.0).
  * Обеспечивает строгую типизацию запросов к REST API сервера ProElectric.
- * Включает методы финансового контроллера, управления заказами и динамического прайс-листа.
+ * Включает методы финансового контроллера заказов, корпоративной кассы и настроек.
  *
  * @module API
- * @version 9.1.2 (Enterprise ERP Edition)
+ * @version 10.0.0 (Enterprise Finance Edition)
  */
 
 const API_BASE = "/api";
@@ -31,7 +31,7 @@ async function fetchWrapper(endpoint, options = {}) {
     const data = await response.json();
 
     if (!response.ok) {
-      // Пробрасываем ошибку с бэкенда для отображения в Utils.showToast
+      // Пробрасываем ошибку с бэкенда для отображения в UI
       throw new Error(data.error || "Неизвестная ошибка сервера");
     }
     return data;
@@ -91,7 +91,7 @@ export const API = {
     }),
 
   // ==========================================
-  // 💸 FINANCE (ERP MODULE)
+  // 💸 PROJECT FINANCE (ORDER LEVEL)
   // ==========================================
 
   /**
@@ -104,12 +104,38 @@ export const API = {
     }),
 
   /**
-   * Добавление расхода к объекту (Материалы, Такси, Инструмент)
+   * Добавление расхода к объекту (Материалы, Такси, Инструмент за счет проекта)
    */
   addOrderExpense: (id, amount, category, comment) =>
     fetchWrapper(`/orders/${id}/finance/expense`, {
       method: "POST",
       body: JSON.stringify({ amount, category, comment }),
+    }),
+
+  // ==========================================
+  // 🏢 CORPORATE FINANCE (GLOBAL CASHBOX v10.0)
+  // ==========================================
+
+  /**
+   * Получение списка всех счетов (касс) компании и их балансов
+   */
+  getFinanceAccounts: () => fetchWrapper("/finance/accounts"),
+
+  /**
+   * Получение истории глобальных транзакций компании
+   * @param {number} limit - Количество последних записей
+   */
+  getFinanceTransactions: (limit = 100) =>
+    fetchWrapper(`/finance/transactions?limit=${limit}`),
+
+  /**
+   * Проведение новой финансовой операции по компании
+   * @param {Object} data - { accountId, amount, type ('income'|'expense'), category, comment }
+   */
+  addFinanceTransaction: (data) =>
+    fetchWrapper("/finance/transactions", {
+      method: "POST",
+      body: JSON.stringify(data),
     }),
 
   // ==========================================
