@@ -123,15 +123,24 @@ export const getAllUsers = async (limit = 50, offset = 0) => {
 
 export const createOrder = async (userId, data) => {
   const sql = `
-    INSERT INTO orders (user_id, total_price, area, details, status, created_at, updated_at)
-    VALUES ($1, $2, $3, $4, 'new', NOW(), NOW())
+    INSERT INTO orders (id, user_id, total_price, area, details, status, created_at, updated_at)
+    VALUES ($1, $2, $3, $4, $5, 'new', NOW(), NOW())
     RETURNING *
   `;
+
   const area =
     data.area ||
     (data.details && data.details.params ? data.details.params.area : 0);
 
-  const res = await query(sql, [userId, data.price, area, data.details || {}]);
+  // Передаем data.id (те самые 6 цифр из OrderService) первым аргументом
+  const res = await query(sql, [
+    data.id, // $1 - Случайный ID
+    userId, // $2
+    data.price, // $3
+    area, // $4
+    data.details || {}, // $5
+  ]);
+
   return res.rows[0];
 };
 
@@ -179,14 +188,18 @@ export const getUserOrders = async (userId, limit = 20) => {
  */
 export const getAccounts = async () => {
   let res = await query("SELECT * FROM accounts ORDER BY id ASC");
-  
+
   // Self-Healing: Если в базе нет счетов, создаем системный по умолчанию
   if (res.rows.length === 0) {
-    await query(`INSERT INTO accounts (name, type, balance, created_at, updated_at) VALUES ('Главная Касса (Наличные)', 'cash', 0, NOW(), NOW())`);
-    await query(`INSERT INTO accounts (name, type, balance, created_at, updated_at) VALUES ('Расчетный счет (Безнал)', 'card', 0, NOW(), NOW())`);
+    await query(
+      `INSERT INTO accounts (name, type, balance, created_at, updated_at) VALUES ('Главная Касса (Наличные)', 'cash', 0, NOW(), NOW())`,
+    );
+    await query(
+      `INSERT INTO accounts (name, type, balance, created_at, updated_at) VALUES ('Расчетный счет (Безнал)', 'card', 0, NOW(), NOW())`,
+    );
     res = await query("SELECT * FROM accounts ORDER BY id ASC");
   }
-  
+
   return res.rows;
 };
 
@@ -210,7 +223,14 @@ export const getCompanyTransactions = async (limit = 100) => {
  * Добавление транзакции и пересчет баланса счета (Строгая транзакция).
  * @param {Object} data - { accountId, userId, amount, type ('income'|'expense'), category, comment }
  */
-export const addCompanyTransaction = async ({ accountId, userId, amount, type, category, comment }) => {
+export const addCompanyTransaction = async ({
+  accountId,
+  userId,
+  amount,
+  type,
+  category,
+  comment,
+}) => {
   const client = await getClient();
   try {
     await client.query("BEGIN");
@@ -221,11 +241,18 @@ export const addCompanyTransaction = async ({ accountId, userId, amount, type, c
       VALUES ($1, $2, $3, $4, $5, $6, NOW())
       RETURNING *
     `;
-    const resTx = await client.query(sqlTx, [accountId, userId, amount, type, category, comment]);
+    const resTx = await client.query(sqlTx, [
+      accountId,
+      userId,
+      amount,
+      type,
+      category,
+      comment,
+    ]);
     const transaction = resTx.rows[0];
 
     // 2. Обновляем баланс счета
-    const operator = type === 'income' ? '+' : '-';
+    const operator = type === "income" ? "+" : "-";
     const sqlAcc = `
       UPDATE accounts 
       SET balance = balance ${operator} $1, updated_at = NOW() 
@@ -264,8 +291,10 @@ export const addOrderExpense = async (orderId, amount, category, comment) => {
 
 export const getGlobalStats = async () => {
   const sqlUsers = "SELECT COUNT(*) as count FROM users";
-  const sqlRevenue = "SELECT SUM(total_price) as sum FROM orders WHERE status = 'done'";
-  const sqlActive = "SELECT COUNT(*) as count FROM users WHERE updated_at > NOW() - INTERVAL '24 hours'";
+  const sqlRevenue =
+    "SELECT SUM(total_price) as sum FROM orders WHERE status = 'done'";
+  const sqlActive =
+    "SELECT COUNT(*) as count FROM users WHERE updated_at > NOW() - INTERVAL '24 hours'";
 
   const [resUsers, resRevenue, resActive] = await Promise.all([
     query(sqlUsers),
