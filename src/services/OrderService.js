@@ -362,6 +362,25 @@ export const OrderService = {
    * 📝 Создание заказа (Фикс проблемы "null м2")
    */
   async createOrder(userId, estimate) {
+    // 🔥 ГЕНЕРАЦИЯ УНИКАЛЬНОГО 6-ЗНАЧНОГО ID
+    let isUnique = false;
+    let randomId;
+
+    while (!isUnique) {
+      // Генерируем число от 100000 до 999999
+      randomId = Math.floor(100000 + Math.random() * 900000);
+
+      // Проверяем, существует ли уже такой ID в таблице заказов
+      // Используем db.query, так как он обычно доступен в контексте OrderService
+      const checkId = await db.query("SELECT id FROM orders WHERE id = $1", [
+        randomId,
+      ]);
+
+      if (checkId.rows.length === 0) {
+        isUnique = true; // ID свободен
+      }
+    }
+
     const area = estimate.params?.area || 0;
 
     const financials = {
@@ -372,11 +391,13 @@ export const OrderService = {
     };
 
     const orderData = {
+      id: randomId, // ⚡️ Вставляем наш уникальный случайный ID
       area: area,
       price: estimate.total.work,
       details: { ...estimate, financials },
     };
 
+    // Передаем обновленный orderData с нашим ID в базу
     return await db.createOrder(userId, orderData);
   },
 
