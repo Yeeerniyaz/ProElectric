@@ -4,6 +4,7 @@
  * Содержит коллекцию готовых методов для работы с БД.
  * Внедрен глобальный финансовый модуль (Корпоративная касса, счета, транзакции),
  * система управления Бригадами (ERP), распределение прибыли и Web OTP авторизация.
+ * Подготовлен к интеграции с WebSockets через триггеры БД.
  *
  * Архитектура: Repository Pattern. Строгие транзакции (ACID) для финансов.
  *
@@ -312,6 +313,20 @@ export const getBrigades = async () => {
 export const getBrigadeByManagerId = async (telegramId) => {
   const sql = "SELECT * FROM brigades WHERE brigadier_id = $1 LIMIT 1";
   const res = await query(sql, [telegramId]);
+  return res.rows[0];
+};
+
+export const updateBrigade = async (brigadeId, profitPercentage, isActive) => {
+  // Метод для будущей настройки бригад из Web CRM
+  const sql = `
+    UPDATE brigades 
+    SET profit_percentage = COALESCE($1, profit_percentage), 
+        is_active = COALESCE($2, is_active), 
+        updated_at = NOW()
+    WHERE id = $3
+    RETURNING *
+  `;
+  const res = await query(sql, [profitPercentage, isActive, brigadeId]);
   return res.rows[0];
 };
 
