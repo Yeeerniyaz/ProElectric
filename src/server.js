@@ -1,21 +1,24 @@
 /**
  * @file src/server.js
- * @description Главный загрузчик сервисов (Service Bootstrapper v10.0.0).
+ * @description Главный загрузчик сервисов (Service Bootstrapper v10.9.7).
  * Отвечает за:
  * 1. Строгую последовательность запуска: БД -> Web Server -> WebSockets -> Telegram Bot.
  * 2. Выполнение миграций и сидинга (initDB).
  * 3. Настройку Graceful Shutdown (безопасная остановка без потери данных).
  * 4. Инициализацию Socket.IO для Real-Time обновлений ERP.
+ * ДОБАВЛЕНО: Интеграция PostgreSQL LISTEN/NOTIFY напрямую в WebSockets.
  *
  * @module Server
- * @version 10.0.0 (Enterprise ERP Edition)
+ * @version 10.9.7 (Enterprise ERP Edition)
  * @author ProElectric Team
  */
 
-import { Server as SocketIOServer } from "socket.io"; // NEW: Интеграция WebSockets
+import { Server as SocketIOServer } from "socket.io";
 import app from "./app.js";
-import { bot, setSocketIO } from "./bot.js"; // UPDATED: Импортируем сеттер для передачи io в бота
+import { bot, setSocketIO } from "./bot.js";
 import { initDB, closePool } from "./database/index.js";
+// 🔥 НОВОЕ: Импортируем слушатель БД и шину событий для прямой трансляции в Сокеты
+import { initRealtimeListeners, dbEvents } from "./database/connection.js";
 import { config } from "./config.js";
 
 const PORT = config.server.port || 3000;
@@ -33,6 +36,9 @@ async function startServer() {
     await initDB();
     console.log("✅ [Server] База данных успешно инициализирована.");
 
+    // 🔥 1.5 Активация слушателя Real-Time событий БД (LISTEN/NOTIFY)
+    await initRealtimeListeners();
+
     // 2. Запуск Express REST API сервера (Web CRM)
     const server = app.listen(PORT, () => {
       console.log(`🌐 [Server] Web CRM & REST API запущены на порту: ${PORT}`);
@@ -40,7 +46,7 @@ async function startServer() {
     });
 
     // =========================================================================
-    // 2.5 ИНИЦИАЛИЗАЦИЯ WEBSOCKETS (NEW)
+    // 2.5 ИНИЦИАЛИЗАЦИЯ WEBSOCKETS И МОСТА С БД
     // =========================================================================
     console.log("🔌 [Server] Инициализация WebSocket-сервера (Socket.IO)...");
     const io = new SocketIOServer(server, {
@@ -54,6 +60,14 @@ async function startServer() {
     // Передаем инстанс сокетов в Telegram-бот (чтобы бот мог отправлять emit'ы)
     setSocketIO(io);
 
+    // 🔥 МОСТ: Пробрасываем системные события БД напрямую в браузеры клиентов
+    dbEvents.on("order_updates", (payload) => {
+      io.emit("order_updated", payload);
+    });
+    dbEvents.on("settings_updates", (payload) => {
+      io.emit("settings_updated", payload);
+    });
+
     // Логируем подключения фронтенда
     io.on("connection", (socket) => {
       console.log(`⚡️ [WebSocket] Новый клиент подключен: ${socket.id}`);
@@ -62,7 +76,7 @@ async function startServer() {
         console.log(`🔌 [WebSocket] Клиент отключен: ${socket.id}`);
       });
     });
-    console.log("✅ [Server] WebSockets успешно привязаны к серверу.");
+    console.log("✅ [Server] WebSockets успешно привязаны к серверу и БД.");
 
     // 3. Запуск Telegram Бота (Long-polling)
     console.log("🤖 [Server] Запуск Telegram-контроллера (ProElectric Bot)...");
@@ -102,7 +116,7 @@ async function startServer() {
           console.log("✅ [Shutdown] Подключения к БД закрыты.");
 
           console.log(
-            "👋 [Shutdown] Система ProElectric ERP v10.0.0 безопасно завершила работу.",
+            "👋 [Shutdown] Система ProElectric ERP безопасно завершила работу.",
           );
           process.exit(0);
         });

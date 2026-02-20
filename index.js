@@ -7,7 +7,7 @@
  * 3. Запуск основного сервера приложения (Bootstrapping).
  *
  * @module Index
- * @version 9.1.0 (Enterprise ERP Edition)
+ * @version 10.9.7 (Enterprise ERP Edition)
  * @author ProElectric Team
  */
 
@@ -58,7 +58,7 @@ const printSystemBanner = () => {
   const env = process.env.NODE_ENV || "development";
 
   console.log("\n==================================================");
-  console.log("⚡️  P R O E L E C T R I C   E R P   v9.1.0  ⚡️");
+  console.log("⚡️  P R O E L E C T R I C   E R P   v10.9.7 ⚡️");
   console.log("==================================================");
   console.log(`🌍 Окружение (Environment):  ${env.toUpperCase()}`);
   console.log(`📦 Версия Node.js:           ${nodeVersion}`);
@@ -89,7 +89,7 @@ async function bootstrapApplication() {
   try {
     printSystemBanner();
 
-    console.log("⏳ [SYSTEM] Инициализация ядра приложения (v9.1.0)...");
+    console.log("⏳ [SYSTEM] Инициализация ядра приложения (v10.9.7)...");
 
     // Динамический импорт src/server.js.
     // Это гарантирует, что process.on обработчики уже висят до старта бизнес-логики.

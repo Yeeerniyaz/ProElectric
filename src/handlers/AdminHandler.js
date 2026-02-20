@@ -4,9 +4,10 @@
  * Управляет бизнес-процессами (Смена статусов, Дашборд, Роли, Настройки цен, Бригады).
  * Включает FSM для ввода метаданных заказа и инструменты DevOps (SQL, Backup).
  * ИСПРАВЛЕНИЕ: Жесткое отсечение роли MANAGER (Бригадиров) от Админ-панели (Zero-Trust).
+ * ДОБАВЛЕНО: Инлайн-кнопки блокировки и активации бригад (без сокращения старого кода).
  *
  * @module AdminHandler
- * @version 10.5.1 (Senior Architect Edition - Strict RBAC & Cash Flow)
+ * @version 10.5.2 (Senior Architect Edition - Strict RBAC & Cash Flow)
  */
 
 import { Markup } from "telegraf";
@@ -165,6 +166,22 @@ const AdminKeyboards = {
       ),
     ],
   ]),
+
+  // 🔥 НОВОЕ: Инлайн-кнопки управления доступом бригады
+  brigadeControl: (brigadeId, isActive) =>
+    Markup.inlineKeyboard([
+      [
+        isActive
+          ? Markup.button.callback(
+              "🚫 Заблокировать доступ",
+              `toggle_brigade_${brigadeId}_false`,
+            )
+          : Markup.button.callback(
+              "✅ Активировать доступ",
+              `toggle_brigade_${brigadeId}_true`,
+            ),
+      ],
+    ]),
 };
 
 // =============================================================================
@@ -639,34 +656,115 @@ export const AdminHandler = {
   },
 
   /**
-   * 3.5 🏗 УПРАВЛЕНИЕ БРИГАДАМИ (ERP)
+   * 3.5 🏗 УПРАВЛЕНИЕ БРИГАДАМИ (ERP) + БЛОКИРОВКА
    */
   async showBrigadesInstruction(ctx) {
     try {
-      const res = await db.query("SELECT * FROM brigades ORDER BY id ASC");
+      const res = await db.query(`
+        SELECT b.*, u.first_name, u.phone 
+        FROM brigades b 
+        LEFT JOIN users u ON b.brigadier_id = u.telegram_id 
+        ORDER BY b.id ASC
+      `);
       const brigades = res.rows;
 
-      let msg = `🏗 <b>УПРАВЛЕНИЕ БРИГАДАМИ (ERP)</b>\n\n`;
+      let topMsg = `🏗 <b>УПРАВЛЕНИЕ БРИГАДАМИ (ERP)</b>\n\n`;
 
       if (brigades.length === 0) {
-        msg += `<i>Бригады пока не созданы.</i>\n\n`;
+        topMsg += `<i>Бригады пока не созданы.</i>\n\n`;
+        await ctx.replyWithHTML(topMsg);
       } else {
-        brigades.forEach((b) => {
-          msg += `🔹 <b>${b.name}</b> (ID: ${b.id})\n`;
-          msg += `   Бригадир ID: <code>${b.brigadier_id}</code> | Доля: ${b.profit_percentage}%\n`;
-          msg += `   Статус: ${b.is_active ? "✅ Активна" : "❌ Неактивна"}\n\n`;
-        });
+        await ctx.replyWithHTML(topMsg + "Список подрядчиков:");
+
+        for (const b of brigades) {
+          const statusIcon = b.is_active ? "🟢 Активна" : "🔴 Заблокирована";
+          const msg =
+            `🔹 <b>${b.name}</b> (ID: ${b.id})\n` +
+            `Бригадир ID: <code>${b.brigadier_id}</code> | Доля: ${b.profit_percentage}%\n` +
+            `Статус: ${statusIcon}`;
+
+          // 🔥 Выводим карточку каждой бригады с кнопками Блокировки/Активации
+          await ctx.replyWithHTML(
+            msg,
+            AdminKeyboards.brigadeControl(b.id, b.is_active),
+          );
+        }
       }
 
-      msg += `<b>Как добавить новую бригаду:</b>\n`;
-      msg += `Используйте команду:\n<code>/addbrigade [Название] [ID_Бригадира] [Процент_Прибыли]</code>\n`;
-      msg += `<i>Пример: /addbrigade Монтажники Альфа 123456789 40</i>\n`;
-      msg += `\n⚠️ <i>Бригадир автоматически получит роль MANAGER и системный счет в кассе компании.</i>`;
+      // СОХРАНЕННАЯ ОРИГИНАЛЬНАЯ ИНСТРУКЦИЯ
+      let instructionMsg = `\n<b>Как добавить новую бригаду:</b>\n`;
+      instructionMsg += `Используйте команду:\n<code>/addbrigade [Название] [ID_Бригадира] [Процент_Прибыли]</code>\n`;
+      instructionMsg += `<i>Пример: /addbrigade Монтажники Альфа 123456789 40</i>\n`;
+      instructionMsg += `\n⚠️ <i>Бригадир автоматически получит роль MANAGER и системный счет в кассе компании.</i>`;
 
-      await ctx.replyWithHTML(msg);
+      await ctx.replyWithHTML(instructionMsg);
     } catch (e) {
       console.error(e);
       ctx.reply("❌ Ошибка загрузки списка бригад.");
+    }
+  },
+
+  // 🔥 НОВЫЙ МЕТОД: Блокировка и разблокировка Бригады и смена Роли
+  async toggleBrigadeAccess(ctx, brigadeId, newState) {
+    try {
+      const isActivating = newState === "true";
+
+      const bRes = await db.query("SELECT * FROM brigades WHERE id = $1", [
+        brigadeId,
+      ]);
+      if (bRes.rows.length === 0)
+        return ctx.answerCbQuery("❌ Бригада не найдена.", {
+          show_alert: true,
+        });
+
+      const brigade = bRes.rows[0];
+      const brigadierId = brigade.brigadier_id;
+
+      // 1. Меняем статус самой бригады в базе
+      await db.query(
+        "UPDATE brigades SET is_active = $1, updated_at = NOW() WHERE id = $2",
+        [isActivating, brigadeId],
+      );
+
+      // 2. Жестко меняем роль пользователю (лишаем прав менеджера, если заблокирован)
+      if (brigadierId) {
+        const newRole = isActivating ? "manager" : "user";
+        await db.query(
+          "UPDATE users SET role = $1, updated_at = NOW() WHERE telegram_id = $2 AND role != 'owner'",
+          [newRole, brigadierId],
+        );
+      }
+
+      await ctx.answerCbQuery(
+        `✅ Доступ ${isActivating ? "АКТИВИРОВАН" : "ЗАБЛОКИРОВАН"}`,
+      );
+
+      // 3. Обновляем сообщение в боте
+      const statusIcon = isActivating ? "🟢 Активна" : "🔴 Заблокирована";
+      const msg =
+        `🔹 <b>${brigade.name}</b> (ID: ${brigade.id})\n` +
+        `Бригадир ID: <code>${brigade.brigadier_id}</code> | Доля: ${brigade.profit_percentage}%\n` +
+        `Статус: ${statusIcon}\n` +
+        `🛡 <i>Доступ ${isActivating ? "восстановлен" : "ограничен"}. Роль пользователя обновлена.</i>`;
+
+      await ctx.editMessageText(msg, {
+        parse_mode: "HTML",
+        reply_markup: AdminKeyboards.brigadeControl(brigadeId, isActivating)
+          .reply_markup,
+      });
+
+      // 4. Оповещаем самого бригадира
+      if (brigadierId) {
+        const notifyMsg = isActivating
+          ? "✅ <b>ДОСТУП ВОССТАНОВЛЕН</b>\nРуководство активировало вашу учетную запись. Вы снова можете принимать заказы."
+          : "⚠️ <b>ВНИМАНИЕ! ДОСТУП ПРИОСТАНОВЛЕН</b>\nВаш доступ к системе распределения заказов ProElectric был временно ограничен руководством.";
+        await ctx.telegram
+          .sendMessage(brigadierId, notifyMsg, { parse_mode: "HTML" })
+          .catch(() => {});
+      }
+    } catch (e) {
+      console.error(e);
+      ctx.answerCbQuery("❌ Ошибка обновления статуса.", { show_alert: true });
     }
   },
 
