@@ -1,11 +1,12 @@
 /**
  * @file public/js/app.js
- * @description Frontend Application Controller (SPA Logic v10.5.0 Enterprise).
+ * @description Frontend Application Controller (SPA Logic v10.6.0 Enterprise).
  * Управляет состоянием интерфейса, модальными окнами, OTP-авторизацией.
  * Включает Глобальный Финансовый Модуль, ERP Бригад, Deep Analytics и WebSockets.
+ * ИСПРАВЛЕНО: Безопасный рендеринг таблиц (защита от null), обработка 403 ошибки при смене ролей.
  *
  * @module AppController
- * @version 10.5.0 (PWA, Sockets, Cash Flow Edition)
+ * @version 10.6.0 (PWA, Sockets, Cash Flow & UI Safe Edition)
  */
 
 import { API } from "./api.js";
@@ -36,6 +37,7 @@ const Utils = {
   },
   showToast: (message, type = "info") => {
     const container = document.getElementById("toastContainer");
+    if (!container) return;
     const toast = document.createElement("div");
     toast.className = `toast toast-${type}`;
 
@@ -110,7 +112,7 @@ if (socket) {
       State.currentView === "ordersView" &&
       State.selectedOrderId === data.orderId
     )
-      openOrderModal(data.orderId); // Перезагружаем модалку
+      openOrderModal(data.orderId);
     if (State.currentView === "dashboardView") loadDashboard();
   });
   socket.on("settings_updated", () => {
@@ -201,6 +203,7 @@ function bindAuthEvents() {
       loginError.style.display = "none";
       btn.disabled = true;
       btn.innerHTML = `<i data-feather="loader" class="spin"></i> Отправка...`;
+      if (typeof feather !== "undefined") feather.replace();
 
       await API.requestOtp(phone);
 
@@ -336,14 +339,14 @@ async function loadDashboard() {
       stats.overview.totalRevenue,
     );
 
-    // Метрики Юнит-экономики
+    // Метрики Юнит-экономики (Safe checks)
     if (document.getElementById("statBrigadeDebts")) {
       document.getElementById("statBrigadeDebts").textContent =
-        Utils.formatCurrency(deepData.economics.totalBrigadeDebts);
+        Utils.formatCurrency(deepData.economics.totalBrigadeDebts || 0);
     }
     if (document.getElementById("statAverageCheck")) {
       document.getElementById("statAverageCheck").textContent =
-        Utils.formatCurrency(deepData.economics.averageCheck);
+        Utils.formatCurrency(deepData.economics.averageCheck || 0);
     }
 
     renderFunnel(stats.funnel);
@@ -365,16 +368,18 @@ function renderFunnel(funnelData) {
   ];
 
   statuses.forEach((s) => {
-    const stat = funnelData.find((f) => f.status === s.key) || {
-      count: 0,
-      sum: 0,
-    };
+    const stat = Array.isArray(funnelData)
+      ? funnelData.find((f) => f.status === s.key)
+      : null;
+    const count = stat ? stat.count : 0;
+    const sum = stat ? stat.sum : 0;
+
     const row = document.createElement("div");
     row.className = "funnel-row pe-mb-2";
     row.innerHTML = `
       <div class="funnel-label" style="border-left: 4px solid ${s.color}; padding-left: 10px;">${s.label}</div>
-      <div class="funnel-value"><b>${stat.count}</b> шт.</div>
-      <div class="funnel-sum">${Utils.formatCurrency(stat.sum)}</div>
+      <div class="funnel-value"><b>${count}</b> шт.</div>
+      <div class="funnel-sum">${Utils.formatCurrency(sum)}</div>
     `;
     container.appendChild(row);
   });
@@ -385,7 +390,7 @@ function renderExpensesChart(expensesData) {
   if (!container) return;
   container.innerHTML = "";
 
-  if (!expensesData || expensesData.length === 0) {
+  if (!Array.isArray(expensesData) || expensesData.length === 0) {
     container.innerHTML = `<div class="pe-text-muted">Нет данных о расходах</div>`;
     return;
   }
@@ -394,7 +399,7 @@ function renderExpensesChart(expensesData) {
     const row = document.createElement("div");
     row.className = "funnel-row pe-mb-2";
     row.innerHTML = `
-      <div class="funnel-label" style="border-left: 4px solid #ef4444; padding-left: 10px;">${exp.category}</div>
+      <div class="funnel-label" style="border-left: 4px solid #ef4444; padding-left: 10px;">${exp.category || "Прочее"}</div>
       <div class="funnel-sum pe-text-danger">-${Utils.formatCurrency(exp.total)}</div>
     `;
     container.appendChild(row);
@@ -411,7 +416,7 @@ async function loadBrigades() {
     const tbody = document.getElementById("brigadesTableBody");
     tbody.innerHTML = "";
 
-    if (State.brigades.length === 0) {
+    if (!Array.isArray(State.brigades) || State.brigades.length === 0) {
       tbody.innerHTML =
         '<tr><td colspan="6" class="pe-text-center">Бригады не найдены</td></tr>';
       return;
@@ -419,18 +424,19 @@ async function loadBrigades() {
 
     State.brigades.forEach((b) => {
       // Долг компании (если баланс отрицательный, значит наличка у них)
-      const debt = b.balance < 0 ? Math.abs(b.balance) : 0;
+      const balance = b.balance || 0;
+      const debt = balance < 0 ? Math.abs(balance) : 0;
       const debtClass = debt > 0 ? "pe-text-danger fw-bold" : "pe-text-success";
 
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td><b>#${b.id}</b> ${b.name}</td>
+        <td><b>#${b.id}</b> ${b.name || "Без названия"}</td>
         <td><code>${b.brigadier_id}</code></td>
-        <td>${b.profit_percentage}%</td>
+        <td>${b.profit_percentage || 0}%</td>
         <td class="${debtClass}">${Utils.formatCurrency(debt)}</td>
         <td><span class="pe-badge ${b.is_active ? "badge-done" : "badge-cancel"}">${b.is_active ? "Активна" : "Отключена"}</span></td>
         <td class="pe-text-right">
-          ${debt > 0 ? `<button class="pe-btn pe-btn-sm pe-btn-success" onclick="openIncassationModal(${b.brigadier_id}, '${b.name}')">Списать долг</button>` : ""}
+          ${debt > 0 ? `<button class="pe-btn pe-btn-sm pe-btn-success" onclick="openIncassationModal(${b.brigadier_id}, '${b.name || "Бригада"}')">Списать долг</button>` : ""}
         </td>
       `;
       tbody.appendChild(tr);
@@ -466,7 +472,7 @@ async function loadOrders() {
       State.brigades = await API.getBrigades();
     }
 
-    if (State.orders.length === 0) {
+    if (!Array.isArray(State.orders) || State.orders.length === 0) {
       tbody.innerHTML =
         '<tr><td colspan="7" class="pe-text-center">Объектов не найдено</td></tr>';
       return;
@@ -530,9 +536,11 @@ window.openOrderModal = (orderId) => {
   ) {
     brigadeSelect.disabled = false;
     brigadeSelect.innerHTML = `<option value="">-- Не назначена (Биржа) --</option>`;
-    State.brigades.forEach((b) => {
-      brigadeSelect.innerHTML += `<option value="${b.id}" ${order.brigade_id === b.id ? "selected" : ""}>${b.name}</option>`;
-    });
+    if (Array.isArray(State.brigades)) {
+      State.brigades.forEach((b) => {
+        brigadeSelect.innerHTML += `<option value="${b.id}" ${order.brigade_id === b.id ? "selected" : ""}>${b.name}</option>`;
+      });
+    }
   } else {
     // Бригадир не может менять бригаду
     brigadeSelect.innerHTML = `<option>${order.brigade_name || "Не назначена"}</option>`;
@@ -676,32 +684,35 @@ async function loadFinance() {
     const accountSelect = document.getElementById("txAccount");
     accountSelect.innerHTML = "";
 
-    accounts.forEach((acc) => {
-      const icon =
-        acc.type === "cash"
-          ? "dollar-sign"
-          : acc.type === "brigade_acc"
-            ? "hard-hat"
-            : "credit-card";
-      const colorClass = acc.balance >= 0 ? "pe-kpi-primary" : "pe-kpi-danger"; // Долги бригад красным
+    if (Array.isArray(accounts)) {
+      accounts.forEach((acc) => {
+        const icon =
+          acc.type === "cash"
+            ? "dollar-sign"
+            : acc.type === "brigade_acc"
+              ? "hard-hat"
+              : "credit-card";
+        const colorClass =
+          acc.balance >= 0 ? "pe-kpi-primary" : "pe-kpi-danger";
 
-      grid.innerHTML += `
-        <div class="pe-card pe-card-kpi ${colorClass}">
-          <div class="pe-kpi-icon"><i data-feather="${icon}"></i></div>
-          <div class="pe-kpi-data">
-            <span class="pe-kpi-label">${acc.name}</span>
-            <h3 class="pe-kpi-value">${Utils.formatCurrency(acc.balance)}</h3>
+        grid.innerHTML += `
+          <div class="pe-card pe-card-kpi ${colorClass}">
+            <div class="pe-kpi-icon"><i data-feather="${icon}"></i></div>
+            <div class="pe-kpi-data">
+              <span class="pe-kpi-label">${acc.name}</span>
+              <h3 class="pe-kpi-value">${Utils.formatCurrency(acc.balance)}</h3>
+            </div>
           </div>
-        </div>
-      `;
-      accountSelect.innerHTML += `<option value="${acc.id}">${acc.name} (Баланс: ${Utils.formatCurrency(acc.balance)})</option>`;
-    });
+        `;
+        accountSelect.innerHTML += `<option value="${acc.id}">${acc.name} (Баланс: ${Utils.formatCurrency(acc.balance)})</option>`;
+      });
+    }
 
     const transactions = await API.getFinanceTransactions(50);
     const tbody = document.getElementById("transactionsTableBody");
     tbody.innerHTML = "";
 
-    if (transactions.length === 0) {
+    if (!Array.isArray(transactions) || transactions.length === 0) {
       tbody.innerHTML =
         '<tr><td colspan="6" class="pe-text-center pe-text-muted">Операций нет</td></tr>';
     } else {
@@ -805,6 +816,9 @@ function bindGlobalEvents() {
       } catch (err) {
         Utils.showToast(err.message, "error");
         document.getElementById("btnFinalizeOrder").disabled = false;
+        document.getElementById("btnFinalizeOrder").innerHTML =
+          `<i data-feather="check-circle"></i> ЗАКРЫТЬ И РАСПРЕДЕЛИТЬ ПРИБЫЛЬ`;
+        if (typeof feather !== "undefined") feather.replace();
       }
     });
 
@@ -970,25 +984,27 @@ async function loadSettings() {
     const container = document.getElementById("settingsFormContainer");
     container.innerHTML = "";
 
-    pricelist.forEach((section) => {
-      const sectionDiv = document.createElement("div");
-      sectionDiv.className = "pe-mb-6";
-      sectionDiv.innerHTML = `<h4 class="pe-h4 pe-mb-4 pe-text-primary" style="border-bottom: 1px solid var(--pe-border); padding-bottom: 8px;">${section.category}</h4>`;
+    if (Array.isArray(pricelist)) {
+      pricelist.forEach((section) => {
+        const sectionDiv = document.createElement("div");
+        sectionDiv.className = "pe-mb-6";
+        sectionDiv.innerHTML = `<h4 class="pe-h4 pe-mb-4 pe-text-primary" style="border-bottom: 1px solid var(--pe-border); padding-bottom: 8px;">${section.category}</h4>`;
 
-      const grid = document.createElement("div");
-      grid.className = "pe-settings-grid";
+        const grid = document.createElement("div");
+        grid.className = "pe-settings-grid";
 
-      section.items.forEach((item) => {
-        grid.innerHTML += `
-          <div class="pe-form-group">
-            <label>${item.name} (${item.unit})</label>
-            <input type="number" class="pe-input setting-input" data-key="${item.key}" value="${item.currentPrice}">
-          </div>
-        `;
+        section.items.forEach((item) => {
+          grid.innerHTML += `
+            <div class="pe-form-group">
+              <label>${item.name} (${item.unit})</label>
+              <input type="number" class="pe-input setting-input" data-key="${item.key}" value="${item.currentPrice}">
+            </div>
+          `;
+        });
+        sectionDiv.appendChild(grid);
+        container.appendChild(sectionDiv);
       });
-      sectionDiv.appendChild(grid);
-      container.appendChild(sectionDiv);
-    });
+    }
   } catch (e) {
     Utils.showToast("Ошибка загрузки прайс-листа", "error");
   }
@@ -1019,20 +1035,29 @@ async function loadUsers() {
     const tbody = document.getElementById("usersTableBody");
     tbody.innerHTML = "";
 
+    if (!Array.isArray(State.users) || State.users.length === 0) {
+      tbody.innerHTML =
+        '<tr><td colspan="4" class="pe-text-center">Пользователи не найдены</td></tr>';
+      return;
+    }
+
     State.users.forEach((u) => {
       const isManager = u.role === "manager";
       const isAdmin = u.role === "admin" || u.role === "owner";
+      const usernameDisplay = u.username ? `@${u.username}` : "нет username";
+      const phoneDisplay = u.phone ? u.phone : "—";
 
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${u.telegram_id}</td>
-        <td>${u.first_name} <br> <small class="pe-text-muted">@${u.username || "нет"}</small></td>
-        <td>${u.phone || "—"}</td>
+        <td>${u.first_name || "Без имени"} <br> <small class="pe-text-muted">${usernameDisplay}</small></td>
+        <td>${phoneDisplay}</td>
         <td>
-          <select class="pe-input pe-input-sm role-select" data-uid="${u.telegram_id}" ${isAdmin ? "disabled" : ""}>
+          <select class="pe-input pe-input-sm role-select" data-uid="${u.telegram_id}" ${isAdmin && u.telegram_id === State.user.id ? "disabled" : ""}>
             <option value="user" ${u.role === "user" ? "selected" : ""}>Клиент</option>
             <option value="manager" ${isManager ? "selected" : ""}>Мастер (Бригадир)</option>
-            ${isAdmin ? `<option value="${u.role}" selected>${u.role.toUpperCase()}</option>` : ""}
+            <option value="admin" ${u.role === "admin" ? "selected" : ""}>Администратор</option>
+            ${u.role === "owner" ? `<option value="owner" selected>Владелец</option>` : ""}
           </select>
         </td>
       `;
@@ -1042,6 +1067,7 @@ async function loadUsers() {
     document.querySelectorAll(".role-select").forEach((select) => {
       select.addEventListener("change", async (e) => {
         try {
+          // ИСПРАВЛЕНО: Ловим и показываем ошибку 403 (Смена собственной роли)
           await API.updateUserRole(
             e.target.getAttribute("data-uid"),
             e.target.value,
@@ -1049,7 +1075,7 @@ async function loadUsers() {
           Utils.showToast("Роль успешно изменена", "success");
         } catch (err) {
           Utils.showToast(err.message, "error");
-          loadUsers();
+          loadUsers(); // Перерисовываем таблицу, чтобы сбросить селект обратно
         }
       });
     });

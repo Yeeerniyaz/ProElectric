@@ -8,7 +8,6 @@
  *
  * @module Application
  * @version 10.6.0 (Enterprise Analytics, Cash Flow & Lead Market Edition)
- * @author ProElectric Team
  */
 
 import express from "express";
@@ -56,7 +55,7 @@ app.use(
 
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 1000, // Увеличенный лимит для активной работы в ERP
+  max: 1000,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "⛔ Слишком много запросов. Подождите пару минут." },
@@ -87,7 +86,6 @@ app.use(express.static(path.join(__dirname, "../public")));
 // 2. 🔐 AUTHENTICATION & RBAC (OTP & Legacy)
 // =============================================================================
 
-// Middleware для Владельца и Админа
 const requireAdmin = (req, res, next) => {
   if (
     req.session &&
@@ -101,7 +99,6 @@ const requireAdmin = (req, res, next) => {
     .json({ error: "⛔ Доступ запрещен. Требуются права Администратора." });
 };
 
-// Middleware для Бригадиров (доступ к своим объектам)
 const requireManager = (req, res, next) => {
   if (
     req.session &&
@@ -120,7 +117,6 @@ app.get("/", (req, res) => {
   res.redirect("/admin.html");
 });
 
-// --- LEGACY AUTH (Оставлено для обратной совместимости) ---
 app.post("/api/auth/login", (req, res) => {
   const { login, password } = req.body;
   const validLogin = process.env.ADMIN_LOGIN || "admin";
@@ -129,42 +125,34 @@ app.post("/api/auth/login", (req, res) => {
   if (login === validLogin && password === validPass) {
     req.session.isAdmin = true;
     req.session.loginTime = new Date();
-    console.log(`[AUTH] Admin logged in via Legacy Auth from IP: ${req.ip}`);
     return res.json({ success: true, message: "Welcome back, Boss!" });
   }
-
-  console.warn(`[AUTH] Failed legacy login attempt from IP: ${req.ip}`);
   return res.status(401).json({ error: "Неверный логин или пароль" });
 });
 
-// --- WEB OTP AUTHENTICATION (Zero-Trust) ---
 app.post("/api/auth/otp/request", async (req, res) => {
   try {
     const { phone } = req.body;
     if (!phone)
       return res.status(400).json({ error: "Введите номер телефона" });
 
-    // Ищем пользователя по номеру
     const cleanPhone = phone.replace(/\D/g, "");
     const result = await db.query(
       "SELECT * FROM users WHERE REGEXP_REPLACE(phone, '\\D', '', 'g') LIKE '%' || $1 LIMIT 1",
       [cleanPhone],
     );
 
-    if (result.rows.length === 0) {
+    if (result.rows.length === 0)
       return res
         .status(404)
         .json({ error: "Пользователь с таким номером не найден" });
-    }
 
     const user = result.rows[0];
-    if (!["owner", "admin", "manager"].includes(user.role)) {
+    if (!["owner", "admin", "manager"].includes(user.role))
       return res
         .status(403)
         .json({ error: "Доступ в Web CRM разрешен только персоналу" });
-    }
 
-    // Генерируем OTP и отправляем в Telegram
     const { otp } = await UserService.generateWebOTP(user.telegram_id);
     await bot.telegram.sendMessage(
       user.telegram_id,
@@ -174,7 +162,6 @@ app.post("/api/auth/otp/request", async (req, res) => {
 
     res.json({ success: true, message: "Код отправлен в Telegram" });
   } catch (error) {
-    console.error("[AUTH] OTP Request Error:", error);
     res.status(500).json({ error: "Ошибка генерации кода" });
   }
 });
@@ -189,17 +176,12 @@ app.post("/api/auth/otp/verify", async (req, res) => {
     if (!user)
       return res.status(401).json({ error: "Неверный или просроченный код" });
 
-    // Успешная авторизация (сохраняем сессию)
     req.session.user = {
       id: user.telegram_id,
       role: user.role,
       name: user.first_name,
       phone: user.phone,
     };
-    console.log(
-      `[AUTH] User ${user.first_name} (${user.role}) logged in via OTP`,
-    );
-
     res.json({ success: true, user: req.session.user });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -258,7 +240,6 @@ app.get("/api/dashboard/stats", requireAdmin, async (req, res) => {
   }
 });
 
-// Глубокая аналитика: Юнит-экономика, средний чек и скорость работы
 app.get("/api/analytics/deep", requireAdmin, async (req, res) => {
   try {
     // 1. Средний чек (AOV) и Средняя маржа с безопасным COALESCE
@@ -269,13 +250,13 @@ app.get("/api/analytics/deep", requireAdmin, async (req, res) => {
       FROM orders WHERE status = 'done'
     `);
 
-    // 2. Дебиторская задолженность (Сколько бригады должны компании)
+    // 2. Дебиторская задолженность
     const debtQuery = await db.query(`
       SELECT COALESCE(SUM(balance), 0) as total_debt 
       FROM accounts WHERE type = 'brigade_acc' AND balance < 0
     `);
 
-    // 3. Анализ расходов (Какой % от выручки уходит на материалы)
+    // 3. Анализ расходов
     const expensesQuery = await db.query(`
       SELECT category, COALESCE(SUM(amount), 0) as total
       FROM object_expenses
@@ -294,7 +275,6 @@ app.get("/api/analytics/deep", requireAdmin, async (req, res) => {
       expenseBreakdown: expensesQuery.rows || [],
     });
   } catch (error) {
-    console.error("[API] Deep Analytics Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -306,7 +286,6 @@ app.get("/api/analytics/deep", requireAdmin, async (req, res) => {
 app.get("/api/brigades", requireAdmin, async (req, res) => {
   try {
     const brigades = await db.getBrigades();
-    // Безопасная подгрузка балансов (даже если счета нет)
     for (let b of brigades) {
       const acc = await db.query(
         "SELECT balance FROM accounts WHERE user_id = $1 AND type = 'brigade_acc' LIMIT 1",
@@ -389,7 +368,6 @@ app.get("/api/orders", requireManager, async (req, res) => {
     const result = await db.query(query, params);
     res.json(result.rows);
   } catch (error) {
-    console.error("[API] Orders GET Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -462,7 +440,7 @@ app.post("/api/orders", requireAdmin, async (req, res) => {
               },
             },
           )
-          .catch(() => {}); // Игнорируем ошибку, если менеджер заблокировал бота
+          .catch(() => {});
       }
     } catch (pushErr) {
       console.error("[API] Ошибка рассылки на Биржу:", pushErr);
@@ -503,7 +481,6 @@ app.patch("/api/orders/:id/details", requireAdmin, async (req, res) => {
   }
 });
 
-// Назначение бригады вручную
 app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -527,7 +504,6 @@ app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
   }
 });
 
-// Редактирование спецификации (BOM)
 app.patch("/api/orders/:id/bom", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -543,7 +519,6 @@ app.patch("/api/orders/:id/bom", requireAdmin, async (req, res) => {
   }
 });
 
-// Завершение объекта с расчетом Cash Flow
 app.post("/api/orders/:id/finalize", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -652,7 +627,6 @@ app.post("/api/finance/transactions", requireAdmin, async (req, res) => {
   }
 });
 
-// Ручное проведение Инкассации из Админки
 app.post("/api/finance/incassation/approve", requireAdmin, async (req, res) => {
   try {
     const { brigadierId, amount } = req.body;
@@ -661,7 +635,6 @@ app.post("/api/finance/incassation/approve", requireAdmin, async (req, res) => {
         .status(400)
         .json({ error: "ID бригадира и сумма обязательны" });
 
-    // Ищем Главную Кассу
     const resAcc = await db.query(
       "SELECT id FROM accounts WHERE type = 'cash' ORDER BY id ASC LIMIT 1",
     );
@@ -719,7 +692,6 @@ app.post("/api/settings", requireAdmin, async (req, res) => {
   }
 });
 
-// Скачивание дампа базы (DevOps)
 app.get("/api/system/backup", requireAdmin, async (req, res) => {
   try {
     const dump = { timestamp: new Date().toISOString(), database: {} };
