@@ -5,11 +5,12 @@
  * Внедрен глобальный финансовый модуль (Корпоративная касса, счета, транзакции),
  * система управления Бригадами (ERP), распределение прибыли и Web OTP авторизация.
  * Подготовлен к интеграции с WebSockets через триггеры БД.
+ * РЕАЛИЗОВАН CASH FLOW: Инкассация и учет долгов бригад (v10.1.0)
  *
  * Архитектура: Repository Pattern. Строгие транзакции (ACID) для финансов.
  *
  * @module Repository
- * @version 10.0.0 (Enterprise ERP Edition)
+ * @version 10.1.0 (Enterprise ERP Edition - Cash Flow)
  */
 
 import { query, getClient } from "./connection.js";
@@ -317,7 +318,6 @@ export const getBrigadeByManagerId = async (telegramId) => {
 };
 
 export const updateBrigade = async (brigadeId, profitPercentage, isActive) => {
-  // Метод для будущей настройки бригад из Web CRM
   const sql = `
     UPDATE brigades 
     SET profit_percentage = COALESCE($1, profit_percentage), 
@@ -334,13 +334,9 @@ export const updateBrigade = async (brigadeId, profitPercentage, isActive) => {
 // 💸 CORPORATE FINANCE REPOSITORY (GLOBAL CASHBOX v10.0)
 // =============================================================================
 
-/**
- * Получить список всех счетов (касс). Автоматически создает "Главную кассу", если счетов нет.
- */
 export const getAccounts = async () => {
   let res = await query("SELECT * FROM accounts ORDER BY id ASC");
 
-  // Self-Healing: Если в базе нет счетов, создаем системный по умолчанию
   if (res.rows.length === 0) {
     await query(
       `INSERT INTO accounts (name, type, balance, created_at, updated_at) VALUES ('Главная Касса (Наличные)', 'cash', 0, NOW(), NOW())`,
@@ -354,9 +350,6 @@ export const getAccounts = async () => {
   return res.rows;
 };
 
-/**
- * Получить историю глобальных транзакций компании.
- */
 export const getCompanyTransactions = async (limit = 100) => {
   const sql = `
     SELECT t.*, a.name as account_name, u.first_name as user_name
@@ -370,10 +363,6 @@ export const getCompanyTransactions = async (limit = 100) => {
   return res.rows;
 };
 
-/**
- * Добавление транзакции и пересчет баланса счета (Строгая транзакция).
- * @param {Object} data - { accountId, userId, amount, type ('income'|'expense'), category, comment }
- */
 export const addCompanyTransaction = async ({
   accountId,
   userId,
@@ -386,7 +375,6 @@ export const addCompanyTransaction = async ({
   try {
     await client.query("BEGIN");
 
-    // 1. Записываем операцию
     const sqlTx = `
       INSERT INTO transactions (account_id, user_id, amount, type, category, comment, created_at)
       VALUES ($1, $2, $3, $4, $5, $6, NOW())
@@ -402,7 +390,6 @@ export const addCompanyTransaction = async ({
     ]);
     const transaction = resTx.rows[0];
 
-    // 2. Обновляем баланс счета
     const operator = type === "income" ? "+" : "-";
     const sqlAcc = `
       UPDATE accounts 
@@ -422,9 +409,6 @@ export const addCompanyTransaction = async ({
   }
 };
 
-/**
- * Добавление расхода/аванса к объекту (Может делать Бригадир только если заказ в 'work').
- */
 export const addOrderExpense = async (orderId, amount, category, comment) => {
   const sql = `
     INSERT INTO object_expenses (order_id, amount, category, comment, created_at)
@@ -435,16 +419,13 @@ export const addOrderExpense = async (orderId, amount, category, comment) => {
   return res.rows[0];
 };
 
-// --- NEW: PROFIT DISTRIBUTION (ФИНАЛИЗАЦИЯ И РАСПРЕДЕЛЕНИЕ ДОХОДОВ) ---
+// --- CASH FLOW MODULE: ФИНАЛИЗАЦИЯ И ИНКАССАЦИЯ (NEW ERP LOGIC) ---
 
 /**
- * Закрытие заказа с автоматическим распределением прибыли (Сложнейшая ERP транзакция).
- * Считает чистую прибыль (Итого - Расходы), выделяет % бригады, раскидывает по счетам.
+ * Закрытие заказа с логикой CASH FLOW (Наличные остаются у бригады).
+ * Записывает долю в "плюс" и полную прибыль наличными в "минус" (Долг компании).
  */
-export const finalizeOrderAndDistributeProfit = async (
-  orderId,
-  ownerAccountId,
-) => {
+export const finalizeOrderAndDistributeProfit = async (orderId) => {
   const client = await getClient();
   try {
     await client.query("BEGIN");
@@ -463,22 +444,22 @@ export const finalizeOrderAndDistributeProfit = async (
       );
     const order = resOrder.rows[0];
 
-    // 2. Считаем все расходы по объекту (включая выданные авансы)
+    // 2. Считаем чистую прибыль
     const sqlExp =
       "SELECT COALESCE(SUM(amount), 0) as total_expenses FROM object_expenses WHERE order_id = $1";
     const resExp = await client.query(sqlExp, [orderId]);
     const totalExpenses = parseFloat(resExp.rows[0].total_expenses);
 
     const totalPrice = parseFloat(order.total_price);
-    const netProfit = totalPrice - totalExpenses; // Чистая прибыль
+    const netProfit = totalPrice - totalExpenses; // Вся маржа (Наличка на руках)
 
     if (netProfit <= 0) {
       throw new Error(
-        "Чистая прибыль по объекту отрицательная или равна нулю. Распределение невозможно.",
+        "Чистая прибыль отрицательная. Авто-распределение невозможно.",
       );
     }
 
-    // 3. Высчитываем доли
+    // 3. Высчитываем заработанную долю бригады
     const brigadePercentage = parseFloat(order.profit_percentage) / 100;
     const brigadeShare = netProfit * brigadePercentage;
     const ownerShare = netProfit - brigadeShare;
@@ -491,19 +472,18 @@ export const finalizeOrderAndDistributeProfit = async (
     ]);
     const brigadeAccountId = resBrigadeAcc.rows[0]?.id;
 
-    if (!brigadeAccountId || !ownerAccountId) {
-      throw new Error(
-        "Не найден счет бригады или счет владельца для зачисления.",
-      );
-    }
+    if (!brigadeAccountId) throw new Error("Не найден системный счет бригады.");
 
-    // 5. Зачисляем долю Бригадиру
+    // 5. Двойная запись (Double-Entry Bookkeeping) для баланса бригады:
+    // Баланс = +Доля_Бригады (Заработано) -Чистая_Прибыль (Получено на руки) = -Доля_Шефа (Долг компании)
     await client.query(
-      "UPDATE accounts SET balance = balance + $1, updated_at = NOW() WHERE id = $2",
-      [brigadeShare, brigadeAccountId],
+      "UPDATE accounts SET balance = balance + $1 - $2, updated_at = NOW() WHERE id = $3",
+      [brigadeShare, netProfit, brigadeAccountId],
     );
+
+    // Транзакция 1: Начисление заработка
     await client.query(
-      "INSERT INTO transactions (account_id, user_id, amount, type, category, comment, order_id, created_at) VALUES ($1, $2, $3, 'income', 'Выплата бригаде', $4, $5, NOW())",
+      "INSERT INTO transactions (account_id, user_id, amount, type, category, comment, order_id, created_at) VALUES ($1, $2, $3, 'income', 'Заработок', $4, $5, NOW())",
       [
         brigadeAccountId,
         order.brigadier_id,
@@ -513,23 +493,22 @@ export const finalizeOrderAndDistributeProfit = async (
       ],
     );
 
-    // 6. Зачисляем долю Владельцу (Owner)
+    // Транзакция 2: Фиксация наличности на руках (Долг перед Шефом)
     await client.query(
-      "UPDATE accounts SET balance = balance + $1, updated_at = NOW() WHERE id = $2",
-      [ownerShare, ownerAccountId],
-    );
-    await client.query(
-      "INSERT INTO transactions (account_id, user_id, amount, type, category, comment, order_id, created_at) VALUES ($1, $2, $3, 'income', 'Прибыль компании', $4, $5, NOW())",
+      "INSERT INTO transactions (account_id, user_id, amount, type, category, comment, order_id, created_at) VALUES ($1, $2, $3, 'expense', 'Удержание', $4, $5, NOW())",
       [
-        ownerAccountId,
+        brigadeAccountId,
         order.brigadier_id,
-        ownerShare,
-        `Чистая прибыль компании за объект #${orderId}`,
+        netProfit,
+        `Наличные средства от клиента остались у вас (Долг Шефу)`,
         orderId,
       ],
     );
 
-    // 7. Закрываем заказ (меняем статус)
+    // ВЛАДЕЛЬЦУ ДЕНЬГИ ПОКА НЕ НАЧИСЛЯЕМ (Они физически у бригады).
+    // Зачислим только после Инкассации.
+
+    // 6. Закрываем заказ
     await client.query(
       "UPDATE orders SET status = 'done', updated_at = NOW() WHERE id = $1",
       [orderId],
@@ -540,6 +519,59 @@ export const finalizeOrderAndDistributeProfit = async (
   } catch (error) {
     await client.query("ROLLBACK");
     throw new Error(`Ошибка распределения прибыли: ${error.message}`);
+  } finally {
+    client.release();
+  }
+};
+
+/**
+ * Проведение ИНКАССАЦИИ (Сверка и передача наличных Шефу).
+ * Списывает долг с бригады и зачисляет деньги в Главную кассу владельца.
+ */
+export const processIncassation = async (
+  brigadierId,
+  amount,
+  ownerAccountId,
+) => {
+  const client = await getClient();
+  try {
+    await client.query("BEGIN");
+
+    // Ищем счет бригады
+    const resBrigadeAcc = await client.query(
+      "SELECT id FROM accounts WHERE user_id = $1 AND type = 'brigade_acc' LIMIT 1",
+      [brigadierId],
+    );
+    const brigadeAccountId = resBrigadeAcc.rows[0]?.id;
+
+    if (!brigadeAccountId || !ownerAccountId)
+      throw new Error("Счет бригады или счет Владельца не найден.");
+
+    // 1. Погашение долга Бригады (плюсуем баланс, так как они отдали наличку)
+    await client.query(
+      "UPDATE accounts SET balance = balance + $1, updated_at = NOW() WHERE id = $2",
+      [amount, brigadeAccountId],
+    );
+    await client.query(
+      "INSERT INTO transactions (account_id, user_id, amount, type, category, comment, created_at) VALUES ($1, $2, $3, 'income', 'Инкассация', 'Передача выручки Шефу', NOW())",
+      [brigadeAccountId, brigadierId, amount],
+    );
+
+    // 2. Реальное зачисление денег Владельцу
+    await client.query(
+      "UPDATE accounts SET balance = balance + $1, updated_at = NOW() WHERE id = $2",
+      [amount, ownerAccountId],
+    );
+    await client.query(
+      "INSERT INTO transactions (account_id, user_id, amount, type, category, comment, created_at) VALUES ($1, $2, $3, 'income', 'Инкассация', 'Получение выручки от бригады', NOW())",
+      [ownerAccountId, brigadierId, amount],
+    );
+
+    await client.query("COMMIT");
+    return true;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw new Error(`Ошибка проведения инкассации: ${error.message}`);
   } finally {
     client.release();
   }

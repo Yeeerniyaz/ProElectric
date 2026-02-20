@@ -1,19 +1,20 @@
 /**
  * @file src/handlers/AdminHandler.js
- * @description Контроллер панели администратора (Enterprise Telegram Controller v10.0.0).
+ * @description Контроллер панели администратора (Enterprise Telegram Controller v10.1.0).
  * Управляет бизнес-процессами (Смена статусов, Дашборд, Роли, Настройки цен, Бригады).
  * Включает FSM для ввода метаданных заказа и инструменты DevOps (SQL, Backup).
  * Интегрирован с WebSockets для передачи real-time событий в Web CRM.
+ * ДОБАВЛЕН БЛОК CASH FLOW: Подтверждение инкассации и списание долгов бригад.
  *
  * @module AdminHandler
- * @version 10.0.0 (Senior Architect Edition - ERP & WebSockets)
+ * @version 10.1.0 (Senior Architect Edition - ERP & WebSockets & Cash Flow)
  */
 
 import { Markup } from "telegraf";
 import { UserService } from "../services/UserService.js";
 import { OrderService } from "../services/OrderService.js";
 import * as db from "../database/index.js";
-import { getSocketIO } from "../bot.js"; // NEW: Интеграция с WebSockets
+import { getSocketIO } from "../bot.js"; // Интеграция с WebSockets
 import os from "os";
 
 // =============================================================================
@@ -31,7 +32,7 @@ const ROLES = Object.freeze({
 const BUTTONS = Object.freeze({
   DASHBOARD: "📊 Финансовый Отчет",
   ORDERS: "📦 Реестр объектов",
-  BRIGADES: "🏗 Управление Бригадами", // NEW
+  BRIGADES: "🏗 Управление Бригадами",
   SETTINGS: "⚙️ Настройки цен",
   STAFF: "👥 Персонал",
   SQL_CONSOLE: "👨‍💻 SQL Терминал",
@@ -60,7 +61,7 @@ const AdminKeyboards = {
   mainMenu: (role) => {
     const buttons = [
       [BUTTONS.DASHBOARD, BUTTONS.ORDERS],
-      [BUTTONS.BRIGADES, BUTTONS.SETTINGS], // Заменили расположение кнопок для гармонии
+      [BUTTONS.BRIGADES, BUTTONS.SETTINGS],
       [BUTTONS.STAFF],
     ];
 
@@ -234,7 +235,7 @@ export const AdminHandler = {
         return this.showDashboard(ctx);
       case BUTTONS.ORDERS:
         return this.showOrdersInstruction(ctx);
-      case BUTTONS.BRIGADES: // NEW
+      case BUTTONS.BRIGADES:
         return this.showBrigadesInstruction(ctx);
       case BUTTONS.SETTINGS:
         return this.showSettings(ctx);
@@ -346,7 +347,6 @@ export const AdminHandler = {
           );
           await ctx.answerCbQuery("✅ Данные синхронизированы");
         } catch (editError) {
-          // Если сообщение не изменилось, Telegram выдает ошибку. Перехватываем ее, чтобы бот не падал.
           if (
             editError.description &&
             editError.description.includes("message is not modified")
@@ -414,7 +414,6 @@ export const AdminHandler = {
     }
 
     try {
-      // NEW: JOIN с таблицей brigades
       const res = await db.query(
         `SELECT o.*, u.first_name, u.username, u.phone, b.name as brigade_name 
          FROM orders o 
@@ -467,15 +466,12 @@ export const AdminHandler = {
         cancelLine = `\n⚠️ <b>Отказ:</b> ${reasonStr}\n`;
       }
 
-      // Безопасное чтение массива спецификации
       const bomCount = details.bom?.length || 0;
       const bomIndicator =
         bomCount > 0 ? `\n📦 <i>BOM Спецификация: ${bomCount} поз.</i>` : "";
 
-      // Страховка от null площади
       const areaInfo = order.area || params.area || 0;
 
-      // ИНФОРМАЦИЯ О БРИГАДЕ
       const brigadeLine = order.brigade_name
         ? `\n👷‍♂️ <b>Бригада:</b> ${order.brigade_name}`
         : `\n👷‍♂️ <b>Бригада:</b> <i>Свободный объект (Биржа)</i>`;
@@ -495,7 +491,7 @@ export const AdminHandler = {
         `🏗 <b>Технические данные:</b>\n` +
         `Площадь: ${areaInfo} м² | Комнат: ${params.rooms || 0}\n` +
         `Стены: ${wallName}` +
-        brigadeLine + // <-- Добавили строку с бригадой
+        brigadeLine +
         bomIndicator +
         `\n\n` +
         `💸 <b>Финансовый контроллер:</b>\n` +
@@ -538,7 +534,6 @@ export const AdminHandler = {
         [newStatus, orderId],
       );
 
-      // WEB SOCKET TRIGGER
       const io = getSocketIO();
       if (io) {
         io.emit("order_updated", { orderId, status: newStatus });
@@ -574,7 +569,6 @@ export const AdminHandler = {
       );
       ctx.session.adminState = ADMIN_STATES.IDLE;
 
-      // SOCKET
       const io = getSocketIO();
       if (io) io.emit("order_updated", { orderId, address_updated: true });
 
@@ -630,7 +624,6 @@ export const AdminHandler = {
         [orderId],
       );
 
-      // SOCKET
       const io = getSocketIO();
       if (io) io.emit("order_updated", { orderId, status: "cancel" });
 
@@ -644,7 +637,7 @@ export const AdminHandler = {
   },
 
   /**
-   * 3.5 🏗 УПРАВЛЕНИЕ БРИГАДАМИ (NEW MODULE)
+   * 3.5 🏗 УПРАВЛЕНИЕ БРИГАДАМИ (ERP)
    */
   async showBrigadesInstruction(ctx) {
     try {
@@ -666,7 +659,7 @@ export const AdminHandler = {
       msg += `<b>Как добавить новую бригаду:</b>\n`;
       msg += `Используйте команду:\n<code>/addbrigade [Название] [ID_Бригадира] [Процент_Прибыли]</code>\n`;
       msg += `<i>Пример: /addbrigade Монтажники Альфа 123456789 40</i>\n`;
-      msg += `\n⚠️ <i>Бригадир автоматически получит роль MANAGER и системный счет в кассе компании. Название можно писать с пробелами.</i>`;
+      msg += `\n⚠️ <i>Бригадир автоматически получит роль MANAGER и системный счет в кассе компании.</i>`;
 
       await ctx.replyWithHTML(msg);
     } catch (e) {
@@ -676,7 +669,6 @@ export const AdminHandler = {
   },
 
   async processAddBrigade(ctx) {
-    // Безопасный парсинг даже если название состоит из нескольких слов
     const text = ctx.message.text.replace("/addbrigade", "").trim();
     const parts = text.split(" ");
 
@@ -686,9 +678,9 @@ export const AdminHandler = {
       );
     }
 
-    const percentage = parseFloat(parts.pop()); // Забираем последнее слово (число)
-    const brigadierId = parseInt(parts.pop()); // Забираем предпоследнее (ID)
-    const name = parts.join(" "); // Все что осталось - название
+    const percentage = parseFloat(parts.pop());
+    const brigadierId = parseInt(parts.pop());
+    const name = parts.join(" ");
 
     if (isNaN(percentage) || isNaN(brigadierId) || !name) {
       return ctx.reply(
@@ -759,7 +751,6 @@ export const AdminHandler = {
    */
   async showSettings(ctx) {
     try {
-      // Запрашиваем новый структурированный прайс-лист вместо сырых ключей
       const pricelist = await OrderService.getPublicPricelist();
 
       let msg = "⚙️ <b>ПАНЕЛЬ УПРАВЛЕНИЯ ЦЕНАМИ</b>\n\n";
@@ -798,7 +789,6 @@ export const AdminHandler = {
         [args[1], args[2]],
       );
 
-      // SOCKET
       const io = getSocketIO();
       if (io) io.emit("settings_updated", { key: args[1], value: args[2] });
 
@@ -836,10 +826,9 @@ export const AdminHandler = {
     );
     try {
       const dump = { timestamp: new Date().toISOString(), database: {} };
-      // Расширенный список таблиц ERP, включая бригады и новые финансы
       const tables = [
         "users",
-        "brigades", // NEW
+        "brigades",
         "orders",
         "settings",
         "object_expenses",
@@ -853,7 +842,7 @@ export const AdminHandler = {
             await db.query(`SELECT * FROM ${table}`)
           ).rows;
         } catch (e) {
-          /* Игнорируем отсутствие таблицы на случай, если БД еще не смигрировала */
+          /* Игнорируем отсутствие таблицы */
         }
       }
 
@@ -904,6 +893,92 @@ export const AdminHandler = {
       await ctx.replyWithHTML(
         `❌ <b>POSTGRES ERROR</b>\n<pre>${e.message}</pre>`,
       );
+    }
+  },
+
+  // =============================================================================
+  // 7. 💸 ИНКАССАЦИЯ (CASH FLOW - NEW)
+  // =============================================================================
+
+  /**
+   * Подтверждение получения выручки от бригадира.
+   * Вызывает финансовую транзакцию, которая списывает долг бригады и зачисляет деньги Владельцу.
+   */
+  async approveIncassation(ctx, brigadierId, amount) {
+    try {
+      const fmtAmount = new Intl.NumberFormat("ru-RU").format(amount);
+
+      // Ищем ID счета Владельца (Главная Касса / Наличные)
+      const resAcc = await db.query(
+        "SELECT id FROM accounts WHERE type = 'cash' ORDER BY id ASC LIMIT 1",
+      );
+      if (resAcc.rows.length === 0) {
+        return ctx.answerCbQuery(
+          "❌ Ошибка: Системный счет 'Главная Касса' не найден.",
+          { show_alert: true },
+        );
+      }
+      const ownerAccountId = resAcc.rows[0].id;
+
+      // Запускаем строгую SQL транзакцию списания долга
+      await db.processIncassation(
+        brigadierId,
+        parseFloat(amount),
+        ownerAccountId,
+      );
+
+      // Обновляем сообщение Владельца (чтобы нельзя было нажать дважды)
+      await ctx.editMessageText(
+        ctx.callbackQuery.message.text +
+          `\n\n✅ <b>СТАТУС: ПОДТВЕРЖДЕНО</b>\nДеньги (${fmtAmount} ₸) успешно зачислены в кассу. Долг бригады списан.`,
+        { parse_mode: "HTML" },
+      );
+
+      // Отправляем радостное уведомление Бригадиру
+      await ctx.telegram
+        .sendMessage(
+          brigadierId,
+          `✅ <b>Шеф подтвердил получение ${fmtAmount} ₸!</b>\nСумма успешно списана с вашего долга. Баланс обновлен.`,
+          { parse_mode: "HTML" },
+        )
+        .catch(() => {});
+
+      await ctx.answerCbQuery("✅ Инкассация успешно проведена!");
+    } catch (e) {
+      console.error("Ошибка подтверждения инкассации:", e);
+      ctx.answerCbQuery(`❌ Ошибка базы данных: ${e.message}`, {
+        show_alert: true,
+      });
+    }
+  },
+
+  /**
+   * Отклонение перевода (если Шеф не получил деньги на Kaspi)
+   */
+  async rejectIncassation(ctx, brigadierId, amount) {
+    try {
+      const fmtAmount = new Intl.NumberFormat("ru-RU").format(amount);
+
+      // Меняем интерфейс кнопки на Отклонено
+      await ctx.editMessageText(
+        ctx.callbackQuery.message.text +
+          `\n\n❌ <b>СТАТУС: ОТКЛОНЕНО</b>\nВы указали, что деньги не поступали на ваш счет.`,
+        { parse_mode: "HTML" },
+      );
+
+      // Уведомляем Бригадира, что перевод не прошел
+      await ctx.telegram
+        .sendMessage(
+          brigadierId,
+          `❌ <b>Внимание! Шеф отклонил инкассацию на сумму ${fmtAmount} ₸.</b>\nДолг не списан. Пожалуйста, свяжитесь с руководством для уточнения статуса перевода.`,
+          { parse_mode: "HTML" },
+        )
+        .catch(() => {});
+
+      await ctx.answerCbQuery("❌ Вы отклонили перевод.");
+    } catch (e) {
+      console.error("Ошибка отклонения инкассации:", e);
+      ctx.answerCbQuery("❌ Системная ошибка.");
     }
   },
 };

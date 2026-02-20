@@ -3,6 +3,7 @@
  * @description Ядро Telegram-бота (Dispatcher & Router v10.0.0 Enterprise).
  * Выполняет маршрутизацию всех входящих событий, управляет сессиями (FSM),
  * экспортирует экземпляр бота для Web CRM и управляет инстансом Socket.IO.
+ * Внедрен маршрутизатор для процессов Инкассации (Cash Flow) и закрытия объектов.
  *
  * @module BotCore
  * @version 10.0.0 (Enterprise ERP Edition)
@@ -14,7 +15,7 @@ import { config } from "./config.js";
 // Импорт контроллеров бизнес-логики
 import { UserHandler } from "./handlers/UserHandler.js";
 import { AdminHandler } from "./handlers/AdminHandler.js";
-import { BrigadeHandler } from "./handlers/BrigadeHandler.js"; // NEW: Контроллер бригад
+import { BrigadeHandler } from "./handlers/BrigadeHandler.js"; // Контроллер бригад
 
 // =============================================================================
 // 1. ИНИЦИАЛИЗАЦИЯ ИНСТАНСА
@@ -54,7 +55,7 @@ bot.use((ctx, next) => {
 // =============================================================================
 
 bot.start((ctx) => UserHandler.startCommand(ctx));
-bot.command("webauth", (ctx) => UserHandler.generateWebOTP(ctx)); // NEW: Прямая команда для OTP
+bot.command("webauth", (ctx) => UserHandler.generateWebOTP(ctx)); // Прямая команда для OTP
 
 // =============================================================================
 // 5. МАРШРУТИЗАТОР ТЕКСТОВЫХ КНОПОК (HEARS)
@@ -69,7 +70,7 @@ const USER_TRIGGERS = [
   "ℹ️ Как мы работаем",
   "🔙 Назад",
   "❌ Отмена",
-  "🔑 Доступ в Web CRM", // NEW: Кнопка запроса OTP
+  "🔑 Доступ в Web CRM", // Кнопка запроса OTP
 ];
 bot.hears(USER_TRIGGERS, (ctx) => UserHandler.handleTextMessage(ctx));
 
@@ -88,13 +89,13 @@ const ADMIN_TRIGGERS = [
 ];
 bot.hears(ADMIN_TRIGGERS, (ctx) => AdminHandler.handleMessage(ctx));
 
-// --- Интерфейс Бригадира (ERP) - NEW ---
+// --- Интерфейс Бригадира (ERP) ---
 bot.hears("👷 Панель Бригадира", (ctx) => BrigadeHandler.showMenu(ctx));
 
 const BRIGADE_TRIGGERS = [
   "💼 Биржа заказов", // Просмотр статусов 'new'
   "🛠 Мои объекты", // Управление своими заказами
-  "💸 Финансы и Авансы", // Транзакции и расходы
+  "💸 Сверка и Выручка", // ИСПРАВЛЕНО: Теперь текст строго совпадает с кнопкой в BrigadeHandler
   "🔙 В главное меню",
 ];
 bot.hears(BRIGADE_TRIGGERS, (ctx) => BrigadeHandler.handleMessage(ctx));
@@ -138,7 +139,15 @@ bot.action(/prompt_comment_(\d+)/, (ctx) =>
 
 bot.action("admin_refresh_dashboard", (ctx) => AdminHandler.showDashboard(ctx));
 
-// --- Бригадир: Действия по объектам (NEW) ---
+// --- Админ: Действия по Инкассации (NEW) ---
+bot.action(/app_inc_(\d+)_([\d.]+)/, (ctx) =>
+  AdminHandler.approveIncassation(ctx, ctx.match[1], ctx.match[2]),
+);
+bot.action(/rej_inc_(\d+)_([\d.]+)/, (ctx) =>
+  AdminHandler.rejectIncassation(ctx, ctx.match[1], ctx.match[2]),
+);
+
+// --- Бригадир: Действия по объектам и Финансам ---
 bot.action(/take_order_(\d+)/, (ctx) =>
   BrigadeHandler.takeOrder(ctx, ctx.match[1]),
 );
@@ -148,6 +157,12 @@ bot.action(/add_expense_(\d+)/, (ctx) =>
 bot.action(/req_advance_(\d+)/, (ctx) =>
   BrigadeHandler.promptAdvance(ctx, ctx.match[1]),
 );
+// NEW: Закрытие заказа бригадиром
+bot.action(/finish_order_(\d+)/, (ctx) =>
+  BrigadeHandler.finishOrder(ctx, ctx.match[1]),
+);
+// NEW: Старт передачи выручки шефу
+bot.action("start_incassation", (ctx) => BrigadeHandler.promptIncassation(ctx));
 
 // =============================================================================
 // 7. ГЛОБАЛЬНЫЙ ПЕРЕХВАТЧИК (SMART INTERCEPTOR)
@@ -165,7 +180,8 @@ bot.on("text", async (ctx) => {
     text.startsWith("/order") ||
     text.startsWith("/setprice") ||
     text.startsWith("/setrole") ||
-    text.startsWith("/sql")
+    text.startsWith("/sql") ||
+    text.startsWith("/addbrigade")
   ) {
     return AdminHandler.handleMessage(ctx);
   }
@@ -175,7 +191,7 @@ bot.on("text", async (ctx) => {
     return AdminHandler.handleMessage(ctx);
   }
 
-  // 3. FSM Brigade (Состояния ожидания сумм расходов или авансов) - NEW
+  // 3. FSM Brigade (Состояния ожидания сумм расходов, авансов или инкассации)
   if (ctx.session?.brigadeState && ctx.session.brigadeState !== "IDLE") {
     return BrigadeHandler.handleMessage(ctx);
   }
