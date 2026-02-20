@@ -3,6 +3,7 @@
  * @description Синхронизированный модуль конфигурации (v10.0.0 Enterprise).
  * Устраняет ошибки "undefined" в app.js и connection.js, объединяя все секции.
  * Внедрены настройки безопасности для OTP авторизации и WebSockets.
+ * Исправлен баг с SSL в Docker (Production Environment).
  *
  * @module Configuration
  */
@@ -65,8 +66,8 @@ const configRaw = {
   server: {
     corsOrigin: getEnv("CORS_ORIGIN", "*"),
     sessionSecret: getEnv("SESSION_SECRET", "dev_secret_key_change_me"),
-    jwtSecret: getEnv("JWT_SECRET", "proelectric_enterprise_jwt_secret_key"), // NEW: Для Web CRM (OTP Auth)
-    otpExpiresIn: getInt("OTP_EXPIRES_IN", 15), // NEW: Время жизни OTP пароля в минутах
+    jwtSecret: getEnv("JWT_SECRET", "proelectric_enterprise_jwt_secret_key"), // Для Web CRM (OTP Auth)
+    otpExpiresIn: getInt("OTP_EXPIRES_IN", 15), // Время жизни OTP пароля в минутах
   },
 
   // Секция db — необходима для connection.js
@@ -75,7 +76,9 @@ const configRaw = {
     max: getInt("DB_POOL_MAX", 20),
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 5000,
-    ssl: isProduction ? { rejectUnauthorized: false } : false,
+    // ИСПРАВЛЕНИЕ: SSL включается только если явно передать DB_SSL=true в .env
+    // В Docker сетях между контейнерами SSL не нужен
+    ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : false,
   },
 
   // Секция bot — необходима для bot.js
@@ -90,7 +93,7 @@ const configRaw = {
     bossUsername: (process.env.BOSS_USERNAME || "yeeerniyaz").replace("@", ""),
   },
 
-  // Секция admin — необходима для авторизации (обратная совместимость для SuperAdmin)
+  // Секция admin — необходима для авторизации (обратная совместимость)
   admin: {
     password: getEnv("ADMIN_PASS", "admin123"),
   },
