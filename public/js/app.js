@@ -1,12 +1,13 @@
 /**
  * @file public/js/app.js
- * @description Frontend Application Controller (SPA Logic v10.6.0 Enterprise).
+ * @description Frontend Application Controller (SPA Logic v10.7.0 Enterprise).
  * Управляет состоянием интерфейса, модальными окнами, OTP-авторизацией.
  * Включает Глобальный Финансовый Модуль, ERP Бригад, Deep Analytics и WebSockets.
- * ИСПРАВЛЕНО: Безопасный рендеринг таблиц (защита от null), обработка 403 ошибки при смене ролей.
+ * ДОБАВЛЕНО: Интеграция Chart.js для Таймлайна, Рейтинг Бригад (Leaderboard)
+ * и строгий RBAC-рендеринг интерфейса (Admin vs Manager).
  *
  * @module AppController
- * @version 10.6.0 (PWA, Sockets, Cash Flow & UI Safe Edition)
+ * @version 10.7.0 (PWA, Chart.js, Cash Flow & UI Safe Edition)
  */
 
 import { API } from "./api.js";
@@ -84,6 +85,7 @@ const State = {
   selectedOrderId: null,
   currentBOM: [],
   financeAccounts: [],
+  timelineChartInstance: null, // Хранение объекта графика
 };
 
 // Инициализация WebSockets (Real-Time)
@@ -127,7 +129,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 // =============================================================================
-// 3. 🔐 АВТОРИЗАЦИЯ, OTP И RBAC РОУТИНГ
+// 3. 🔐 АВТОРИЗАЦИЯ, OTP И RBAC РОУТИНГ (СТРОГОЕ РАЗДЕЛЕНИЕ)
 // =============================================================================
 
 async function checkSession() {
@@ -160,31 +162,35 @@ function showLogin() {
   document.getElementById("appLayout").style.display = "none";
 }
 
+// 🔥 СТРОГОЕ РАЗДЕЛЕНИЕ ИНТЕРФЕЙСА (ADMIN vs MANAGER)
 function applyRoleRestrictions(role) {
-  // Владелец и Админ видят всё
-  if (role === "owner" || role === "admin") return;
+  const isAdmin = role === "owner" || role === "admin";
 
-  // Если это Бригадир (Manager), скрываем лишнее
-  if (role === "manager") {
-    const hiddenTargets = [
-      "financeView",
-      "settingsView",
-      "usersView",
-      "broadcastView",
-      "brigadesView",
-    ];
-    document.querySelectorAll(".nav-btn").forEach((btn) => {
-      const target = btn.getAttribute("data-target");
-      if (hiddenTargets.includes(target)) {
-        btn.style.display = "none";
-      }
+  // 1. Управляем видимостью админских блоков
+  document
+    .querySelectorAll(".admin-only-nav, .admin-only-block")
+    .forEach((el) => {
+      el.style.display = isAdmin ? "" : "none";
     });
-    // Скрываем заголовки секций в меню, если под ними нет кнопок
-    const sections = document.querySelectorAll(".pe-nav-section");
-    if (sections.length >= 3) {
-      sections[1].style.display = "none"; // Бухгалтерия
-      sections[2].style.display = "none"; // Управление
-    }
+
+  // 2. Управляем видимостью менеджерских блоков
+  document.querySelectorAll(".manager-only-block").forEach((el) => {
+    el.style.display = isAdmin ? "none" : "";
+  });
+
+  // 3. Динамическая подмена текстов
+  if (!isAdmin) {
+    const navOrdersText = document.getElementById("navOrdersText");
+    if (navOrdersText) navOrdersText.textContent = "Мои Объекты";
+
+    const ordersPageTitle = document.getElementById("ordersPageTitle");
+    if (ordersPageTitle) ordersPageTitle.textContent = "Мои Объекты";
+
+    const dashboardTitle = document.getElementById("dashboardMainTitle");
+    if (dashboardTitle) dashboardTitle.textContent = "Моя Статистика";
+
+    const dashboardSub = document.getElementById("dashboardSubTitle");
+    if (dashboardSub) dashboardSub.textContent = "Ваши показатели и заработок";
   }
 }
 
@@ -321,7 +327,7 @@ function loadViewData(viewId) {
 }
 
 // =============================================================================
-// 4. 📊 DEEP ANALYTICS & DASHBOARD
+// 4. 📊 DEEP ANALYTICS, CHART.JS & DASHBOARD
 // =============================================================================
 
 async function loadDashboard() {
@@ -331,29 +337,150 @@ async function loadDashboard() {
       API.getDeepAnalytics(),
     ]);
 
-    // Обновление верхних карточек
-    document.getElementById("statNetProfit").textContent = Utils.formatCurrency(
-      stats.overview.totalNetProfit,
-    );
-    document.getElementById("statRevenue").textContent = Utils.formatCurrency(
-      stats.overview.totalRevenue,
-    );
+    const isAdmin =
+      State.user &&
+      (State.user.role === "owner" || State.user.role === "admin");
 
-    // Метрики Юнит-экономики (Safe checks)
-    if (document.getElementById("statBrigadeDebts")) {
-      document.getElementById("statBrigadeDebts").textContent =
-        Utils.formatCurrency(deepData.economics.totalBrigadeDebts || 0);
+    // Обновление верхних карточек (для Админа)
+    if (isAdmin) {
+      const elNetProfit = document.getElementById("statNetProfit");
+      const elRevenue = document.getElementById("statRevenue");
+      const elDebts = document.getElementById("statBrigadeDebts");
+
+      if (elNetProfit)
+        elNetProfit.textContent = Utils.formatCurrency(
+          stats.overview.totalNetProfit,
+        );
+      if (elRevenue)
+        elRevenue.textContent = Utils.formatCurrency(
+          stats.overview.totalRevenue,
+        );
+      if (elDebts)
+        elDebts.textContent = Utils.formatCurrency(
+          deepData.economics.totalBrigadeDebts || 0,
+        );
+    } else {
+      // Для Бригадира считаем только его личный заработок по его закрытым заказам
+      const myOrders = await API.getOrders("done");
+      let myTotalEarned = 0;
+      myOrders.forEach((o) => {
+        const net = o.details?.financials?.net_profit || o.total_price;
+        // Грубый просчет, лучше брать с API транзакций, но пока так:
+        myTotalEarned += net;
+      });
+      const elManagerEarned = document.getElementById("statManagerEarned");
+      if (elManagerEarned)
+        elManagerEarned.textContent = Utils.formatCurrency(myTotalEarned);
     }
-    if (document.getElementById("statAverageCheck")) {
-      document.getElementById("statAverageCheck").textContent =
-        Utils.formatCurrency(deepData.economics.averageCheck || 0);
-    }
+
+    const elAverageCheck = document.getElementById("statAverageCheck");
+    if (elAverageCheck)
+      elAverageCheck.textContent = Utils.formatCurrency(
+        deepData.economics.averageCheck || 0,
+      );
 
     renderFunnel(stats.funnel);
     renderExpensesChart(deepData.expenseBreakdown);
+
+    // Загрузка Таймлайна и Рейтинга только для Администрации
+    if (isAdmin) {
+      const [timelineData, brigadesData] = await Promise.all([
+        API.getTimeline(),
+        API.getBrigadesAnalytics(),
+      ]);
+      renderTimelineChart(timelineData);
+      renderLeaderboard(brigadesData);
+    }
   } catch (e) {
+    console.error(e);
     Utils.showToast("Ошибка загрузки аналитики", "error");
   }
+}
+
+function renderTimelineChart(data) {
+  const canvas = document.getElementById("timelineChart");
+  if (!canvas || typeof Chart === "undefined") return;
+
+  // Очистка старого инстанса
+  if (State.timelineChartInstance) {
+    State.timelineChartInstance.destroy();
+  }
+
+  if (!Array.isArray(data) || data.length === 0) return;
+
+  // Данные с сервера идут DESC (от новых к старым), переворачиваем для графика слева-направо
+  const sortedData = [...data].reverse();
+  const labels = sortedData.map((d) => d.month);
+  const revenue = sortedData.map((d) => parseFloat(d.gross_revenue));
+  const netProfit = sortedData.map((d) => parseFloat(d.net_profit));
+
+  State.timelineChartInstance = new Chart(canvas, {
+    type: "line",
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: "Оборот (Выручка)",
+          data: revenue,
+          borderColor: "#3b82f6",
+          backgroundColor: "rgba(59, 130, 246, 0.1)",
+          borderWidth: 2,
+          fill: true,
+          tension: 0.4,
+        },
+        {
+          label: "Чистая прибыль",
+          data: netProfit,
+          borderColor: "#10b981",
+          backgroundColor: "rgba(16, 185, 129, 0.1)",
+          borderWidth: 2,
+          fill: true,
+          tension: 0.4,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: "#f4f4f5" } },
+      },
+      scales: {
+        x: {
+          ticks: { color: "#a1a1aa" },
+          grid: { color: "rgba(255,255,255,0.05)" },
+        },
+        y: {
+          ticks: { color: "#a1a1aa" },
+          grid: { color: "rgba(255,255,255,0.05)" },
+        },
+      },
+    },
+  });
+}
+
+function renderLeaderboard(brigades) {
+  const tbody = document.getElementById("leaderboardTableBody");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+
+  if (!Array.isArray(brigades) || brigades.length === 0) {
+    tbody.innerHTML =
+      '<tr><td colspan="5" class="pe-text-center pe-text-muted">Нет данных для рейтинга</td></tr>';
+    return;
+  }
+
+  brigades.forEach((b) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><b>${b.name || "Без названия"}</b></td>
+      <td>${b.closed_orders_count} шт.</td>
+      <td>${Utils.formatCurrency(b.total_revenue_brought)}</td>
+      <td class="pe-text-success fw-bold">${Utils.formatCurrency(b.total_net_profit_brought)}</td>
+      <td class="pe-text-right ${b.current_debt > 0 ? "pe-text-danger fw-bold" : ""}">${Utils.formatCurrency(b.current_debt)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
 }
 
 function renderFunnel(funnelData) {
@@ -414,6 +541,7 @@ async function loadBrigades() {
   try {
     State.brigades = await API.getBrigades();
     const tbody = document.getElementById("brigadesTableBody");
+    if (!tbody) return;
     tbody.innerHTML = "";
 
     if (!Array.isArray(State.brigades) || State.brigades.length === 0) {
@@ -423,7 +551,6 @@ async function loadBrigades() {
     }
 
     State.brigades.forEach((b) => {
-      // Долг компании (если баланс отрицательный, значит наличка у них)
       const balance = b.balance || 0;
       const debt = balance < 0 ? Math.abs(balance) : 0;
       const debtClass = debt > 0 ? "pe-text-danger fw-bold" : "pe-text-success";
@@ -462,9 +589,9 @@ async function loadOrders() {
     const status = document.getElementById("orderStatusFilter").value;
     State.orders = await API.getOrders(status);
     const tbody = document.getElementById("ordersTableBody");
+    if (!tbody) return;
     tbody.innerHTML = "";
 
-    // Загружаем бригады для селектора внутри карточки заказа (если мы Админ)
     if (
       State.user &&
       (State.user.role === "owner" || State.user.role === "admin")
@@ -513,7 +640,6 @@ window.openOrderModal = (orderId) => {
   State.selectedOrderId = order.id;
 
   const area = order.area || order.details?.params?.area || 0;
-
   document.getElementById("modalOrderTitle").textContent =
     `Объект #${order.id} (${area} м²)`;
 
@@ -555,13 +681,10 @@ window.openOrderModal = (orderId) => {
     btnFinalize.style.display = "none";
   }
 
-  // BOM
   State.currentBOM = Array.isArray(order.details?.bom)
     ? JSON.parse(JSON.stringify(order.details.bom))
     : [];
   renderBOMEditor();
-
-  // Финансы
   renderOrderFinancials(order);
 
   document.getElementById("orderModal").style.display = "flex";
@@ -612,7 +735,6 @@ function renderOrderFinancials(order) {
   }
 }
 
-// BOM логика
 function renderBOMEditor() {
   const container = document.getElementById("modalBOMList");
   container.innerHTML = "";
@@ -680,9 +802,9 @@ async function loadFinance() {
     State.financeAccounts = accounts;
 
     const grid = document.getElementById("financeAccountsGrid");
-    grid.innerHTML = "";
     const accountSelect = document.getElementById("txAccount");
-    accountSelect.innerHTML = "";
+    if (grid) grid.innerHTML = "";
+    if (accountSelect) accountSelect.innerHTML = "";
 
     if (Array.isArray(accounts)) {
       accounts.forEach((acc) => {
@@ -710,6 +832,7 @@ async function loadFinance() {
 
     const transactions = await API.getFinanceTransactions(50);
     const tbody = document.getElementById("transactionsTableBody");
+    if (!tbody) return;
     tbody.innerHTML = "";
 
     if (!Array.isArray(transactions) || transactions.length === 0) {
@@ -752,12 +875,11 @@ function bindGlobalEvents() {
   // Модалка заказов
   document
     .getElementById("btnCloseOrderModal")
-    .addEventListener("click", () => {
+    ?.addEventListener("click", () => {
       document.getElementById("orderModal").style.display = "none";
       State.selectedOrderId = null;
     });
 
-  // Назначение Бригады (Admin)
   document
     .getElementById("modalOrderBrigade")
     ?.addEventListener("change", async (e) => {
@@ -772,7 +894,6 @@ function bindGlobalEvents() {
       }
     });
 
-  // Изменение статуса
   document
     .getElementById("modalOrderStatus")
     ?.addEventListener("change", async (e) => {
@@ -786,7 +907,7 @@ function bindGlobalEvents() {
       }
     });
 
-  // ФИНАЛИЗАЦИЯ И РАСПРЕДЕЛЕНИЕ ПРИБЫЛИ (ERP)
+  // ФИНАЛИЗАЦИЯ
   document
     .getElementById("btnFinalizeOrder")
     ?.addEventListener("click", async () => {
@@ -815,14 +936,15 @@ function bindGlobalEvents() {
         if (State.currentView === "dashboardView") loadDashboard();
       } catch (err) {
         Utils.showToast(err.message, "error");
-        document.getElementById("btnFinalizeOrder").disabled = false;
-        document.getElementById("btnFinalizeOrder").innerHTML =
-          `<i data-feather="check-circle"></i> ЗАКРЫТЬ И РАСПРЕДЕЛИТЬ ПРИБЫЛЬ`;
-        if (typeof feather !== "undefined") feather.replace();
+        const btn = document.getElementById("btnFinalizeOrder");
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = `<i data-feather="check-circle"></i> ЗАКРЫТЬ И РАСПРЕДЕЛИТЬ ПРИБЫЛЬ`;
+          if (typeof feather !== "undefined") feather.replace();
+        }
       }
     });
 
-  // Обновление цены
   document
     .getElementById("btnUpdateFinalPrice")
     ?.addEventListener("click", async () => {
@@ -982,6 +1104,7 @@ async function loadSettings() {
   try {
     const pricelist = await API.getPricelist();
     const container = document.getElementById("settingsFormContainer");
+    if (!container) return;
     container.innerHTML = "";
 
     if (Array.isArray(pricelist)) {
@@ -1033,6 +1156,7 @@ async function loadUsers() {
   try {
     State.users = await API.getUsers();
     const tbody = document.getElementById("usersTableBody");
+    if (!tbody) return;
     tbody.innerHTML = "";
 
     if (!Array.isArray(State.users) || State.users.length === 0) {
@@ -1064,10 +1188,10 @@ async function loadUsers() {
       tbody.appendChild(tr);
     });
 
+    // Обработка 403 ошибки при попытке изменить свою роль
     document.querySelectorAll(".role-select").forEach((select) => {
       select.addEventListener("change", async (e) => {
         try {
-          // ИСПРАВЛЕНО: Ловим и показываем ошибку 403 (Смена собственной роли)
           await API.updateUserRole(
             e.target.getAttribute("data-uid"),
             e.target.value,
@@ -1075,7 +1199,7 @@ async function loadUsers() {
           Utils.showToast("Роль успешно изменена", "success");
         } catch (err) {
           Utils.showToast(err.message, "error");
-          loadUsers(); // Перерисовываем таблицу, чтобы сбросить селект обратно
+          loadUsers();
         }
       });
     });

@@ -6,7 +6,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
     />
-    <title>ProElectric ERP | v10.5 Enterprise</title>
+    <title>ProElectric ERP | v10.7 Enterprise</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -19,6 +19,7 @@
 
     <script src="https://unpkg.com/feather-icons"></script>
     <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   </head>
   <body class="pe-theme-dark">
     <div id="loginView" class="view-section active pe-auth-screen">
@@ -28,7 +29,7 @@
           <h2>
             ProElectric <span class="pe-badge pe-badge-primary">ERP</span>
           </h2>
-          <p class="pe-text-muted">Enterprise Management System v10.5</p>
+          <p class="pe-text-muted">Enterprise Management System v10.7</p>
         </div>
 
         <form id="phoneForm" class="pe-form">
@@ -106,7 +107,7 @@
         </div>
 
         <nav class="pe-sidebar-nav">
-          <div class="pe-nav-section">Аналитика и Объекты</div>
+          <div class="pe-nav-section">Рабочая область</div>
           <button
             class="nav-btn pe-nav-item active"
             data-target="dashboardView"
@@ -114,25 +115,45 @@
             <i data-feather="pie-chart"></i> <span>Дашборд</span>
           </button>
           <button class="nav-btn pe-nav-item" data-target="ordersView">
-            <i data-feather="briefcase"></i> <span>Все Объекты</span>
+            <i data-feather="briefcase"></i>
+            <span id="navOrdersText">Все Объекты</span>
           </button>
 
-          <div class="pe-nav-section pe-mt-4">ERP & Cash Flow</div>
-          <button class="nav-btn pe-nav-item" data-target="brigadesView">
+          <div class="pe-nav-section pe-mt-4 admin-only-nav">
+            ERP & Cash Flow
+          </div>
+          <button
+            class="nav-btn pe-nav-item admin-only-nav"
+            data-target="brigadesView"
+          >
             <i data-feather="hard-hat"></i> <span>Бригады</span>
           </button>
-          <button class="nav-btn pe-nav-item" data-target="financeView">
+          <button
+            class="nav-btn pe-nav-item admin-only-nav"
+            data-target="financeView"
+          >
             <i data-feather="dollar-sign"></i> <span>Глобальная Касса</span>
           </button>
 
-          <div class="pe-nav-section pe-mt-4">Администрирование</div>
-          <button class="nav-btn pe-nav-item" data-target="settingsView">
+          <div class="pe-nav-section pe-mt-4 admin-only-nav">
+            Администрирование
+          </div>
+          <button
+            class="nav-btn pe-nav-item admin-only-nav"
+            data-target="settingsView"
+          >
             <i data-feather="sliders"></i> <span>Настройки / Прайс</span>
           </button>
-          <button class="nav-btn pe-nav-item" data-target="usersView">
+          <button
+            class="nav-btn pe-nav-item admin-only-nav"
+            data-target="usersView"
+          >
             <i data-feather="users"></i> <span>CRM Клиентов</span>
           </button>
-          <button class="nav-btn pe-nav-item" data-target="broadcastView">
+          <button
+            class="nav-btn pe-nav-item admin-only-nav"
+            data-target="broadcastView"
+          >
             <i data-feather="radio"></i> <span>Рассылка</span>
           </button>
         </nav>
@@ -178,9 +199,11 @@
           <section id="dashboardView" class="view-section pe-view">
             <div class="pe-section-header">
               <div>
-                <h2 class="pe-h2">Глубокая Аналитика (Deep Analytics)</h2>
-                <p class="pe-text-muted">
-                  Юнит-экономика и метрики компании в реальном времени
+                <h2 class="pe-h2" id="dashboardMainTitle">
+                  Глубокая Аналитика (Deep Analytics)
+                </h2>
+                <p class="pe-text-muted" id="dashboardSubTitle">
+                  Метрики и показатели в реальном времени
                 </p>
               </div>
               <button class="pe-btn pe-btn-secondary" id="refreshStatsBtn">
@@ -189,7 +212,10 @@
             </div>
 
             <div class="pe-grid-kpi pe-mb-6">
-              <div class="pe-card pe-card-kpi pe-kpi-success">
+              <div
+                class="pe-card pe-card-kpi pe-kpi-success admin-only-block"
+                id="kpiNetProfitBlock"
+              >
                 <div class="pe-kpi-icon">
                   <i data-feather="trending-up"></i>
                 </div>
@@ -198,7 +224,10 @@
                   <h3 id="statNetProfit" class="pe-kpi-value">0 ₸</h3>
                 </div>
               </div>
-              <div class="pe-card pe-card-kpi pe-kpi-primary">
+              <div
+                class="pe-card pe-card-kpi pe-kpi-primary admin-only-block"
+                id="kpiRevenueBlock"
+              >
                 <div class="pe-kpi-icon">
                   <i data-feather="credit-card"></i>
                 </div>
@@ -207,7 +236,10 @@
                   <h3 id="statRevenue" class="pe-kpi-value">0 ₸</h3>
                 </div>
               </div>
-              <div class="pe-card pe-card-kpi pe-kpi-danger">
+              <div
+                class="pe-card pe-card-kpi pe-kpi-danger admin-only-block"
+                id="kpiDebtsBlock"
+              >
                 <div class="pe-kpi-icon">
                   <i data-feather="alert-triangle"></i>
                 </div>
@@ -216,31 +248,87 @@
                   <h3 id="statBrigadeDebts" class="pe-kpi-value">0 ₸</h3>
                 </div>
               </div>
-              <div class="pe-card pe-card-kpi pe-kpi-warning">
+              <div class="pe-card pe-card-kpi pe-kpi-warning" id="kpiAOVBlock">
                 <div class="pe-kpi-icon"><i data-feather="activity"></i></div>
                 <div class="pe-kpi-data">
                   <span class="pe-kpi-label">Средний чек (AOV)</span>
                   <h3 id="statAverageCheck" class="pe-kpi-value">0 ₸</h3>
                 </div>
               </div>
+              <div
+                class="pe-card pe-card-kpi pe-kpi-success manager-only-block"
+                id="kpiManagerEarnedBlock"
+                style="display: none"
+              >
+                <div class="pe-kpi-icon"><i data-feather="briefcase"></i></div>
+                <div class="pe-kpi-data">
+                  <span class="pe-kpi-label">Личный заработок</span>
+                  <h3 id="statManagerEarned" class="pe-kpi-value">
+                    Загрузка...
+                  </h3>
+                </div>
+              </div>
             </div>
 
-            <div class="pe-grid-2col-sm">
+            <div class="pe-card pe-mb-6 admin-only-block" id="timelineBlock">
+              <div class="pe-card-header">
+                <h3 class="pe-h3">Финансовый Таймлайн (Выручка и Прибыль)</h3>
+              </div>
+              <div
+                class="pe-card-body"
+                style="position: relative; height: 300px"
+              >
+                <canvas id="timelineChart"></canvas>
+              </div>
+            </div>
+
+            <div class="pe-grid-2col-sm pe-mb-6">
               <div class="pe-card">
                 <div class="pe-card-header">
-                  <h3 class="pe-h3">Воронка лидов</h3>
+                  <h3 class="pe-h3">Воронка объектов</h3>
                 </div>
                 <div class="pe-card-body">
                   <div class="pe-funnel" id="funnelChart"></div>
                 </div>
               </div>
-              <div class="pe-card">
+              <div class="pe-card admin-only-block" id="expensesBlock">
                 <div class="pe-card-header">
                   <h3 class="pe-h3">Анализ расходов (Cost Breakdown)</h3>
                 </div>
                 <div class="pe-card-body">
                   <div class="pe-funnel" id="expensesChart"></div>
                 </div>
+              </div>
+            </div>
+
+            <div
+              class="pe-card pe-table-card admin-only-block"
+              id="leaderboardBlock"
+            >
+              <div class="pe-card-header">
+                <h3 class="pe-h3">
+                  Рейтинг эффективности бригад (Leaderboard)
+                </h3>
+              </div>
+              <div class="pe-table-responsive">
+                <table class="pe-table">
+                  <thead>
+                    <tr>
+                      <th>Бригада</th>
+                      <th>Сдано объектов</th>
+                      <th>Принесено выручки</th>
+                      <th>Принесено прибыли (Чистыми)</th>
+                      <th class="pe-text-right">Текущий долг Шефу</th>
+                    </tr>
+                  </thead>
+                  <tbody id="leaderboardTableBody">
+                    <tr>
+                      <td colspan="5" class="pe-text-center pe-text-muted">
+                        Загрузка рейтинга...
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </section>
@@ -287,7 +375,7 @@
           >
             <div class="pe-section-header">
               <div>
-                <h2 class="pe-h2">Реестр Объектов</h2>
+                <h2 class="pe-h2" id="ordersPageTitle">Реестр Объектов</h2>
                 <p class="pe-text-muted">
                   Полный контроль за ходом работ и сметами
                 </p>
@@ -303,7 +391,7 @@
                   <option value="done">Завершенные</option>
                 </select>
                 <button
-                  class="pe-btn pe-btn-primary"
+                  class="pe-btn pe-btn-primary admin-only-block"
                   id="btnOpenManualOrderModal"
                 >
                   <i data-feather="plus"></i> Создать оффлайн-заказ
@@ -339,7 +427,8 @@
               <div>
                 <h2 class="pe-h2">Глобальная Касса</h2>
                 <p class="pe-text-muted">
-                  Учет внепроектных доходов, расходов и движений средств
+                  Учет внепроектных доходов, расходов и движений средств (Без
+                  учета счетов бригад)
                 </p>
               </div>
               <button
@@ -495,8 +584,11 @@
                 <h4 class="pe-h4">
                   <i data-feather="settings"></i> Управление объектом
                 </h4>
-                <div class="pe-form-group pe-mt-4">
-                  <label>Назначить Бригаду:</label>
+                <div
+                  class="pe-form-group pe-mt-4 admin-only-block"
+                  id="modalBrigadeFormGroup"
+                >
+                  <label>Назначить Бригаду (только Админ):</label>
                   <select id="modalOrderBrigade" class="pe-input"></select>
                 </div>
                 <div class="pe-form-group">
@@ -532,7 +624,10 @@
                   <span>Расчетная база (Работа):</span>
                   <strong id="modalCalcPrice">0 ₸</strong>
                 </div>
-                <div class="pe-fin-row pe-fin-edit">
+                <div
+                  class="pe-fin-row pe-fin-edit admin-only-block"
+                  id="modalFinalPriceBlock"
+                >
                   <span>Договорная цена:</span>
                   <div class="pe-input-group pe-input-group-sm">
                     <input
@@ -568,6 +663,81 @@
               </div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="manualOrderModal" class="pe-modal-overlay" style="display: none">
+      <div class="pe-modal pe-modal-md">
+        <header class="pe-modal-header">
+          <div class="pe-modal-title">
+            <i data-feather="file-plus"></i>
+            <h3>Создать оффлайн-заказ</h3>
+          </div>
+          <button class="pe-btn-close" id="btnCloseManualModal">
+            <i data-feather="x"></i>
+          </button>
+        </header>
+        <div class="pe-modal-body">
+          <form id="formManualOrder" class="pe-form">
+            <div class="pe-form-group">
+              <label>Имя клиента</label>
+              <input
+                type="text"
+                id="manualName"
+                class="pe-input"
+                required
+                placeholder="Например: Иван"
+              />
+            </div>
+            <div class="pe-form-group">
+              <label>Телефон клиента</label>
+              <input
+                type="tel"
+                id="manualPhone"
+                class="pe-input"
+                required
+                placeholder="+7 777 000 0000"
+              />
+            </div>
+            <div class="pe-grid-2col-sm">
+              <div class="pe-form-group">
+                <label>Площадь (м²)</label>
+                <input
+                  type="number"
+                  id="manualArea"
+                  class="pe-input"
+                  required
+                  value="50"
+                />
+              </div>
+              <div class="pe-form-group">
+                <label>Кол-во комнат</label>
+                <input
+                  type="number"
+                  id="manualRooms"
+                  class="pe-input"
+                  required
+                  value="2"
+                />
+              </div>
+            </div>
+            <div class="pe-form-group">
+              <label>Тип стен</label>
+              <select id="manualWallType" class="pe-input">
+                <option value="wall_concrete">Бетон / Монолит</option>
+                <option value="wall_brick">Кирпич</option>
+                <option value="wall_gas">Газоблок / ГКЛ</option>
+              </select>
+            </div>
+            <button
+              type="submit"
+              class="pe-btn pe-btn-primary pe-btn-block pe-mt-4"
+            >
+              <i data-feather="check"></i> Сгенерировать заказ и разослать
+              бригадам
+            </button>
+          </form>
         </div>
       </div>
     </div>

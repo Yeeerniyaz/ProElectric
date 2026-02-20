@@ -1,11 +1,12 @@
 /**
  * @file public/js/api.js
- * @description Frontend API Client (ERP Middleware v10.5.0).
+ * @description Frontend API Client (ERP Middleware v10.7.0).
  * Обеспечивает строгую типизацию запросов к REST API сервера ProElectric.
  * Включает методы OTP-авторизации, глубокой аналитики, управления бригадами и инкассации.
+ * ДОБАВЛЕНО: Эндпоинты для Timeline (График доходов) и Рейтинга бригад.
  *
  * @module API
- * @version 10.5.0 (Enterprise ERP & Cash Flow Edition)
+ * @version 10.7.0 (Enterprise ERP & Advanced Analytics Edition)
  */
 
 const API_BASE = "/api";
@@ -38,7 +39,7 @@ async function fetchWrapper(endpoint, options = {}) {
     const data = await response.json();
 
     if (!response.ok) {
-      // Пробрасываем ошибку с бэкенда для отображения в UI
+      // Пробрасываем ошибку с бэкенда для отображения в UI (включая 401 и 403)
       throw new Error(data.error || "Неизвестная ошибка сервера");
     }
     return data;
@@ -63,7 +64,7 @@ export const API = {
       body: JSON.stringify({ login, password }),
     }),
 
-  // NEW: OTP Авторизация по номеру телефона
+  // OTP Авторизация по номеру телефона
   requestOtp: (phone) =>
     fetchWrapper("/auth/otp/request", {
       method: "POST",
@@ -78,19 +79,25 @@ export const API = {
 
   logout: () => fetchWrapper("/auth/logout", { method: "POST" }),
 
-  // Обновленный метод проверки сессии, который возвращает РОЛЬ пользователя
+  // Проверка сессии (возвращает роль пользователя для RBAC роутинга)
   checkAuth: () => fetchWrapper("/auth/me"),
 
   // ==========================================
-  // 📊 DASHBOARD & DEEP ANALYTICS
+  // 📊 DASHBOARD & ADVANCED ANALYTICS (NEW)
   // ==========================================
   getStats: () => fetchWrapper("/dashboard/stats"),
 
-  // NEW: Глубокая аналитика (юнит-экономика)
+  // Глубокая аналитика (юнит-экономика)
   getDeepAnalytics: () => fetchWrapper("/analytics/deep"),
 
+  // НОВОЕ: Таймлайн (Доходы фирмы по месяцам)
+  getTimeline: () => fetchWrapper("/analytics/timeline"),
+
+  // НОВОЕ: Рейтинг бригад (Leaderboard: кто сколько заработал и должен)
+  getBrigadesAnalytics: () => fetchWrapper("/analytics/brigades"),
+
   // ==========================================
-  // 🏗 BRIGADES MANAGEMENT (ERP) - NEW
+  // 🏗 BRIGADES MANAGEMENT (ERP)
   // ==========================================
   getBrigades: () => fetchWrapper("/brigades"),
 
@@ -129,7 +136,7 @@ export const API = {
       body: JSON.stringify({ key, value }),
     }),
 
-  // NEW: Расширенное управление объектами (ERP Level)
+  // Расширенное управление объектами (ERP Level)
   assignBrigade: (id, brigadeId) =>
     fetchWrapper(`/orders/${id}/assign`, {
       method: "PATCH",
@@ -174,7 +181,7 @@ export const API = {
       body: JSON.stringify(data),
     }),
 
-  // NEW: Проведение Инкассации (Списание долга бригады)
+  // Проведение Инкассации (Списание долга бригады)
   approveIncassation: (brigadierId, amount) =>
     fetchWrapper("/finance/incassation/approve", {
       method: "POST",
@@ -200,7 +207,7 @@ export const API = {
       body: JSON.stringify(payloadArray),
     }),
 
-  // NEW: Запрос на формирование и скачивание дампа базы
+  // Запрос на формирование и скачивание дампа базы
   downloadBackup: () => fetchWrapper("/system/backup"),
 
   // ==========================================

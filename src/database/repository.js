@@ -1,16 +1,16 @@
 /**
  * @file src/database/repository.js
- * @description Слой репозитория (Data Access Layer v10.0.0).
+ * @description Слой репозитория (Data Access Layer v10.7.0).
  * Содержит коллекцию готовых методов для работы с БД.
- * Внедрен глобальный финансовый модуль (Корпоративная касса, счета, транзакции),
- * система управления Бригадами (ERP), распределение прибыли и Web OTP авторизация.
- * Подготовлен к интеграции с WebSockets через триггеры БД.
- * РЕАЛИЗОВАН CASH FLOW: Инкассация и учет долгов бригад (v10.1.0)
+ * Внедрен глобальный финансовый модуль, система управления Бригадами (ERP),
+ * распределение прибыли и Web OTP авторизация.
+ * ИСПРАВЛЕНО: Глобальная касса изолирована от счетов бригад. Добавлен поиск Owner ID.
+ * ДОБАВЛЕНО: Продвинутая аналитика (Timeline, Brigade Leaderboards, Deep Analytics).
  *
  * Архитектура: Repository Pattern. Строгие транзакции (ACID) для финансов.
  *
  * @module Repository
- * @version 10.1.0 (Enterprise ERP Edition - Cash Flow)
+ * @version 10.7.0 (Enterprise ERP Edition - Advanced Analytics)
  */
 
 import { query, getClient } from "./connection.js";
@@ -76,6 +76,13 @@ export const findUserById = async (telegramId) => {
   const sql = "SELECT * FROM users WHERE telegram_id = $1";
   const res = await query(sql, [telegramId]);
   return res.rows[0];
+};
+
+// НОВОЕ: Поиск Владельца системы (для отправки уведомлений об инкассации)
+export const getSystemOwnerId = async () => {
+  const sql = "SELECT telegram_id FROM users WHERE role = 'owner' LIMIT 1";
+  const res = await query(sql);
+  return res.rows.length > 0 ? res.rows[0].telegram_id : null;
 };
 
 export const upsertUser = async ({ id, first_name, username }) => {
@@ -335,7 +342,10 @@ export const updateBrigade = async (brigadeId, profitPercentage, isActive) => {
 // =============================================================================
 
 export const getAccounts = async () => {
-  let res = await query("SELECT * FROM accounts ORDER BY id ASC");
+  // ИСПРАВЛЕНИЕ: Исключаем счета бригад из глобальной кассы фирмы
+  let res = await query(
+    "SELECT * FROM accounts WHERE type != 'brigade_acc' ORDER BY id ASC",
+  );
 
   if (res.rows.length === 0) {
     await query(
@@ -344,7 +354,9 @@ export const getAccounts = async () => {
     await query(
       `INSERT INTO accounts (name, type, balance, created_at, updated_at) VALUES ('Расчетный счет (Безнал)', 'card', 0, NOW(), NOW())`,
     );
-    res = await query("SELECT * FROM accounts ORDER BY id ASC");
+    res = await query(
+      "SELECT * FROM accounts WHERE type != 'brigade_acc' ORDER BY id ASC",
+    );
   }
 
   return res.rows;
@@ -356,6 +368,7 @@ export const getCompanyTransactions = async (limit = 100) => {
     FROM transactions t
     LEFT JOIN accounts a ON t.account_id = a.id
     LEFT JOIN users u ON t.user_id = u.telegram_id
+    WHERE a.type != 'brigade_acc'
     ORDER BY t.created_at DESC
     LIMIT $1
   `;
@@ -578,7 +591,7 @@ export const processIncassation = async (
 };
 
 // =============================================================================
-// 📊 ANALYTICS & DASHBOARD
+// 📊 ANALYTICS, TIMELINE & DASHBOARD (ADVANCED MODULE)
 // =============================================================================
 
 export const getGlobalStats = async () => {
@@ -609,4 +622,79 @@ export const getOrdersFunnel = async () => {
   `;
   const res = await query(sql);
   return res.rows;
+};
+
+// НОВОЕ: Глубокая аналитика (Средний чек, Дебиторка, Расходы)
+export const getDeepAnalyticsData = async () => {
+  const avgQuery = await query(`
+    SELECT 
+      COALESCE(AVG(total_price), 0) as avg_check,
+      COALESCE(AVG(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)), 0) as avg_margin
+    FROM orders WHERE status = 'done'
+  `);
+
+  const debtQuery = await query(`
+    SELECT COALESCE(SUM(balance), 0) as total_debt 
+    FROM accounts WHERE type = 'brigade_acc' AND balance < 0
+  `);
+
+  const expensesQuery = await query(`
+    SELECT category, COALESCE(SUM(amount), 0) as total
+    FROM object_expenses
+    GROUP BY category
+    ORDER BY total DESC
+  `);
+
+  return {
+    economics: {
+      averageCheck: parseFloat(avgQuery.rows[0]?.avg_check || 0),
+      averageMargin: parseFloat(avgQuery.rows[0]?.avg_margin || 0),
+      totalBrigadeDebts: Math.abs(
+        parseFloat(debtQuery.rows[0]?.total_debt || 0),
+      ),
+    },
+    expenseBreakdown: expensesQuery.rows || [],
+  };
+};
+
+// НОВОЕ: Таймлайн (Доходы фирмы по месяцам)
+export const getTimelineAnalytics = async () => {
+  const sql = `
+    SELECT 
+      TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM') as month,
+      COALESCE(SUM(total_price), 0) as gross_revenue,
+      COALESCE(SUM(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)), 0) as net_profit,
+      COUNT(id) as closed_orders
+    FROM orders 
+    WHERE status = 'done'
+    GROUP BY DATE_TRUNC('month', created_at)
+    ORDER BY month DESC
+    LIMIT 12;
+  `;
+  const res = await query(sql);
+  return res.rows;
+};
+
+// НОВОЕ: Эффективность и доходы в разрезе каждой бригады
+export const getBrigadesAnalytics = async () => {
+  const sql = `
+    SELECT 
+      b.id, 
+      b.name,
+      COUNT(o.id) as closed_orders_count,
+      COALESCE(SUM(o.total_price), 0) as total_revenue_brought,
+      COALESCE(SUM(COALESCE((o.details->'financials'->>'net_profit')::numeric, o.total_price)), 0) as total_net_profit_brought,
+      COALESCE(a.balance, 0) as current_balance
+    FROM brigades b
+    LEFT JOIN orders o ON b.id = o.brigade_id AND o.status = 'done'
+    LEFT JOIN accounts a ON b.brigadier_id = a.user_id AND a.type = 'brigade_acc'
+    GROUP BY b.id, b.name, a.balance
+    ORDER BY total_net_profit_brought DESC;
+  `;
+  const res = await query(sql);
+  return res.rows.map((row) => ({
+    ...row,
+    current_debt:
+      row.current_balance < 0 ? Math.abs(parseFloat(row.current_balance)) : 0,
+  }));
 };

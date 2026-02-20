@@ -1,13 +1,11 @@
 /**
  * @file src/app.js
- * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.6.0).
- * Отвечает за обработку HTTP-запросов, маршрутизацию CRM, глубокую аналитику
- * и интеграцию с сервисами (Бригады, Инкассация, OTP Auth, WebSockets).
- * ИСПРАВЛЕНИЯ: Безопасный рендеринг аналитики, защита смены своей роли.
- * НОВОЕ: Авто-рассылка Push-уведомлений Бригадам при появлении новых объектов.
+ * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.7.0).
+ * ИСПРАВЛЕНО: Защита ролей, изоляция заказов, Push-уведомления.
+ * НОВОЕ: Расширенная финансовая аналитика (Timeline по месяцам и Рейтинг Бригад).
  *
  * @module Application
- * @version 10.6.0 (Enterprise Analytics, Cash Flow & Lead Market Edition)
+ * @version 10.7.0 (Enterprise Analytics, Cash Flow, Timeline & Lead Market Edition)
  */
 
 import express from "express";
@@ -21,13 +19,12 @@ import { fileURLToPath } from "url";
 // --- CORE IMPORTS ---
 import { config } from "./config.js";
 import * as db from "./database/index.js";
-import { bot, getSocketIO } from "./bot.js"; // Интеграция сокетов и бота
+import { bot, getSocketIO } from "./bot.js";
 
-// --- SERVICES (Domain Logic) ---
+// --- SERVICES ---
 import { UserService } from "./services/UserService.js";
 import { OrderService } from "./services/OrderService.js";
 
-// --- INITIALIZATION ---
 const app = express();
 app.set("trust proxy", 1);
 
@@ -39,10 +36,7 @@ const __dirname = path.dirname(__filename);
 // =============================================================================
 
 app.use(
-  helmet({
-    contentSecurityPolicy: false,
-    crossOriginEmbedderPolicy: false,
-  }),
+  helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }),
 );
 
 app.use(
@@ -74,7 +68,7 @@ app.use(
     cookie: {
       secure: process.env.NODE_ENV === "production",
       httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000, // 24 часа
+      maxAge: 24 * 60 * 60 * 1000,
       sameSite: "lax",
     },
   }),
@@ -83,7 +77,7 @@ app.use(
 app.use(express.static(path.join(__dirname, "../public")));
 
 // =============================================================================
-// 2. 🔐 AUTHENTICATION & RBAC (OTP & Legacy)
+// 2. 🔐 AUTHENTICATION & RBAC
 // =============================================================================
 
 const requireAdmin = (req, res, next) => {
@@ -91,9 +85,8 @@ const requireAdmin = (req, res, next) => {
     req.session &&
     (req.session.isAdmin ||
       (req.session.user && ["owner", "admin"].includes(req.session.user.role)))
-  ) {
+  )
     return next();
-  }
   return res
     .status(401)
     .json({ error: "⛔ Доступ запрещен. Требуются права Администратора." });
@@ -105,24 +98,21 @@ const requireManager = (req, res, next) => {
     (req.session.isAdmin ||
       (req.session.user &&
         ["owner", "admin", "manager"].includes(req.session.user.role)))
-  ) {
+  )
     return next();
-  }
   return res
     .status(401)
     .json({ error: "⛔ Доступ запрещен. Требуются права Бригадира." });
 };
 
-app.get("/", (req, res) => {
-  res.redirect("/admin.html");
-});
+app.get("/", (req, res) => res.redirect("/admin.html"));
 
 app.post("/api/auth/login", (req, res) => {
   const { login, password } = req.body;
-  const validLogin = process.env.ADMIN_LOGIN || "admin";
-  const validPass = process.env.ADMIN_PASS || "Qazplm01";
-
-  if (login === validLogin && password === validPass) {
+  if (
+    login === (process.env.ADMIN_LOGIN || "admin") &&
+    password === (process.env.ADMIN_PASS || "Qazplm01")
+  ) {
     req.session.isAdmin = true;
     req.session.loginTime = new Date();
     return res.json({ success: true, message: "Welcome back, Boss!" });
@@ -146,17 +136,16 @@ app.post("/api/auth/otp/request", async (req, res) => {
       return res
         .status(404)
         .json({ error: "Пользователь с таким номером не найден" });
-
     const user = result.rows[0];
     if (!["owner", "admin", "manager"].includes(user.role))
       return res
         .status(403)
-        .json({ error: "Доступ в Web CRM разрешен только персоналу" });
+        .json({ error: "Доступ разрешен только персоналу" });
 
     const { otp } = await UserService.generateWebOTP(user.telegram_id);
     await bot.telegram.sendMessage(
       user.telegram_id,
-      `🔐 <b>Запрос на вход в Web CRM</b>\nВаш одноразовый пароль: <code>${otp}</code>\n<i>Действителен 15 минут. Никому не сообщайте!</i>`,
+      `🔐 <b>Вход в Web CRM</b>\nВаш код: <code>${otp}</code>\n<i>Действителен 15 минут.</i>`,
       { parse_mode: "HTML" },
     );
 
@@ -189,32 +178,30 @@ app.post("/api/auth/otp/verify", async (req, res) => {
 });
 
 app.get("/api/auth/me", (req, res) => {
-  if (req.session && req.session.user) {
+  if (req.session && req.session.user)
     return res.json({
       authenticated: true,
       user: req.session.user,
       isLegacy: false,
     });
-  } else if (req.session && req.session.isAdmin) {
+  if (req.session && req.session.isAdmin)
     return res.json({
       authenticated: true,
       user: { role: "owner", name: "SuperAdmin" },
       isLegacy: true,
     });
-  }
   res.json({ authenticated: false });
 });
 
 app.post("/api/auth/logout", (req, res) => {
-  req.session.destroy((err) => {
-    if (err) return res.status(500).json({ error: "Ошибка при выходе" });
+  req.session.destroy(() => {
     res.clearCookie("proelectric.sid");
     res.json({ success: true });
   });
 });
 
 // =============================================================================
-// 3. 📊 DEEP ANALYTICS & DASHBOARD (SAFE SQL ENGINE)
+// 3. 📊 DEEP ANALYTICS, TIMELINES & DASHBOARD
 // =============================================================================
 
 app.get("/api/dashboard/stats", requireAdmin, async (req, res) => {
@@ -223,7 +210,6 @@ app.get("/api/dashboard/stats", requireAdmin, async (req, res) => {
       UserService.getDashboardStats(),
       OrderService.getAdminStats(),
     ]);
-
     res.json({
       overview: {
         totalRevenue: funnelStats.metrics.totalRevenue,
@@ -242,27 +228,15 @@ app.get("/api/dashboard/stats", requireAdmin, async (req, res) => {
 
 app.get("/api/analytics/deep", requireAdmin, async (req, res) => {
   try {
-    // 1. Средний чек (AOV) и Средняя маржа с безопасным COALESCE
-    const avgQuery = await db.query(`
-      SELECT 
-        COALESCE(AVG(total_price), 0) as avg_check,
-        COALESCE(AVG(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)), 0) as avg_margin
-      FROM orders WHERE status = 'done'
-    `);
-
-    // 2. Дебиторская задолженность
-    const debtQuery = await db.query(`
-      SELECT COALESCE(SUM(balance), 0) as total_debt 
-      FROM accounts WHERE type = 'brigade_acc' AND balance < 0
-    `);
-
-    // 3. Анализ расходов
-    const expensesQuery = await db.query(`
-      SELECT category, COALESCE(SUM(amount), 0) as total
-      FROM object_expenses
-      GROUP BY category
-      ORDER BY total DESC
-    `);
+    const avgQuery = await db.query(
+      `SELECT COALESCE(AVG(total_price), 0) as avg_check, COALESCE(AVG(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)), 0) as avg_margin FROM orders WHERE status = 'done'`,
+    );
+    const debtQuery = await db.query(
+      `SELECT COALESCE(SUM(balance), 0) as total_debt FROM accounts WHERE type = 'brigade_acc' AND balance < 0`,
+    );
+    const expensesQuery = await db.query(
+      `SELECT category, COALESCE(SUM(amount), 0) as total FROM object_expenses GROUP BY category ORDER BY total DESC`,
+    );
 
     res.json({
       economics: {
@@ -274,6 +248,60 @@ app.get("/api/analytics/deep", requireAdmin, async (req, res) => {
       },
       expenseBreakdown: expensesQuery.rows || [],
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🔥 НОВОЕ: Финансовый таймлайн (Доходы фирмы по месяцам)
+app.get("/api/analytics/timeline", requireAdmin, async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM') as month,
+        COALESCE(SUM(total_price), 0) as gross_revenue,
+        COALESCE(SUM(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)), 0) as net_profit,
+        COUNT(id) as closed_orders
+      FROM orders 
+      WHERE status = 'done'
+      GROUP BY DATE_TRUNC('month', created_at)
+      ORDER BY month DESC
+      LIMIT 12;
+    `;
+    const result = await db.query(query);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🔥 НОВОЕ: Эффективность и доходы в разрезе каждой бригады
+app.get("/api/analytics/brigades", requireAdmin, async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        b.id, 
+        b.name,
+        COUNT(o.id) as closed_orders_count,
+        COALESCE(SUM(o.total_price), 0) as total_revenue_brought,
+        COALESCE(SUM(COALESCE((o.details->'financials'->>'net_profit')::numeric, o.total_price)), 0) as total_net_profit_brought,
+        COALESCE(a.balance, 0) as current_balance
+      FROM brigades b
+      LEFT JOIN orders o ON b.id = o.brigade_id AND o.status = 'done'
+      LEFT JOIN accounts a ON b.brigadier_id = a.user_id AND a.type = 'brigade_acc'
+      GROUP BY b.id, b.name, a.balance
+      ORDER BY total_net_profit_brought DESC;
+    `;
+    const result = await db.query(query);
+
+    // Форматируем долг из баланса
+    const formattedData = result.rows.map((row) => ({
+      ...row,
+      current_debt:
+        row.current_balance < 0 ? Math.abs(parseFloat(row.current_balance)) : 0,
+    }));
+
+    res.json(formattedData);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -303,10 +331,7 @@ app.post("/api/brigades", requireAdmin, async (req, res) => {
   try {
     const { name, brigadierId, profitPercentage } = req.body;
     if (!name || !brigadierId)
-      return res
-        .status(400)
-        .json({ error: "Название и ID Бригадира обязательны" });
-
+      return res.status(400).json({ error: "Название и ID обязательны" });
     const newBrigade = await db.createBrigade(
       name,
       brigadierId,
@@ -340,7 +365,7 @@ app.get("/api/brigades/:id/orders", requireAdmin, async (req, res) => {
 });
 
 // =============================================================================
-// 📦 5. ORDER MANAGEMENT (ADVANCED) & LEAD MARKET
+// 📦 5. ORDER MANAGEMENT & LEAD MARKET
 // =============================================================================
 
 app.get("/api/orders", requireManager, async (req, res) => {
@@ -349,21 +374,35 @@ app.get("/api/orders", requireManager, async (req, res) => {
     const offset = parseInt(req.query.offset) || 0;
     const status = req.query.status || null;
 
+    const isManager = req.session?.user?.role === "manager";
+    const userId = req.session?.user?.id;
+
     let query = `
       SELECT o.*, u.first_name as client_name, u.phone as client_phone, b.name as brigade_name
       FROM orders o
       LEFT JOIN users u ON o.user_id = u.telegram_id
       LEFT JOIN brigades b ON o.brigade_id = b.id
+      WHERE 1=1
     `;
     const params = [];
 
-    if (status && status !== "all") {
-      query += " WHERE o.status = $1";
-      params.push(status);
+    if (isManager) {
+      const bRes = await db.query(
+        "SELECT id FROM brigades WHERE brigadier_id = $1",
+        [userId],
+      );
+      const brigadeId = bRes.rows.length > 0 ? bRes.rows[0].id : -1;
+      params.push(brigadeId);
+      query += ` AND o.brigade_id = $${params.length}`;
     }
 
-    query += ` ORDER BY o.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    if (status && status !== "all") {
+      params.push(status);
+      query += ` AND o.status = $${params.length}`;
+    }
+
     params.push(limit, offset);
+    query += ` ORDER BY o.created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`;
 
     const result = await db.query(query, params);
     res.json(result.rows);
@@ -390,9 +429,8 @@ app.post("/api/orders", requireAdmin, async (req, res) => {
       [clientPhone],
     );
 
-    if (existingUser.rows.length > 0) {
-      userId = existingUser.rows[0].telegram_id;
-    } else {
+    if (existingUser.rows.length > 0) userId = existingUser.rows[0].telegram_id;
+    else {
       userId = -Date.now();
       await db.query(
         "INSERT INTO users (telegram_id, first_name, username, phone, role) VALUES ($1, $2, $3, $4, 'user')",
@@ -410,22 +448,17 @@ app.post("/api/orders", requireAdmin, async (req, res) => {
     const io = getSocketIO();
     if (io) io.emit("new_order", order);
 
-    // --- 🔥 НОВОЕ: БРОДКАСТ БРИГАДАМ (БИРЖА ЛИДОВ) ---
+    // БРОДКАСТ БРИГАДАМ О НОВОМ ОБЪЕКТЕ
     try {
       const managersRes = await db.query(
         "SELECT telegram_id FROM users WHERE role = 'manager'",
       );
       const fmtPrice = new Intl.NumberFormat("ru-RU").format(order.total_price);
-
       for (const manager of managersRes.rows) {
         await bot.telegram
           .sendMessage(
             manager.telegram_id,
-            `⚡️ <b>НОВЫЙ ОБЪЕКТ НА БИРЖЕ!</b>\n➖➖➖➖➖➖➖➖➖➖\n` +
-              `💰 <b>Смета:</b> ${fmtPrice} ₸\n` +
-              `📐 <b>Объем:</b> ${area} м² / Комнат: ${rooms}\n` +
-              `📍 <b>Адрес:</b> Уточняется (Оффлайн-заказ)\n➖➖➖➖➖➖➖➖➖➖\n` +
-              `<i>Кто первый заберет, того и объект!</i>`,
+            `⚡️ <b>НОВЫЙ ОБЪЕКТ НА БИРЖЕ!</b>\n➖➖➖➖➖➖➖➖➖➖\n💰 <b>Смета:</b> ${fmtPrice} ₸\n📐 <b>Объем:</b> ${area} м² / Комнат: ${rooms}\n➖➖➖➖➖➖➖➖➖➖\n<i>Кто первый заберет, того и объект!</i>`,
             {
               parse_mode: "HTML",
               reply_markup: {
@@ -442,9 +475,7 @@ app.post("/api/orders", requireAdmin, async (req, res) => {
           )
           .catch(() => {});
       }
-    } catch (pushErr) {
-      console.error("[API] Ошибка рассылки на Биржу:", pushErr);
-    }
+    } catch (pushErr) {}
 
     res.json({ success: true, order });
   } catch (error) {
@@ -467,9 +498,6 @@ app.patch("/api/orders/:id/details", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { key, value } = req.body;
-    if (!key)
-      return res.status(400).json({ error: "Ключ обновления не передан" });
-
     const updatedDetails = await OrderService.updateOrderDetails(
       id,
       key,
@@ -490,6 +518,21 @@ app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
       [brigadeId, id],
     );
 
+    // Отправляем пуш бригадиру
+    const bRes = await db.query(
+      "SELECT brigadier_id FROM brigades WHERE id = $1",
+      [brigadeId],
+    );
+    if (bRes.rows.length > 0) {
+      await bot.telegram
+        .sendMessage(
+          bRes.rows[0].brigadier_id,
+          `🔔 <b>ШЕФ НАЗНАЧИЛ ВАМ ОБЪЕКТ!</b>\nОбъект <b>#${id}</b> принудительно добавлен в ваш список задач ("Мои объекты").`,
+          { parse_mode: "HTML" },
+        )
+        .catch(() => {});
+    }
+
     const io = getSocketIO();
     if (io)
       io.emit("order_updated", {
@@ -507,11 +550,10 @@ app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
 app.patch("/api/orders/:id/bom", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { newBomArray } = req.body;
     const updatedDetails = await OrderService.updateOrderDetails(
       id,
       "bom",
-      newBomArray,
+      req.body.newBomArray,
     );
     res.json({ success: true, bom: updatedDetails.bom });
   } catch (error) {
@@ -523,10 +565,8 @@ app.post("/api/orders/:id/finalize", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await db.finalizeOrderAndDistributeProfit(id);
-
     const io = getSocketIO();
     if (io) io.emit("order_updated", { orderId: id, status: "done" });
-
     res.json({ success: true, distribution: result });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -539,12 +579,10 @@ app.post("/api/orders/:id/finalize", requireAdmin, async (req, res) => {
 
 app.patch("/api/orders/:id/finance/price", requireAdmin, async (req, res) => {
   try {
-    const { id } = req.params;
-    const { newPrice } = req.body;
-    if (!newPrice || isNaN(newPrice))
-      return res.status(400).json({ error: "Укажите корректную новую цену" });
-
-    const financials = await OrderService.updateOrderFinalPrice(id, newPrice);
+    const financials = await OrderService.updateOrderFinalPrice(
+      req.params.id,
+      req.body.newPrice,
+    );
     res.json({ success: true, financials });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -556,25 +594,17 @@ app.post(
   requireManager,
   async (req, res) => {
     try {
-      const { id } = req.params;
       const { amount, category, comment } = req.body;
-      if (!amount || isNaN(amount) || amount <= 0)
-        return res
-          .status(400)
-          .json({ error: "Сумма расхода должна быть больше 0" });
-
-      const userId = req.session?.user?.id || "admin";
       const financials = await OrderService.addOrderExpense(
-        id,
+        req.params.id,
         amount,
         category || "Расход",
         comment,
-        userId,
+        req.session?.user?.id || "admin",
       );
-
       const io = getSocketIO();
-      if (io) io.emit("expense_added", { orderId: id, amount, category });
-
+      if (io)
+        io.emit("expense_added", { orderId: req.params.id, amount, category });
       res.json({ success: true, financials });
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -597,8 +627,9 @@ app.get("/api/finance/accounts", requireAdmin, async (req, res) => {
 
 app.get("/api/finance/transactions", requireAdmin, async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 100;
-    const transactions = await db.getCompanyTransactions(limit);
+    const transactions = await db.getCompanyTransactions(
+      parseInt(req.query.limit) || 100,
+    );
     res.json(transactions);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -608,14 +639,9 @@ app.get("/api/finance/transactions", requireAdmin, async (req, res) => {
 app.post("/api/finance/transactions", requireAdmin, async (req, res) => {
   try {
     const { accountId, amount, type, category, comment } = req.body;
-    if (!accountId || !amount || isNaN(amount) || amount <= 0 || !type) {
-      return res.status(400).json({ error: "Некорректные данные транзакции" });
-    }
-
-    const userId = req.session?.user?.id || 0;
     const transaction = await db.addCompanyTransaction({
       accountId,
-      userId,
+      userId: req.session?.user?.id || 0,
       amount: parseFloat(amount),
       type,
       category: category || "Прочее",
@@ -630,17 +656,11 @@ app.post("/api/finance/transactions", requireAdmin, async (req, res) => {
 app.post("/api/finance/incassation/approve", requireAdmin, async (req, res) => {
   try {
     const { brigadierId, amount } = req.body;
-    if (!brigadierId || !amount)
-      return res
-        .status(400)
-        .json({ error: "ID бригадира и сумма обязательны" });
-
     const resAcc = await db.query(
       "SELECT id FROM accounts WHERE type = 'cash' ORDER BY id ASC LIMIT 1",
     );
     if (resAcc.rows.length === 0)
       return res.status(500).json({ error: "Главная Касса не найдена" });
-
     await db.processIncassation(
       brigadierId,
       parseFloat(amount),
@@ -658,8 +678,7 @@ app.post("/api/finance/incassation/approve", requireAdmin, async (req, res) => {
 
 app.get("/api/settings", requireAdmin, async (req, res) => {
   try {
-    const settings = await db.getSettings();
-    res.json(settings);
+    res.json(await db.getSettings());
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -667,8 +686,7 @@ app.get("/api/settings", requireAdmin, async (req, res) => {
 
 app.get("/api/pricelist", requireAdmin, async (req, res) => {
   try {
-    const pricelist = await OrderService.getPublicPricelist();
-    res.json(pricelist);
+    res.json(await OrderService.getPublicPricelist());
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -676,16 +694,11 @@ app.get("/api/pricelist", requireAdmin, async (req, res) => {
 
 app.post("/api/settings", requireAdmin, async (req, res) => {
   try {
-    const payload = req.body;
-    if (Array.isArray(payload)) {
-      await db.saveBulkSettings(payload);
+    if (Array.isArray(req.body)) {
+      await db.saveBulkSettings(req.body);
       return res.json({ success: true, message: "Bulk update successful" });
     }
-    const { key, value } = payload;
-    if (!key || value === undefined)
-      return res.status(400).json({ error: "Missing 'key' or 'value'" });
-
-    const result = await db.saveSetting(key, value);
+    const result = await db.saveSetting(req.body.key, req.body.value);
     res.json({ success: true, setting: result });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -726,10 +739,12 @@ app.get("/api/system/backup", requireAdmin, async (req, res) => {
 
 app.get("/api/users", requireAdmin, async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 100;
-    const offset = parseInt(req.query.offset) || 0;
-    const users = await UserService.getAllUsers(limit, offset);
-    res.json(users);
+    res.json(
+      await UserService.getAllUsers(
+        parseInt(req.query.limit) || 100,
+        parseInt(req.query.offset) || 0,
+      ),
+    );
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -738,17 +753,31 @@ app.get("/api/users", requireAdmin, async (req, res) => {
 app.post("/api/users/role", requireAdmin, async (req, res) => {
   try {
     const { userId, role } = req.body;
-    const initiatorId = req.session?.user?.id;
 
-    // ИСПРАВЛЕНИЕ: Защита от смены собственной роли через Web CRM
-    if (String(initiatorId) === String(userId)) {
+    const targetRes = await db.query(
+      "SELECT role FROM users WHERE telegram_id = $1",
+      [userId],
+    );
+    const targetRole = targetRes.rows[0]?.role;
+
+    if (targetRole === "owner" && role !== "owner") {
+      return res.status(403).json({
+        error:
+          "⛔ Критическая ошибка: Невозможно изменить роль Владельца системы.",
+      });
+    }
+
+    if (
+      req.session?.user?.role === "admin" &&
+      (role === "admin" || role === "owner")
+    ) {
       return res
         .status(403)
-        .json({ error: "⛔ Вы не можете изменить свою собственную роль" });
+        .json({ error: "⛔ У вас нет прав назначать высшее руководство." });
     }
 
     const updatedUser = await UserService.changeUserRole(
-      initiatorId || 0,
+      req.session?.user?.id || 0,
       userId,
       role,
     );
@@ -766,74 +795,48 @@ app.post("/api/broadcast", requireAdmin, async (req, res) => {
 
     let query = `SELECT telegram_id FROM users WHERE telegram_id > 0`;
     let params = [];
-
     if (targetRole && targetRole !== "all") {
       query += ` AND role = $1`;
       params.push(targetRole);
     }
 
     const result = await db.query(query, params);
-    const users = result.rows;
-
-    if (users.length === 0) {
+    if (result.rows.length === 0)
       return res.json({
         success: true,
         delivered: 0,
         message: "Нет пользователей для рассылки",
       });
-    }
 
-    let successCount = 0,
-      failCount = 0;
     const sendMassMessage = async () => {
-      for (const user of users) {
+      for (const user of result.rows) {
         try {
-          if (imageUrl) {
+          if (imageUrl)
             await bot.telegram.sendPhoto(user.telegram_id, imageUrl, {
               caption: text,
               parse_mode: "HTML",
             });
-          } else {
+          else
             await bot.telegram.sendMessage(user.telegram_id, text, {
               parse_mode: "HTML",
             });
-          }
-          successCount++;
           await new Promise((resolve) => setTimeout(resolve, 50));
-        } catch (e) {
-          failCount++;
-        }
+        } catch (e) {}
       }
-      console.log(
-        `[Broadcast] Finished. Success: ${successCount}, Failed: ${failCount}`,
-      );
     };
-
     sendMassMessage();
     res.json({
       success: true,
-      message: `Рассылка запущена для ${users.length} пользователей.`,
-      estimatedTimeSec: Math.ceil(users.length * 0.05),
+      message: `Рассылка запущена для ${result.rows.length} пользователей.`,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// =============================================================================
-// 🚑 10. ERROR HANDLING
-// =============================================================================
-
-app.use((req, res) => {
-  res.status(404).json({ error: "Endpoint not found" });
-});
-
-app.use((err, req, res, next) => {
-  console.error("🔥 [Express Error]:", err);
-  res.status(500).json({
-    error: "Internal Server Error",
-    details: process.env.NODE_ENV === "production" ? null : err.message,
-  });
-});
+app.use((req, res) => res.status(404).json({ error: "Endpoint not found" }));
+app.use((err, req, res, next) =>
+  res.status(500).json({ error: "Internal Server Error" }),
+);
 
 export default app;
