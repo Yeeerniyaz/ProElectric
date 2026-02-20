@@ -2,8 +2,11 @@
 <html lang="ru">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ProElectric ERP | v10.0 Enterprise Finance</title>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>ProElectric ERP | v10.5 Enterprise</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -15,6 +18,7 @@
     <link rel="stylesheet" href="/css/style.css" />
 
     <script src="https://unpkg.com/feather-icons"></script>
+    <script src="/socket.io/socket.io.js"></script>
   </head>
   <body class="pe-theme-dark">
     <div id="loginView" class="view-section active pe-auth-screen">
@@ -24,32 +28,19 @@
           <h2>
             ProElectric <span class="pe-badge pe-badge-primary">ERP</span>
           </h2>
-          <p class="pe-text-muted">Enterprise Management System v10.0</p>
+          <p class="pe-text-muted">Enterprise Management System v10.5</p>
         </div>
 
-        <form id="loginForm" class="pe-form">
+        <form id="phoneForm" class="pe-form">
           <div class="pe-form-group">
-            <label>Логин системы</label>
+            <label>Номер телефона</label>
             <div class="pe-input-group">
-              <i data-feather="user" class="pe-input-icon"></i>
+              <i data-feather="phone" class="pe-input-icon"></i>
               <input
-                type="text"
-                id="adminLogin"
+                type="tel"
+                id="authPhone"
                 required
-                placeholder="Введите логин"
-                class="pe-input"
-              />
-            </div>
-          </div>
-          <div class="pe-form-group">
-            <label>Ключ доступа</label>
-            <div class="pe-input-group">
-              <i data-feather="lock" class="pe-input-icon"></i>
-              <input
-                type="password"
-                id="adminPassword"
-                required
-                placeholder="••••••••"
+                placeholder="+7 (777) 000-00-00"
                 class="pe-input"
               />
             </div>
@@ -57,10 +48,44 @@
           <button
             type="submit"
             class="pe-btn pe-btn-primary pe-btn-block pe-mt-4"
+            id="btnRequestOtp"
           >
-            Авторизация <i data-feather="arrow-right"></i>
+            Получить код в Telegram <i data-feather="arrow-right"></i>
           </button>
         </form>
+
+        <form id="otpForm" class="pe-form" style="display: none">
+          <div class="pe-form-group">
+            <label>Код из Telegram</label>
+            <div class="pe-input-group">
+              <i data-feather="lock" class="pe-input-icon"></i>
+              <input
+                type="text"
+                id="authOtp"
+                required
+                placeholder="000000"
+                class="pe-input"
+                maxlength="6"
+                autocomplete="off"
+              />
+            </div>
+          </div>
+          <button
+            type="submit"
+            class="pe-btn pe-btn-success pe-btn-block pe-mt-4"
+            id="btnVerifyOtp"
+          >
+            Войти в систему <i data-feather="check-circle"></i>
+          </button>
+          <button
+            type="button"
+            class="pe-btn pe-btn-ghost pe-btn-block pe-mt-2"
+            id="btnBackToPhone"
+          >
+            Изменить номер
+          </button>
+        </form>
+
         <div
           id="loginError"
           class="pe-alert pe-alert-danger pe-mt-4"
@@ -71,35 +96,41 @@
     </div>
 
     <div id="appLayout" class="pe-app-layout" style="display: none">
-      <aside class="pe-sidebar">
+      <aside class="pe-sidebar" id="appSidebar">
         <div class="pe-sidebar-header">
           <div class="pe-logo-icon pe-icon-sm"><i data-feather="zap"></i></div>
           <h3 class="pe-brand-text">ProElectric</h3>
+          <button class="pe-btn-close pe-mobile-only" id="btnCloseSidebar">
+            <i data-feather="x"></i>
+          </button>
         </div>
 
         <nav class="pe-sidebar-nav">
-          <div class="pe-nav-section">Главное меню</div>
+          <div class="pe-nav-section">Аналитика и Объекты</div>
           <button
             class="nav-btn pe-nav-item active"
             data-target="dashboardView"
           >
-            <i data-feather="grid"></i> <span>Аналитика</span>
+            <i data-feather="pie-chart"></i> <span>Дашборд</span>
           </button>
           <button class="nav-btn pe-nav-item" data-target="ordersView">
-            <i data-feather="briefcase"></i> <span>Объекты</span>
+            <i data-feather="briefcase"></i> <span>Все Объекты</span>
           </button>
 
-          <div class="pe-nav-section pe-mt-4">Бухгалтерия</div>
+          <div class="pe-nav-section pe-mt-4">ERP & Cash Flow</div>
+          <button class="nav-btn pe-nav-item" data-target="brigadesView">
+            <i data-feather="hard-hat"></i> <span>Бригады</span>
+          </button>
           <button class="nav-btn pe-nav-item" data-target="financeView">
-            <i data-feather="dollar-sign"></i> <span>Касса</span>
+            <i data-feather="dollar-sign"></i> <span>Глобальная Касса</span>
           </button>
 
-          <div class="pe-nav-section pe-mt-4">Управление</div>
+          <div class="pe-nav-section pe-mt-4">Администрирование</div>
           <button class="nav-btn pe-nav-item" data-target="settingsView">
-            <i data-feather="sliders"></i> <span>Прайс-лист</span>
+            <i data-feather="sliders"></i> <span>Настройки / Прайс</span>
           </button>
           <button class="nav-btn pe-nav-item" data-target="usersView">
-            <i data-feather="users"></i> <span>Персонал</span>
+            <i data-feather="users"></i> <span>CRM Клиентов</span>
           </button>
           <button class="nav-btn pe-nav-item" data-target="broadcastView">
             <i data-feather="radio"></i> <span>Рассылка</span>
@@ -110,8 +141,8 @@
           <div class="pe-user-profile">
             <div class="pe-avatar"><i data-feather="shield"></i></div>
             <div class="pe-user-info">
-              <span class="pe-user-name">Ернияз</span>
-              <span class="pe-user-role">Owner / Architect</span>
+              <span class="pe-user-name" id="currentUserName">Загрузка...</span>
+              <span class="pe-user-role" id="currentUserRole">Owner</span>
             </div>
           </div>
           <button
@@ -127,11 +158,18 @@
       <div class="pe-main-wrapper">
         <header class="pe-topbar">
           <div class="pe-topbar-left">
-            <h2 class="pe-page-title" id="topbarTitle">Рабочая область</h2>
+            <button
+              class="pe-btn pe-btn-icon pe-btn-ghost pe-mobile-only"
+              id="btnOpenSidebar"
+            >
+              <i data-feather="menu"></i>
+            </button>
+            <h2 class="pe-page-title" id="topbarTitle">Аналитика</h2>
           </div>
           <div class="pe-topbar-right">
             <div class="pe-system-status">
-              <span class="pe-status-dot"></span> Система online
+              <span class="pe-status-dot" id="socketStatusDot"></span>
+              <span id="socketStatusText">Соединение...</span>
             </div>
           </div>
         </header>
@@ -140,21 +178,23 @@
           <section id="dashboardView" class="view-section pe-view">
             <div class="pe-section-header">
               <div>
-                <h2 class="pe-h2">Финансовая сводка</h2>
-                <p class="pe-text-muted">Аналитика по заказам и воронка</p>
+                <h2 class="pe-h2">Глубокая Аналитика (Deep Analytics)</h2>
+                <p class="pe-text-muted">
+                  Юнит-экономика и метрики компании в реальном времени
+                </p>
               </div>
               <button class="pe-btn pe-btn-secondary" id="refreshStatsBtn">
-                <i data-feather="refresh-cw"></i> Обновить данные
+                <i data-feather="refresh-cw"></i> Обновить
               </button>
             </div>
 
-            <div class="pe-grid-kpi">
+            <div class="pe-grid-kpi pe-mb-6">
               <div class="pe-card pe-card-kpi pe-kpi-success">
                 <div class="pe-kpi-icon">
                   <i data-feather="trending-up"></i>
                 </div>
                 <div class="pe-kpi-data">
-                  <span class="pe-kpi-label">Чистая прибыль (Заказы)</span>
+                  <span class="pe-kpi-label">Чистая прибыль (Net Profit)</span>
                   <h3 id="statNetProfit" class="pe-kpi-value">0 ₸</h3>
                 </div>
               </div>
@@ -163,32 +203,79 @@
                   <i data-feather="credit-card"></i>
                 </div>
                 <div class="pe-kpi-data">
-                  <span class="pe-kpi-label">Оборот (Revenue)</span>
+                  <span class="pe-kpi-label">Оборот (Gross Revenue)</span>
                   <h3 id="statRevenue" class="pe-kpi-value">0 ₸</h3>
+                </div>
+              </div>
+              <div class="pe-card pe-card-kpi pe-kpi-danger">
+                <div class="pe-kpi-icon">
+                  <i data-feather="alert-triangle"></i>
+                </div>
+                <div class="pe-kpi-data">
+                  <span class="pe-kpi-label">Дебиторка (Долги Бригад)</span>
+                  <h3 id="statBrigadeDebts" class="pe-kpi-value">0 ₸</h3>
                 </div>
               </div>
               <div class="pe-card pe-card-kpi pe-kpi-warning">
                 <div class="pe-kpi-icon"><i data-feather="activity"></i></div>
                 <div class="pe-kpi-data">
-                  <span class="pe-kpi-label">В работе</span>
-                  <h3 id="statActiveOrders" class="pe-kpi-value">0</h3>
-                </div>
-              </div>
-              <div class="pe-card pe-card-kpi pe-kpi-neutral">
-                <div class="pe-kpi-icon"><i data-feather="users"></i></div>
-                <div class="pe-kpi-data">
-                  <span class="pe-kpi-label">Клиентская база</span>
-                  <h3 id="statTotalUsers" class="pe-kpi-value">0</h3>
+                  <span class="pe-kpi-label">Средний чек (AOV)</span>
+                  <h3 id="statAverageCheck" class="pe-kpi-value">0 ₸</h3>
                 </div>
               </div>
             </div>
 
-            <div class="pe-card pe-mt-6">
-              <div class="pe-card-header">
-                <h3 class="pe-h3">Воронка лидов</h3>
+            <div class="pe-grid-2col-sm">
+              <div class="pe-card">
+                <div class="pe-card-header">
+                  <h3 class="pe-h3">Воронка лидов</h3>
+                </div>
+                <div class="pe-card-body">
+                  <div class="pe-funnel" id="funnelChart"></div>
+                </div>
               </div>
-              <div class="pe-card-body">
-                <div class="pe-funnel" id="funnelChart"></div>
+              <div class="pe-card">
+                <div class="pe-card-header">
+                  <h3 class="pe-h3">Анализ расходов (Cost Breakdown)</h3>
+                </div>
+                <div class="pe-card-body">
+                  <div class="pe-funnel" id="expensesChart"></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section
+            id="brigadesView"
+            class="view-section pe-view"
+            style="display: none"
+          >
+            <div class="pe-section-header">
+              <div>
+                <h2 class="pe-h2">Управление Подрядчиками (Бригады)</h2>
+                <p class="pe-text-muted">
+                  Контроль долгов, инкассация и статистика
+                </p>
+              </div>
+              <button class="pe-btn pe-btn-primary" id="btnOpenBrigadeModal">
+                <i data-feather="plus"></i> Добавить Бригаду
+              </button>
+            </div>
+            <div class="pe-card pe-table-card">
+              <div class="pe-table-responsive">
+                <table class="pe-table">
+                  <thead>
+                    <tr>
+                      <th>ID / Название</th>
+                      <th>Бригадир (Telegram ID)</th>
+                      <th>Доля (%)</th>
+                      <th>Текущий Долг Шефу</th>
+                      <th>Статус</th>
+                      <th class="pe-text-right">Действия</th>
+                    </tr>
+                  </thead>
+                  <tbody id="brigadesTableBody"></tbody>
+                </table>
               </div>
             </div>
           </section>
@@ -200,8 +287,10 @@
           >
             <div class="pe-section-header">
               <div>
-                <h2 class="pe-h2">Реестр объектов</h2>
-                <p class="pe-text-muted">Управление заказами и сметами</p>
+                <h2 class="pe-h2">Реестр Объектов</h2>
+                <p class="pe-text-muted">
+                  Полный контроль за ходом работ и сметами
+                </p>
               </div>
               <div class="pe-header-actions">
                 <select
@@ -209,7 +298,7 @@
                   class="pe-input pe-select-inline"
                 >
                   <option value="all">Все статусы</option>
-                  <option value="new">Новые (Лиды)</option>
+                  <option value="new">Новые (Биржа)</option>
                   <option value="work">В работе</option>
                   <option value="done">Завершенные</option>
                 </select>
@@ -221,7 +310,6 @@
                 </button>
               </div>
             </div>
-
             <div class="pe-card pe-table-card">
               <div class="pe-table-responsive">
                 <table class="pe-table">
@@ -229,9 +317,10 @@
                     <tr>
                       <th>ID / Дата</th>
                       <th>Заказчик</th>
-                      <th>Объект</th>
+                      <th>Площадь</th>
+                      <th>Бригада</th>
                       <th>Статус</th>
-                      <th>Прибыль</th>
+                      <th>Смета</th>
                       <th class="pe-text-right">Управление</th>
                     </tr>
                   </thead>
@@ -250,7 +339,7 @@
               <div>
                 <h2 class="pe-h2">Глобальная Касса</h2>
                 <p class="pe-text-muted">
-                  Учет внепроектных доходов и расходов бизнеса
+                  Учет внепроектных доходов, расходов и движений средств
                 </p>
               </div>
               <button
@@ -260,9 +349,7 @@
                 <i data-feather="plus-circle"></i> Новая операция
               </button>
             </div>
-
             <div class="pe-grid-kpi" id="financeAccountsGrid"></div>
-
             <div class="pe-card pe-mt-6 pe-table-card">
               <div class="pe-card-header">
                 <h3 class="pe-h3">История финансовых операций</h3>
@@ -292,14 +379,17 @@
           >
             <div class="pe-section-header">
               <div>
-                <h2 class="pe-h2">Системный Прайс-лист</h2>
-                <p class="pe-text-muted">
-                  Глобальные расценки для генератора смет
-                </p>
+                <h2 class="pe-h2">Конфигурация Ядра</h2>
+                <p class="pe-text-muted">Прайс-лист и DevOps утилиты</p>
               </div>
-              <button class="pe-btn pe-btn-success" id="btnSaveSettings">
-                <i data-feather="save"></i> Сохранить изменения
-              </button>
+              <div class="pe-header-actions">
+                <button class="pe-btn pe-btn-secondary" id="btnDownloadBackup">
+                  <i data-feather="download-cloud"></i> Скачать Дамп БД
+                </button>
+                <button class="pe-btn pe-btn-success" id="btnSaveSettings">
+                  <i data-feather="save"></i> Сохранить цены
+                </button>
+              </div>
             </div>
             <div class="pe-card">
               <div class="pe-card-body">
@@ -315,10 +405,8 @@
           >
             <div class="pe-section-header">
               <div>
-                <h2 class="pe-h2">Доступы и Персонал</h2>
-                <p class="pe-text-muted">
-                  Управление ролями мастеров и админов
-                </p>
+                <h2 class="pe-h2">CRM & Персонал</h2>
+                <p class="pe-text-muted">Управление ролями и клиентская база</p>
               </div>
             </div>
             <div class="pe-card pe-table-card">
@@ -345,8 +433,8 @@
           >
             <div class="pe-section-header">
               <div>
-                <h2 class="pe-h2">Центр уведомлений</h2>
-                <p class="pe-text-muted">Массовая рассылка через бота</p>
+                <h2 class="pe-h2">Центр Уведомлений</h2>
+                <p class="pe-text-muted">Прямая рассылка через Telegram бота</p>
               </div>
             </div>
             <div class="pe-card pe-max-w-md">
@@ -354,13 +442,22 @@
                 <div class="pe-form-group">
                   <label>Аудитория</label>
                   <select id="broadcastTarget" class="pe-input">
-                    <option value="all">Всем</option>
-                    <option value="user">Клиентам</option>
-                    <option value="manager">Персоналу</option>
+                    <option value="all">Всем (Клиенты + Персонал)</option>
+                    <option value="user">Только Клиентам</option>
+                    <option value="manager">Только Бригадам/Персоналу</option>
                   </select>
                 </div>
                 <div class="pe-form-group">
-                  <label>Текст сообщения</label>
+                  <label>Ссылка на картинку (Опционально)</label>
+                  <input
+                    type="text"
+                    id="broadcastImage"
+                    class="pe-input"
+                    placeholder="https://..."
+                  />
+                </div>
+                <div class="pe-form-group">
+                  <label>Текст сообщения (Поддерживает HTML)</label>
                   <textarea
                     id="broadcastText"
                     class="pe-input pe-textarea"
@@ -395,22 +492,30 @@
           <div class="pe-grid-2col">
             <div class="pe-col-info">
               <div class="pe-info-card">
-                <h4 class="pe-h4"><i data-feather="user"></i> Заказчик</h4>
-                <div class="pe-info-row">
-                  <span>Имя:</span> <strong id="modalClientName">...</strong>
-                </div>
-                <div class="pe-info-row">
-                  <span>Телефон:</span>
-                  <strong id="modalClientPhone">...</strong>
-                </div>
+                <h4 class="pe-h4">
+                  <i data-feather="settings"></i> Управление объектом
+                </h4>
                 <div class="pe-form-group pe-mt-4">
-                  <label>Стадия объекта:</label>
+                  <label>Назначить Бригаду:</label>
+                  <select id="modalOrderBrigade" class="pe-input"></select>
+                </div>
+                <div class="pe-form-group">
+                  <label>Стадия (Статус):</label>
                   <select id="modalOrderStatus" class="pe-input"></select>
                 </div>
+                <button
+                  id="btnFinalizeOrder"
+                  class="pe-btn pe-btn-success pe-btn-block pe-mt-4"
+                  style="display: none"
+                >
+                  <i data-feather="check-circle"></i> ЗАКРЫТЬ И РАСПРЕДЕЛИТЬ
+                  ПРИБЫЛЬ
+                </button>
               </div>
               <div class="pe-info-card pe-mt-4">
                 <h4 class="pe-h4">
-                  <i data-feather="shopping-bag"></i> Спецификация (BOM)
+                  <i data-feather="shopping-bag"></i> Спецификация материалов
+                  (BOM)
                 </h4>
                 <div id="modalBOMList" class="pe-bom-container"></div>
               </div>
@@ -419,11 +524,12 @@
               <div class="pe-finance-header">
                 <h4 class="pe-h4">
                   <i data-feather="dollar-sign"></i> Финансы объекта
+                  (Юнит-экономика)
                 </h4>
               </div>
               <div class="pe-finance-summary">
                 <div class="pe-fin-row">
-                  <span>Расчетная база:</span>
+                  <span>Расчетная база (Работа):</span>
                   <strong id="modalCalcPrice">0 ₸</strong>
                 </div>
                 <div class="pe-fin-row pe-fin-edit">
@@ -443,7 +549,7 @@
                   </div>
                 </div>
                 <div class="pe-fin-row">
-                  <span>Сумма затрат:</span>
+                  <span>Сумма затрат (Чеки):</span>
                   <strong id="modalTotalExpenses" class="pe-text-danger"
                     >0 ₸</strong
                   >
@@ -457,40 +563,56 @@
                 </div>
               </div>
               <div class="pe-expenses-section pe-mt-6">
-                <h5 class="pe-h5">Реестр расходов (Чеки)</h5>
+                <h5 class="pe-h5">Реестр расходов</h5>
                 <div class="pe-expenses-list" id="modalExpensesList"></div>
-                <div class="pe-expense-form pe-mt-4">
-                  <input
-                    type="number"
-                    id="expenseAmount"
-                    class="pe-input pe-input-sm pe-mb-2"
-                    placeholder="Сумма (₸)"
-                  />
-                  <select
-                    id="expenseCategory"
-                    class="pe-input pe-input-sm pe-mb-2"
-                  >
-                    <option value="Материалы">Материалы</option>
-                    <option value="Транспорт">Логистика</option>
-                    <option value="Инструмент">Инструмент</option>
-                    <option value="Прочее">Прочее</option>
-                  </select>
-                  <input
-                    type="text"
-                    id="expenseComment"
-                    class="pe-input pe-input-sm pe-mb-2"
-                    placeholder="Комментарий"
-                  />
-                  <button
-                    class="pe-btn pe-btn-danger pe-btn-block pe-btn-sm"
-                    id="btnAddExpense"
-                  >
-                    Списать расход
-                  </button>
-                </div>
               </div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="incassationModal" class="pe-modal-overlay" style="display: none">
+      <div class="pe-modal pe-modal-md">
+        <header class="pe-modal-header">
+          <div class="pe-modal-title">
+            <i data-feather="download"></i>
+            <h3>Принять деньги от Бригады</h3>
+          </div>
+          <button class="pe-btn-close" id="btnCloseIncassationModal">
+            <i data-feather="x"></i>
+          </button>
+        </header>
+        <div class="pe-modal-body">
+          <form id="formIncassation" class="pe-form">
+            <input type="hidden" id="incBrigadeId" />
+            <div class="pe-form-group">
+              <label>Бригада / Менеджер</label>
+              <input
+                type="text"
+                id="incBrigadeName"
+                class="pe-input"
+                readonly
+                disabled
+              />
+            </div>
+            <div class="pe-form-group">
+              <label>Сумма перевода (₸)</label>
+              <input
+                type="number"
+                id="incAmount"
+                class="pe-input"
+                required
+                placeholder="Сколько денег поступило?"
+              />
+            </div>
+            <button
+              type="submit"
+              class="pe-btn pe-btn-success pe-btn-block pe-mt-4"
+            >
+              <i data-feather="check"></i> Подтвердить получение и списать долг
+            </button>
+          </form>
         </div>
       </div>
     </div>
@@ -509,115 +631,37 @@
         <div class="pe-modal-body">
           <form id="formTransaction" class="pe-form">
             <div class="pe-form-group">
-              <label>Счет списания/пополнения</label>
-              <select id="txAccount" class="pe-input" required></select>
+              <label>Счет</label
+              ><select id="txAccount" class="pe-input" required></select>
             </div>
             <div class="pe-form-group">
-              <label>Тип операции</label>
+              <label>Тип</label>
               <select id="txType" class="pe-input" required>
-                <option value="expense">Расход (Списание)</option>
-                <option value="income">Доход (Пополнение)</option>
+                <option value="expense">Расход</option>
+                <option value="income">Доход</option>
               </select>
             </div>
             <div class="pe-grid-2col-sm">
               <div class="pe-form-group">
-                <label>Сумма (₸)</label>
-                <input
-                  type="number"
-                  id="txAmount"
-                  class="pe-input"
-                  required
-                  placeholder="10000"
-                />
+                <label>Сумма (₸)</label
+                ><input type="number" id="txAmount" class="pe-input" required />
               </div>
               <div class="pe-form-group">
-                <label>Категория</label>
-                <select id="txCategory" class="pe-input">
-                  <option value="Зарплата">Зарплата</option>
-                  <option value="Аренда">Аренда</option>
-                  <option value="Реклама">Реклама</option>
-                  <option value="Инструмент">Инструмент</option>
-                  <option value="Налоги">Налоги</option>
+                <label>Категория</label
+                ><select id="txCategory" class="pe-input">
                   <option value="Прочее">Прочее</option>
                 </select>
               </div>
             </div>
             <div class="pe-form-group">
-              <label>Комментарий</label>
-              <input
-                type="text"
-                id="txComment"
-                class="pe-input"
-                placeholder="Оплата офиса за март"
-              />
+              <label>Комментарий</label
+              ><input type="text" id="txComment" class="pe-input" />
             </div>
             <button
               type="submit"
               class="pe-btn pe-btn-primary pe-btn-block pe-mt-4"
             >
-              Провести операцию
-            </button>
-          </form>
-        </div>
-      </div>
-    </div>
-
-    <div id="manualOrderModal" class="pe-modal-overlay" style="display: none">
-      <div class="pe-modal pe-modal-md">
-        <header class="pe-modal-header">
-          <div class="pe-modal-title">
-            <i data-feather="plus-square"></i>
-            <h3>Новый объект</h3>
-          </div>
-          <button class="pe-btn-close" id="btnCloseManualModal">
-            <i data-feather="x"></i>
-          </button>
-        </header>
-        <div class="pe-modal-body">
-          <form id="formManualOrder" class="pe-form">
-            <div class="pe-form-group">
-              <label>Заказчик</label
-              ><input type="text" id="manualName" class="pe-input" required />
-            </div>
-            <div class="pe-form-group">
-              <label>Телефон</label
-              ><input type="tel" id="manualPhone" class="pe-input" required />
-            </div>
-            <div class="pe-grid-2col-sm">
-              <div class="pe-form-group">
-                <label>Площадь (м²)</label
-                ><input
-                  type="number"
-                  id="manualArea"
-                  class="pe-input"
-                  required
-                  value="50"
-                />
-              </div>
-              <div class="pe-form-group">
-                <label>Комнат</label
-                ><input
-                  type="number"
-                  id="manualRooms"
-                  class="pe-input"
-                  required
-                  value="2"
-                />
-              </div>
-            </div>
-            <div class="pe-form-group">
-              <label>Материал стен</label>
-              <select id="manualWallType" class="pe-input">
-                <option value="wall_concrete">Бетон</option>
-                <option value="wall_brick">Кирпич</option>
-                <option value="wall_gas">Газоблок</option>
-              </select>
-            </div>
-            <button
-              type="submit"
-              class="pe-btn pe-btn-success pe-btn-block pe-mt-4"
-            >
-              Сгенерировать и создать
+              Провести
             </button>
           </form>
         </div>
@@ -625,18 +669,6 @@
     </div>
 
     <div id="toastContainer" class="toast-container pe-toast-container"></div>
-
-    <script>
-      document.addEventListener("DOMContentLoaded", () => {
-        feather.replace();
-        document.querySelectorAll(".nav-btn").forEach((btn) => {
-          btn.addEventListener("click", (e) => {
-            const text = e.currentTarget.querySelector("span").innerText;
-            document.getElementById("topbarTitle").innerText = text;
-          });
-        });
-      });
-    </script>
 
     <script type="module" src="/js/app.js"></script>
   </body>

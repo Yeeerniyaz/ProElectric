@@ -1,11 +1,11 @@
 /**
  * @file public/js/api.js
- * @description Frontend API Client (ERP Middleware v10.0.0).
+ * @description Frontend API Client (ERP Middleware v10.5.0).
  * Обеспечивает строгую типизацию запросов к REST API сервера ProElectric.
- * Включает методы финансового контроллера заказов, корпоративной кассы и настроек.
+ * Включает методы OTP-авторизации, глубокой аналитики, управления бригадами и инкассации.
  *
  * @module API
- * @version 10.0.0 (Enterprise Finance Edition)
+ * @version 10.5.0 (Enterprise ERP & Cash Flow Edition)
  */
 
 const API_BASE = "/api";
@@ -18,7 +18,7 @@ const API_BASE = "/api";
  * @returns {Promise<any>}
  */
 async function fetchWrapper(endpoint, options = {}) {
-  options.credentials = "include"; // Обязательно для передачи сессионных куки (авторизация)
+  options.credentials = "include"; // Обязательно для передачи сессионных куки
   options.headers = options.headers || {};
 
   // Если передаем не FormData, ставим заголовок JSON
@@ -28,6 +28,13 @@ async function fetchWrapper(endpoint, options = {}) {
 
   try {
     const response = await fetch(`${API_BASE}${endpoint}`, options);
+
+    // Обработка скачивания файлов (например, дамп базы данных JSON)
+    const contentType = response.headers.get("content-type");
+    if (contentType && contentType.includes("application/json") === false) {
+      return response; // Возвращаем сырой объект Response для скачивания Blob в app.js
+    }
+
     const data = await response.json();
 
     if (!response.ok) {
@@ -46,22 +53,60 @@ async function fetchWrapper(endpoint, options = {}) {
  */
 export const API = {
   // ==========================================
-  // 🔐 AUTHENTICATION
+  // 🔐 AUTHENTICATION & OTP (Zero-Trust)
   // ==========================================
+
+  // Legacy login (Оставлен для обратной совместимости / fallback)
   login: (login, password) =>
     fetchWrapper("/auth/login", {
       method: "POST",
       body: JSON.stringify({ login, password }),
     }),
 
+  // NEW: OTP Авторизация по номеру телефона
+  requestOtp: (phone) =>
+    fetchWrapper("/auth/otp/request", {
+      method: "POST",
+      body: JSON.stringify({ phone }),
+    }),
+
+  verifyOtp: (phone, otp) =>
+    fetchWrapper("/auth/otp/verify", {
+      method: "POST",
+      body: JSON.stringify({ phone, otp }),
+    }),
+
   logout: () => fetchWrapper("/auth/logout", { method: "POST" }),
 
-  checkAuth: () => fetchWrapper("/auth/check"),
+  // Обновленный метод проверки сессии, который возвращает РОЛЬ пользователя
+  checkAuth: () => fetchWrapper("/auth/me"),
 
   // ==========================================
-  // 📊 DASHBOARD (ANALYTICS)
+  // 📊 DASHBOARD & DEEP ANALYTICS
   // ==========================================
   getStats: () => fetchWrapper("/dashboard/stats"),
+
+  // NEW: Глубокая аналитика (юнит-экономика)
+  getDeepAnalytics: () => fetchWrapper("/analytics/deep"),
+
+  // ==========================================
+  // 🏗 BRIGADES MANAGEMENT (ERP) - NEW
+  // ==========================================
+  getBrigades: () => fetchWrapper("/brigades"),
+
+  createBrigade: (name, brigadierId, profitPercentage) =>
+    fetchWrapper("/brigades", {
+      method: "POST",
+      body: JSON.stringify({ name, brigadierId, profitPercentage }),
+    }),
+
+  updateBrigade: (id, profitPercentage, isActive) =>
+    fetchWrapper(`/brigades/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ profitPercentage, isActive }),
+    }),
+
+  getBrigadeOrders: (id) => fetchWrapper(`/brigades/${id}/orders`),
 
   // ==========================================
   // 📦 ORDERS MANAGEMENT
@@ -69,9 +114,6 @@ export const API = {
   getOrders: (status = "all", limit = 100, offset = 0) =>
     fetchWrapper(`/orders?status=${status}&limit=${limit}&offset=${offset}`),
 
-  /**
-   * Создание оффлайн-лида вручную (Без бота, через CRM)
-   */
   createManualOrder: (data) =>
     fetchWrapper("/orders", { method: "POST", body: JSON.stringify(data) }),
 
@@ -81,31 +123,37 @@ export const API = {
       body: JSON.stringify({ status }),
     }),
 
-  /**
-   * Универсальное обновление деталей (BOM-массив, адрес, комментарий)
-   */
   updateOrderDetails: (id, key, value) =>
     fetchWrapper(`/orders/${id}/details`, {
       method: "PATCH",
       body: JSON.stringify({ key, value }),
     }),
 
+  // NEW: Расширенное управление объектами (ERP Level)
+  assignBrigade: (id, brigadeId) =>
+    fetchWrapper(`/orders/${id}/assign`, {
+      method: "PATCH",
+      body: JSON.stringify({ brigadeId }),
+    }),
+
+  updateBOM: (id, newBomArray) =>
+    fetchWrapper(`/orders/${id}/bom`, {
+      method: "PATCH",
+      body: JSON.stringify({ newBomArray }),
+    }),
+
+  finalizeOrder: (id) =>
+    fetchWrapper(`/orders/${id}/finalize`, { method: "POST" }),
+
   // ==========================================
   // 💸 PROJECT FINANCE (ORDER LEVEL)
   // ==========================================
-
-  /**
-   * Переопределение итоговой цены для клиента
-   */
   updateOrderFinalPrice: (id, newPrice) =>
     fetchWrapper(`/orders/${id}/finance/price`, {
       method: "PATCH",
       body: JSON.stringify({ newPrice }),
     }),
 
-  /**
-   * Добавление расхода к объекту (Материалы, Такси, Инструмент за счет проекта)
-   */
   addOrderExpense: (id, amount, category, comment) =>
     fetchWrapper(`/orders/${id}/finance/expense`, {
       method: "POST",
@@ -113,39 +161,31 @@ export const API = {
     }),
 
   // ==========================================
-  // 🏢 CORPORATE FINANCE (GLOBAL CASHBOX v10.0)
+  // 🏢 CORPORATE FINANCE (GLOBAL CASHBOX)
   // ==========================================
-
-  /**
-   * Получение списка всех счетов (касс) компании и их балансов
-   */
   getFinanceAccounts: () => fetchWrapper("/finance/accounts"),
 
-  /**
-   * Получение истории глобальных транзакций компании
-   * @param {number} limit - Количество последних записей
-   */
   getFinanceTransactions: (limit = 100) =>
     fetchWrapper(`/finance/transactions?limit=${limit}`),
 
-  /**
-   * Проведение новой финансовой операции по компании
-   * @param {Object} data - { accountId, amount, type ('income'|'expense'), category, comment }
-   */
   addFinanceTransaction: (data) =>
     fetchWrapper("/finance/transactions", {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
+  // NEW: Проведение Инкассации (Списание долга бригады)
+  approveIncassation: (brigadierId, amount) =>
+    fetchWrapper("/finance/incassation/approve", {
+      method: "POST",
+      body: JSON.stringify({ brigadierId, amount }),
+    }),
+
   // ==========================================
-  // ⚙️ SYSTEM SETTINGS (DYNAMIC PRICING)
+  // ⚙️ SYSTEM SETTINGS & DEVOPS
   // ==========================================
   getSettings: () => fetchWrapper("/settings"),
 
-  /**
-   * Получение структурированного прайс-листа по категориям из OrderService
-   */
   getPricelist: () => fetchWrapper("/pricelist"),
 
   updateSetting: (key, value) =>
@@ -154,14 +194,14 @@ export const API = {
       body: JSON.stringify({ key, value }),
     }),
 
-  /**
-   * Массовое обновление настроек (Bulk Update) за одну транзакцию
-   */
   updateBulkSettings: (payloadArray) =>
     fetchWrapper("/settings", {
       method: "POST",
       body: JSON.stringify(payloadArray),
     }),
+
+  // NEW: Запрос на формирование и скачивание дампа базы
+  downloadBackup: () => fetchWrapper("/system/backup"),
 
   // ==========================================
   // 👥 STAFF & BROADCAST

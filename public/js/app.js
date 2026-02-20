@@ -1,11 +1,11 @@
 /**
  * @file public/js/app.js
- * @description Frontend Application Controller (SPA Logic v10.0.0).
- * Управляет состоянием интерфейса, модальными окнами, заказами и настройками.
- * Включает новый Глобальный Финансовый Модуль (Касса, Счета, Транзакции).
+ * @description Frontend Application Controller (SPA Logic v10.5.0 Enterprise).
+ * Управляет состоянием интерфейса, модальными окнами, OTP-авторизацией.
+ * Включает Глобальный Финансовый Модуль, ERP Бригад, Deep Analytics и WebSockets.
  *
  * @module AppController
- * @version 10.0.0 (Enterprise Finance Edition)
+ * @version 10.5.0 (PWA, Sockets, Cash Flow Edition)
  */
 
 import { API } from "./api.js";
@@ -39,10 +39,12 @@ const Utils = {
     const toast = document.createElement("div");
     toast.className = `toast toast-${type}`;
 
-    let icon = "info";
-    if (type === "success") icon = "check-circle";
-    if (type === "error") icon = "alert-circle";
-
+    let icon =
+      type === "success"
+        ? "check-circle"
+        : type === "error"
+          ? "alert-circle"
+          : "info";
     toast.innerHTML = `<i data-feather="${icon}"></i> <span>${message}</span>`;
     container.appendChild(toast);
     if (typeof feather !== "undefined") feather.replace();
@@ -51,38 +53,97 @@ const Utils = {
     setTimeout(() => {
       toast.classList.remove("show");
       setTimeout(() => toast.remove(), 300);
-    }, 3000);
+    }, 4000);
+  },
+  downloadBlob: (response, filename) => {
+    response.blob().then((blob) => {
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename || "download";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    });
   },
 };
 
 // =============================================================================
-// 2. 🧠 СТЭЙТ И ИНИЦИАЛИЗАЦИЯ (STATE MANAGEMENT)
+// 2. 🧠 СТЭЙТ, ИНИЦИАЛИЗАЦИЯ И СОКЕТЫ (STATE & SOCKETS)
 // =============================================================================
 
 const State = {
   currentView: "dashboardView",
+  user: null, // Хранит данные текущего пользователя (роль, имя)
   orders: [],
   users: [],
+  brigades: [],
   selectedOrderId: null,
-  currentBOM: [], // Временное хранилище редактируемого массива спецификации
-  financeAccounts: [], // Хранилище счетов (Касса)
+  currentBOM: [],
+  financeAccounts: [],
 };
+
+// Инициализация WebSockets (Real-Time)
+const socket = typeof io !== "undefined" ? io() : null;
+
+if (socket) {
+  socket.on("connect", () => {
+    document.getElementById("socketStatusDot").className =
+      "pe-status-dot online";
+    document.getElementById("socketStatusText").textContent = "Online";
+  });
+  socket.on("disconnect", () => {
+    document.getElementById("socketStatusDot").className =
+      "pe-status-dot offline";
+    document.getElementById("socketStatusText").textContent = "Offline";
+  });
+
+  // Реактивные обновления UI
+  socket.on("order_updated", (data) => {
+    if (State.currentView === "ordersView") loadOrders();
+    if (State.currentView === "dashboardView") loadDashboard();
+  });
+  socket.on("expense_added", (data) => {
+    Utils.showToast("Кто-то добавил новый чек к объекту!", "info");
+    if (
+      State.currentView === "ordersView" &&
+      State.selectedOrderId === data.orderId
+    )
+      openOrderModal(data.orderId); // Перезагружаем модалку
+    if (State.currentView === "dashboardView") loadDashboard();
+  });
+  socket.on("settings_updated", () => {
+    if (State.currentView === "settingsView") loadSettings();
+  });
+}
 
 document.addEventListener("DOMContentLoaded", async () => {
   bindAuthEvents();
+  bindMobileEvents();
   await checkSession();
 });
 
 // =============================================================================
-// 3. 🔐 АВТОРИЗАЦИЯ И НАВИГАЦИЯ (AUTH & ROUTING)
+// 3. 🔐 АВТОРИЗАЦИЯ, OTP И RBAC РОУТИНГ
 // =============================================================================
 
 async function checkSession() {
   try {
     const res = await API.checkAuth();
     if (res.authenticated) {
+      State.user = res.user;
       document.getElementById("loginView").classList.remove("active");
       document.getElementById("appLayout").style.display = "flex";
+
+      // Настройка UI профиля
+      document.getElementById("currentUserName").textContent =
+        State.user.name || "Boss";
+      document.getElementById("currentUserRole").textContent = State.user.role
+        ? State.user.role.toUpperCase()
+        : "OWNER";
+
+      applyRoleRestrictions(State.user.role);
       initApp();
     } else {
       showLogin();
@@ -97,24 +158,95 @@ function showLogin() {
   document.getElementById("appLayout").style.display = "none";
 }
 
+function applyRoleRestrictions(role) {
+  // Владелец и Админ видят всё
+  if (role === "owner" || role === "admin") return;
+
+  // Если это Бригадир (Manager), скрываем лишнее
+  if (role === "manager") {
+    const hiddenTargets = [
+      "financeView",
+      "settingsView",
+      "usersView",
+      "broadcastView",
+      "brigadesView",
+    ];
+    document.querySelectorAll(".nav-btn").forEach((btn) => {
+      const target = btn.getAttribute("data-target");
+      if (hiddenTargets.includes(target)) {
+        btn.style.display = "none";
+      }
+    });
+    // Скрываем заголовки секций в меню, если под ними нет кнопок
+    const sections = document.querySelectorAll(".pe-nav-section");
+    if (sections.length >= 3) {
+      sections[1].style.display = "none"; // Бухгалтерия
+      sections[2].style.display = "none"; // Управление
+    }
+  }
+}
+
 function bindAuthEvents() {
-  document.getElementById("loginForm").addEventListener("submit", async (e) => {
+  const phoneForm = document.getElementById("phoneForm");
+  const otpForm = document.getElementById("otpForm");
+  const loginError = document.getElementById("loginError");
+
+  // Шаг 1: Запрос OTP
+  phoneForm.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const l = document.getElementById("adminLogin").value;
-    const p = document.getElementById("adminPassword").value;
-    const errDiv = document.getElementById("loginError");
+    const phone = document.getElementById("authPhone").value;
+    const btn = document.getElementById("btnRequestOtp");
 
     try {
-      errDiv.style.display = "none";
-      await API.login(l, p);
-      Utils.showToast("Успешный вход. Добро пожаловать, Босс!", "success");
-      checkSession();
+      loginError.style.display = "none";
+      btn.disabled = true;
+      btn.innerHTML = `<i data-feather="loader" class="spin"></i> Отправка...`;
+
+      await API.requestOtp(phone);
+
+      Utils.showToast("Код отправлен в Telegram", "success");
+      phoneForm.style.display = "none";
+      otpForm.style.display = "block";
     } catch (error) {
-      errDiv.textContent = error.message;
-      errDiv.style.display = "block";
+      loginError.textContent = error.message;
+      loginError.style.display = "block";
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = `Получить код в Telegram <i data-feather="arrow-right"></i>`;
+      if (typeof feather !== "undefined") feather.replace();
     }
   });
 
+  // Шаг 2: Ввод OTP
+  otpForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const phone = document.getElementById("authPhone").value;
+    const otp = document.getElementById("authOtp").value;
+    const btn = document.getElementById("btnVerifyOtp");
+
+    try {
+      loginError.style.display = "none";
+      btn.disabled = true;
+
+      await API.verifyOtp(phone, otp);
+      Utils.showToast("Авторизация успешна!", "success");
+      checkSession();
+    } catch (error) {
+      loginError.textContent = error.message;
+      loginError.style.display = "block";
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // Вернуться к вводу телефона
+  document.getElementById("btnBackToPhone").addEventListener("click", () => {
+    otpForm.style.display = "none";
+    phoneForm.style.display = "block";
+    document.getElementById("authOtp").value = "";
+  });
+
+  // Выход
   document.getElementById("logoutBtn").addEventListener("click", async () => {
     try {
       await API.logout();
@@ -124,7 +256,7 @@ function bindAuthEvents() {
     }
   });
 
-  // Навигация
+  // Навигация (SPA Routing)
   document.querySelectorAll(".nav-btn").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       document
@@ -138,8 +270,21 @@ function bindAuthEvents() {
       });
 
       State.currentView = targetId;
+
+      // На мобилках автоматически закрываем сайдбар после клика
+      document.getElementById("appSidebar").classList.remove("mobile-active");
+
       loadViewData(targetId);
     });
+  });
+}
+
+function bindMobileEvents() {
+  document.getElementById("btnOpenSidebar").addEventListener("click", () => {
+    document.getElementById("appSidebar").classList.add("mobile-active");
+  });
+  document.getElementById("btnCloseSidebar").addEventListener("click", () => {
+    document.getElementById("appSidebar").classList.remove("mobile-active");
   });
 }
 
@@ -157,8 +302,11 @@ function loadViewData(viewId) {
     case "ordersView":
       loadOrders();
       break;
+    case "brigadesView":
+      loadBrigades();
+      break;
     case "financeView":
-      loadFinance(); // NEW: Инициализация Глобальной Кассы
+      loadFinance();
       break;
     case "settingsView":
       loadSettings();
@@ -170,55 +318,137 @@ function loadViewData(viewId) {
 }
 
 // =============================================================================
-// 4. 📊 ДАШБОРД (DASHBOARD LOGIC)
+// 4. 📊 DEEP ANALYTICS & DASHBOARD
 // =============================================================================
 
 async function loadDashboard() {
   try {
-    const data = await API.getStats();
+    const [stats, deepData] = await Promise.all([
+      API.getStats(),
+      API.getDeepAnalytics(),
+    ]);
 
+    // Обновление верхних карточек
     document.getElementById("statNetProfit").textContent = Utils.formatCurrency(
-      data.overview.totalNetProfit,
+      stats.overview.totalNetProfit,
     );
     document.getElementById("statRevenue").textContent = Utils.formatCurrency(
-      data.overview.totalRevenue,
+      stats.overview.totalRevenue,
     );
-    document.getElementById("statActiveOrders").textContent =
-      data.overview.pendingOrders;
-    document.getElementById("statTotalUsers").textContent =
-      data.overview.totalUsers;
 
-    renderFunnel(data.funnel);
+    // Метрики Юнит-экономики
+    if (document.getElementById("statBrigadeDebts")) {
+      document.getElementById("statBrigadeDebts").textContent =
+        Utils.formatCurrency(deepData.economics.totalBrigadeDebts);
+    }
+    if (document.getElementById("statAverageCheck")) {
+      document.getElementById("statAverageCheck").textContent =
+        Utils.formatCurrency(deepData.economics.averageCheck);
+    }
+
+    renderFunnel(stats.funnel);
+    renderExpensesChart(deepData.expenseBreakdown);
   } catch (e) {
-    Utils.showToast("Ошибка загрузки статистики", "error");
+    Utils.showToast("Ошибка загрузки аналитики", "error");
   }
 }
 
 function renderFunnel(funnelData) {
   const container = document.getElementById("funnelChart");
+  if (!container) return;
   container.innerHTML = "";
 
   const statuses = [
-    { key: "new", label: "Новые лиды", color: "#3b82f6" },
+    { key: "new", label: "Новые (Биржа)", color: "#3b82f6" },
     { key: "work", label: "В работе", color: "#f59e0b" },
-    { key: "done", label: "Завершено", color: "#10b981" },
+    { key: "done", label: "Завершено (Выручка)", color: "#10b981" },
   ];
 
   statuses.forEach((s) => {
-    const stat = funnelData[s.key] || { count: 0, sum: 0 };
+    const stat = funnelData.find((f) => f.status === s.key) || {
+      count: 0,
+      sum: 0,
+    };
     const row = document.createElement("div");
-    row.className = "funnel-row";
+    row.className = "funnel-row pe-mb-2";
     row.innerHTML = `
-            <div class="funnel-label" style="border-left: 4px solid ${s.color}; padding-left: 10px;">${s.label}</div>
-            <div class="funnel-value"><b>${stat.count}</b> шт.</div>
-            <div class="funnel-sum">${Utils.formatCurrency(stat.sum)}</div>
-        `;
+      <div class="funnel-label" style="border-left: 4px solid ${s.color}; padding-left: 10px;">${s.label}</div>
+      <div class="funnel-value"><b>${stat.count}</b> шт.</div>
+      <div class="funnel-sum">${Utils.formatCurrency(stat.sum)}</div>
+    `;
+    container.appendChild(row);
+  });
+}
+
+function renderExpensesChart(expensesData) {
+  const container = document.getElementById("expensesChart");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (!expensesData || expensesData.length === 0) {
+    container.innerHTML = `<div class="pe-text-muted">Нет данных о расходах</div>`;
+    return;
+  }
+
+  expensesData.forEach((exp) => {
+    const row = document.createElement("div");
+    row.className = "funnel-row pe-mb-2";
+    row.innerHTML = `
+      <div class="funnel-label" style="border-left: 4px solid #ef4444; padding-left: 10px;">${exp.category}</div>
+      <div class="funnel-sum pe-text-danger">-${Utils.formatCurrency(exp.total)}</div>
+    `;
     container.appendChild(row);
   });
 }
 
 // =============================================================================
-// 5. 📦 УПРАВЛЕНИЕ ЗАКАЗАМИ (ORDERS & OFFLINE LEADS)
+// 5. 🏗 УПРАВЛЕНИЕ БРИГАДАМИ И ИНКАССАЦИЯ (ERP)
+// =============================================================================
+
+async function loadBrigades() {
+  try {
+    State.brigades = await API.getBrigades();
+    const tbody = document.getElementById("brigadesTableBody");
+    tbody.innerHTML = "";
+
+    if (State.brigades.length === 0) {
+      tbody.innerHTML =
+        '<tr><td colspan="6" class="pe-text-center">Бригады не найдены</td></tr>';
+      return;
+    }
+
+    State.brigades.forEach((b) => {
+      // Долг компании (если баланс отрицательный, значит наличка у них)
+      const debt = b.balance < 0 ? Math.abs(b.balance) : 0;
+      const debtClass = debt > 0 ? "pe-text-danger fw-bold" : "pe-text-success";
+
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><b>#${b.id}</b> ${b.name}</td>
+        <td><code>${b.brigadier_id}</code></td>
+        <td>${b.profit_percentage}%</td>
+        <td class="${debtClass}">${Utils.formatCurrency(debt)}</td>
+        <td><span class="pe-badge ${b.is_active ? "badge-done" : "badge-cancel"}">${b.is_active ? "Активна" : "Отключена"}</span></td>
+        <td class="pe-text-right">
+          ${debt > 0 ? `<button class="pe-btn pe-btn-sm pe-btn-success" onclick="openIncassationModal(${b.brigadier_id}, '${b.name}')">Списать долг</button>` : ""}
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    Utils.showToast("Ошибка загрузки бригад", "error");
+  }
+}
+
+window.openIncassationModal = (brigadierId, brigadeName) => {
+  document.getElementById("incBrigadeId").value = brigadierId;
+  document.getElementById("incBrigadeName").value = brigadeName;
+  document.getElementById("incAmount").value = "";
+  document.getElementById("incassationModal").style.display = "flex";
+};
+
+// =============================================================================
+// 6. 📦 УПРАВЛЕНИЕ ОБЪЕКТАМИ (ORDER MANAGEMENT)
 // =============================================================================
 
 async function loadOrders() {
@@ -228,29 +458,42 @@ async function loadOrders() {
     const tbody = document.getElementById("ordersTableBody");
     tbody.innerHTML = "";
 
+    // Загружаем бригады для селектора внутри карточки заказа (если мы Админ)
+    if (
+      State.user &&
+      (State.user.role === "owner" || State.user.role === "admin")
+    ) {
+      State.brigades = await API.getBrigades();
+    }
+
+    if (State.orders.length === 0) {
+      tbody.innerHTML =
+        '<tr><td colspan="7" class="pe-text-center">Объектов не найдено</td></tr>';
+      return;
+    }
+
     State.orders.forEach((o) => {
       const financials = o.details?.financials || {};
       const netProfit =
         financials.net_profit !== undefined
           ? financials.net_profit
           : o.total_price;
-
-      // Self-Healing: Защита от "null м²" для старых заказов
       const area = o.area || o.details?.params?.area || 0;
 
       const tr = document.createElement("tr");
       tr.innerHTML = `
-                <td><b>#${o.id}</b><br><small class="pe-text-muted">${Utils.formatDate(o.created_at)}</small></td>
-                <td>${o.client_name || "Неизвестно"}<br><small>${o.client_phone || "—"}</small></td>
-                <td>${area} м²</td>
-                <td><span class="pe-badge badge-${o.status}">${o.status.toUpperCase()}</span></td>
-                <td class="pe-text-success fw-bold">${Utils.formatCurrency(netProfit)}</td>
-                <td class="pe-text-right">
-                    <button class="pe-btn pe-btn-sm pe-btn-secondary" onclick="openOrderModal(${o.id})">
-                        Управление
-                    </button>
-                </td>
-            `;
+        <td><b>#${o.id}</b><br><small class="pe-text-muted">${Utils.formatDate(o.created_at)}</small></td>
+        <td>${o.client_name || "Неизвестно"}<br><small>${o.client_phone || "—"}</small></td>
+        <td>${area} м²</td>
+        <td>${o.brigade_name ? `<span class="pe-badge badge-processing">${o.brigade_name}</span>` : '<span class="pe-text-muted">Биржа</span>'}</td>
+        <td><span class="pe-badge badge-${o.status}">${o.status.toUpperCase()}</span></td>
+        <td class="pe-text-success fw-bold">${Utils.formatCurrency(netProfit)}</td>
+        <td class="pe-text-right">
+            <button class="pe-btn pe-btn-sm pe-btn-secondary" onclick="openOrderModal(${o.id})">
+                Управление
+            </button>
+        </td>
+      `;
       tbody.appendChild(tr);
     });
   } catch (e) {
@@ -263,35 +506,54 @@ window.openOrderModal = (orderId) => {
   if (!order) return;
   State.selectedOrderId = order.id;
 
-  // Self-Healing: Защита от "null м²"
   const area = order.area || order.details?.params?.area || 0;
 
-  // Инфо
   document.getElementById("modalOrderTitle").textContent =
     `Объект #${order.id} (${area} м²)`;
-  document.getElementById("modalClientName").textContent =
-    order.client_name || "Оффлайн клиент";
-  document.getElementById("modalClientPhone").textContent =
-    order.client_phone || "—";
 
-  // Статус
+  // Настройка статуса
   const statusSelect = document.getElementById("modalOrderStatus");
   statusSelect.innerHTML = `
-        <option value="new">Новый (Лид)</option>
-        <option value="processing">Взят в расчет (Замер)</option>
-        <option value="work">В работе (Монтаж)</option>
-        <option value="done">Завершен успешно</option>
-        <option value="cancel">Отказ / Отмена</option>
-    `;
+    <option value="new">Новый (Биржа)</option>
+    <option value="processing">Взят в расчет / Замер</option>
+    <option value="work">В работе (Монтаж)</option>
+    <option value="done">Завершен</option>
+    <option value="cancel">Отменен</option>
+  `;
   statusSelect.value = order.status;
 
-  // 🚀 ИНИЦИАЛИЗАЦИЯ ИНТЕРАКТИВНОГО BOM
+  // Настройка Бригады (Только для Админов)
+  const brigadeSelect = document.getElementById("modalOrderBrigade");
+  if (
+    State.user &&
+    (State.user.role === "owner" || State.user.role === "admin")
+  ) {
+    brigadeSelect.disabled = false;
+    brigadeSelect.innerHTML = `<option value="">-- Не назначена (Биржа) --</option>`;
+    State.brigades.forEach((b) => {
+      brigadeSelect.innerHTML += `<option value="${b.id}" ${order.brigade_id === b.id ? "selected" : ""}>${b.name}</option>`;
+    });
+  } else {
+    // Бригадир не может менять бригаду
+    brigadeSelect.innerHTML = `<option>${order.brigade_name || "Не назначена"}</option>`;
+    brigadeSelect.disabled = true;
+  }
+
+  // Кнопка Финализации (Cash Flow)
+  const btnFinalize = document.getElementById("btnFinalizeOrder");
+  if (order.status === "work" && order.brigade_id) {
+    btnFinalize.style.display = "flex";
+  } else {
+    btnFinalize.style.display = "none";
+  }
+
+  // BOM
   State.currentBOM = Array.isArray(order.details?.bom)
     ? JSON.parse(JSON.stringify(order.details.bom))
     : [];
   renderBOMEditor();
 
-  // Финансы (ERP Core)
+  // Финансы
   renderOrderFinancials(order);
 
   document.getElementById("orderModal").style.display = "flex";
@@ -320,34 +582,29 @@ function renderOrderFinancials(order) {
   const expensesList = document.getElementById("modalExpensesList");
   expensesList.innerHTML = "";
 
-  // Self-Healing: Гарантируем, что expenses - это массив
   const expensesArray = Array.isArray(financials.expenses)
     ? financials.expenses
     : [];
-
   if (expensesArray.length === 0) {
     expensesList.innerHTML =
-      '<div class="pe-text-muted text-center p-1">Нет расходов по объекту</div>';
+      '<div class="pe-text-muted text-center p-1">Нет чеков по объекту</div>';
   } else {
     expensesArray.forEach((exp) => {
       const div = document.createElement("div");
       div.className = "expense-item";
       div.innerHTML = `
-                <div>
-                    <strong>${exp.category}</strong> <small class="pe-text-muted">${Utils.formatDate(exp.date)}</small>
-                    <div style="font-size:0.75rem;">${exp.comment || ""}</div>
-                </div>
-                <div class="pe-text-danger fw-bold">-${Utils.formatCurrency(exp.amount)}</div>
-            `;
+        <div>
+          <strong>${exp.category}</strong> <small class="pe-text-muted">${Utils.formatDate(exp.date)}</small>
+          <div style="font-size:0.75rem;">${exp.comment || ""}</div>
+        </div>
+        <div class="pe-text-danger fw-bold">-${Utils.formatCurrency(exp.amount)}</div>
+      `;
       expensesList.appendChild(div);
     });
   }
 }
 
-// =============================================================================
-// 6. 🛠 РЕДАКТОР СПЕЦИФИКАЦИИ (BOM ARRAY MANAGER)
-// =============================================================================
-
+// BOM логика
 function renderBOMEditor() {
   const container = document.getElementById("modalBOMList");
   container.innerHTML = "";
@@ -362,15 +619,12 @@ function renderBOMEditor() {
       row.style.gap = "0.5rem";
       row.style.marginBottom = "0.5rem";
       row.style.alignItems = "center";
-
       row.innerHTML = `
-                <input type="text" class="pe-input pe-input-sm" style="flex:1;" value="${item.name}" placeholder="Наименование" onchange="window.updateBOMItem(${index}, 'name', this.value)">
-                <input type="number" class="pe-input pe-input-sm" style="width:70px;" value="${item.qty}" placeholder="Кол-во" onchange="window.updateBOMItem(${index}, 'qty', this.value)">
-                <input type="text" class="pe-input pe-input-sm" style="width:60px;" value="${item.unit}" placeholder="Ед." onchange="window.updateBOMItem(${index}, 'unit', this.value)">
-                <button class="pe-btn pe-btn-danger pe-btn-sm pe-btn-icon" onclick="window.removeBOMItem(${index})" title="Удалить строку">
-                    <i data-feather="trash-2"></i>
-                </button>
-            `;
+        <input type="text" class="pe-input pe-input-sm" style="flex:1;" value="${item.name}" placeholder="Наименование" onchange="window.updateBOMItem(${index}, 'name', this.value)">
+        <input type="number" class="pe-input pe-input-sm" style="width:70px;" value="${item.qty}" placeholder="Кол-во" onchange="window.updateBOMItem(${index}, 'qty', this.value)">
+        <input type="text" class="pe-input pe-input-sm" style="width:60px;" value="${item.unit}" placeholder="Ед." onchange="window.updateBOMItem(${index}, 'unit', this.value)">
+        <button class="pe-btn pe-btn-danger pe-btn-sm pe-btn-icon" onclick="window.removeBOMItem(${index})"><i data-feather="trash-2"></i></button>
+      `;
       container.appendChild(row);
     });
   }
@@ -380,20 +634,17 @@ function renderBOMEditor() {
   controls.style.gap = "0.5rem";
   controls.style.marginTop = "1rem";
   controls.innerHTML = `
-        <button class="pe-btn pe-btn-secondary pe-btn-sm" onclick="window.addBOMItem()"><i data-feather="plus"></i> Добавить</button>
-        <button class="pe-btn pe-btn-primary pe-btn-sm" onclick="window.saveBOMArray()"><i data-feather="save"></i> Сохранить BOM</button>
-    `;
+    <button class="pe-btn pe-btn-secondary pe-btn-sm" onclick="window.addBOMItem()"><i data-feather="plus"></i> Добавить</button>
+    <button class="pe-btn pe-btn-primary pe-btn-sm" onclick="window.saveBOMArray()"><i data-feather="save"></i> Сохранить BOM</button>
+  `;
   container.appendChild(controls);
-
   if (typeof feather !== "undefined") feather.replace();
 }
 
-window.updateBOMItem = (index, field, value) => {
-  State.currentBOM[index][field] =
-    field === "qty" ? parseFloat(value) || 0 : value;
-};
-window.removeBOMItem = (index) => {
-  State.currentBOM.splice(index, 1);
+window.updateBOMItem = (i, f, v) =>
+  (State.currentBOM[i][f] = f === "qty" ? parseFloat(v) || 0 : v);
+window.removeBOMItem = (i) => {
+  State.currentBOM.splice(i, 1);
   renderBOMEditor();
 };
 window.addBOMItem = () => {
@@ -403,85 +654,72 @@ window.addBOMItem = () => {
 window.saveBOMArray = async () => {
   if (!State.selectedOrderId) return;
   try {
-    await API.updateOrderDetails(
-      State.selectedOrderId,
-      "bom",
-      State.currentBOM,
-    );
-    Utils.showToast("Спецификация объекта успешно обновлена", "success");
-    const order = State.orders.find((o) => o.id === State.selectedOrderId);
-    if (order) order.details.bom = JSON.parse(JSON.stringify(State.currentBOM));
+    await API.updateBOM(State.selectedOrderId, State.currentBOM);
+    Utils.showToast("Спецификация сохранена", "success");
+    loadOrders();
   } catch (err) {
-    Utils.showToast(err.message || "Ошибка сохранения спецификации", "error");
+    Utils.showToast(err.message, "error");
   }
 };
 
 // =============================================================================
-// 7. 🏢 ГЛОБАЛЬНАЯ КАССА (CORPORATE FINANCE v10.0)
+// 7. 🏢 ГЛОБАЛЬНАЯ КАССА (CORPORATE FINANCE)
 // =============================================================================
 
 async function loadFinance() {
   try {
-    // 1. Загружаем балансы счетов
     const accounts = await API.getFinanceAccounts();
-    State.financeAccounts = accounts; // Кешируем для селектора
+    State.financeAccounts = accounts;
 
     const grid = document.getElementById("financeAccountsGrid");
     grid.innerHTML = "";
-
-    // Подготовка селектора счетов в модалке
     const accountSelect = document.getElementById("txAccount");
     accountSelect.innerHTML = "";
 
     accounts.forEach((acc) => {
-      // Иконка и цвет в зависимости от типа
-      const icon = acc.type === "cash" ? "dollar-sign" : "credit-card";
-      const colorClass = acc.balance >= 0 ? "pe-kpi-primary" : "pe-kpi-warning";
+      const icon =
+        acc.type === "cash"
+          ? "dollar-sign"
+          : acc.type === "brigade_acc"
+            ? "hard-hat"
+            : "credit-card";
+      const colorClass = acc.balance >= 0 ? "pe-kpi-primary" : "pe-kpi-danger"; // Долги бригад красным
 
       grid.innerHTML += `
         <div class="pe-card pe-card-kpi ${colorClass}">
-            <div class="pe-kpi-icon"><i data-feather="${icon}"></i></div>
-            <div class="pe-kpi-data">
-                <span class="pe-kpi-label">${acc.name}</span>
-                <h3 class="pe-kpi-value">${Utils.formatCurrency(acc.balance)}</h3>
-            </div>
+          <div class="pe-kpi-icon"><i data-feather="${icon}"></i></div>
+          <div class="pe-kpi-data">
+            <span class="pe-kpi-label">${acc.name}</span>
+            <h3 class="pe-kpi-value">${Utils.formatCurrency(acc.balance)}</h3>
+          </div>
         </div>
       `;
-
-      accountSelect.innerHTML += `<option value="${acc.id}">${acc.name} (Доступно: ${Utils.formatCurrency(acc.balance)})</option>`;
+      accountSelect.innerHTML += `<option value="${acc.id}">${acc.name} (Баланс: ${Utils.formatCurrency(acc.balance)})</option>`;
     });
 
-    // 2. Загружаем историю транзакций
     const transactions = await API.getFinanceTransactions(50);
     const tbody = document.getElementById("transactionsTableBody");
     tbody.innerHTML = "";
 
     if (transactions.length === 0) {
       tbody.innerHTML =
-        '<tr><td colspan="6" class="pe-text-center pe-text-muted">Финансовых операций пока нет</td></tr>';
+        '<tr><td colspan="6" class="pe-text-center pe-text-muted">Операций нет</td></tr>';
     } else {
       transactions.forEach((tx) => {
         const isIncome = tx.type === "income";
-        const amountStr = isIncome
-          ? `+${Utils.formatCurrency(tx.amount)}`
-          : `-${Utils.formatCurrency(tx.amount)}`;
         const amountClass = isIncome ? "pe-text-success" : "pe-text-danger";
-        const typeLabel = isIncome ? "ДОХОД" : "РАСХОД";
-        const badgeClass = isIncome ? "badge-done" : "badge-cancel";
-
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td>${Utils.formatDate(tx.created_at)}</td>
-          <td><span class="pe-badge ${badgeClass}">${typeLabel}</span></td>
+          <td><span class="pe-badge ${isIncome ? "badge-done" : "badge-cancel"}">${isIncome ? "ДОХОД" : "РАСХОД"}</span></td>
           <td><b>${tx.account_name || "Неизвестный счет"}</b></td>
           <td>${tx.category || "—"}</td>
-          <td class="${amountClass} fw-bold">${amountStr}</td>
+          <td class="${amountClass} fw-bold">${isIncome ? "+" : "-"}${Utils.formatCurrency(tx.amount)}</td>
           <td>${tx.comment || "—"}</td>
         `;
         tbody.appendChild(tr);
       });
     }
-
     if (typeof feather !== "undefined") feather.replace();
   } catch (e) {
     Utils.showToast("Ошибка загрузки финансового модуля", "error");
@@ -489,18 +727,18 @@ async function loadFinance() {
 }
 
 // =============================================================================
-// 8. 💸 ФИНАНСОВЫЕ ОПЕРАЦИИ, МОДАЛКИ И ГЛОБАЛЬНЫЕ СОБЫТИЯ
+// 8. 🎯 ГЛОБАЛЬНЫЕ ОБРАБОТЧИКИ СОБЫТИЙ (BINDINGS)
 // =============================================================================
 
 function bindGlobalEvents() {
   document
     .getElementById("refreshStatsBtn")
-    .addEventListener("click", loadDashboard);
+    ?.addEventListener("click", loadDashboard);
   document
     .getElementById("orderStatusFilter")
-    .addEventListener("change", loadOrders);
+    ?.addEventListener("change", loadOrders);
 
-  // Управление заказами
+  // Модалка заказов
   document
     .getElementById("btnCloseOrderModal")
     .addEventListener("click", () => {
@@ -508,59 +746,25 @@ function bindGlobalEvents() {
       State.selectedOrderId = null;
     });
 
+  // Назначение Бригады (Admin)
   document
-    .getElementById("btnCloseManualModal")
-    .addEventListener("click", () => {
-      document.getElementById("manualOrderModal").style.display = "none";
-    });
-
-  document
-    .getElementById("btnOpenManualOrderModal")
-    .addEventListener("click", () => {
-      document.getElementById("manualOrderModal").style.display = "flex";
-    });
-
-  // УПРАВЛЕНИЕ КАССЕЙ (v10.0)
-  document
-    .getElementById("btnOpenTransactionModal")
-    ?.addEventListener("click", () => {
-      document.getElementById("transactionModal").style.display = "flex";
-    });
-
-  document
-    .getElementById("btnCloseTransactionModal")
-    ?.addEventListener("click", () => {
-      document.getElementById("transactionModal").style.display = "none";
-    });
-
-  // Обработка отправки формы Глобальной транзакции
-  document
-    .getElementById("formTransaction")
-    ?.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const data = {
-        accountId: document.getElementById("txAccount").value,
-        type: document.getElementById("txType").value,
-        amount: document.getElementById("txAmount").value,
-        category: document.getElementById("txCategory").value,
-        comment: document.getElementById("txComment").value,
-      };
-
+    .getElementById("modalOrderBrigade")
+    ?.addEventListener("change", async (e) => {
+      if (!State.selectedOrderId || !e.target.value) return;
       try {
-        await API.addFinanceTransaction(data);
-        document.getElementById("transactionModal").style.display = "none";
-        document.getElementById("formTransaction").reset();
-        Utils.showToast("Операция успешно проведена", "success");
-        loadFinance(); // Реактивное обновление таблицы и балансов
+        await API.assignBrigade(State.selectedOrderId, e.target.value);
+        Utils.showToast("Бригада назначена на объект", "success");
+        loadOrders();
+        document.getElementById("orderModal").style.display = "none";
       } catch (err) {
         Utils.showToast(err.message, "error");
       }
     });
 
-  // Обработка статусов и локальных расходов (Orders Level)
+  // Изменение статуса
   document
     .getElementById("modalOrderStatus")
-    .addEventListener("change", async (e) => {
+    ?.addEventListener("change", async (e) => {
       if (!State.selectedOrderId) return;
       try {
         await API.updateOrderStatus(State.selectedOrderId, e.target.value);
@@ -571,61 +775,75 @@ function bindGlobalEvents() {
       }
     });
 
+  // ФИНАЛИЗАЦИЯ И РАСПРЕДЕЛЕНИЕ ПРИБЫЛИ (ERP)
+  document
+    .getElementById("btnFinalizeOrder")
+    ?.addEventListener("click", async () => {
+      if (!State.selectedOrderId) return;
+      if (
+        !confirm(
+          "Вы уверены, что хотите закрыть объект? Будет произведен расчет долей и начислен долг на бригаду.",
+        )
+      )
+        return;
+
+      try {
+        const btn = document.getElementById("btnFinalizeOrder");
+        btn.disabled = true;
+        btn.innerHTML = `<i data-feather="loader" class="spin"></i> Расчет...`;
+        if (typeof feather !== "undefined") feather.replace();
+
+        const res = await API.finalizeOrder(State.selectedOrderId);
+        Utils.showToast(
+          `Объект закрыт! Заработано бригадой: ${Utils.formatCurrency(res.distribution.brigadeShare)}. Долг Шефу: ${Utils.formatCurrency(res.distribution.ownerShare)}`,
+          "success",
+        );
+
+        document.getElementById("orderModal").style.display = "none";
+        loadOrders();
+        if (State.currentView === "dashboardView") loadDashboard();
+      } catch (err) {
+        Utils.showToast(err.message, "error");
+        document.getElementById("btnFinalizeOrder").disabled = false;
+      }
+    });
+
+  // Обновление цены
   document
     .getElementById("btnUpdateFinalPrice")
-    .addEventListener("click", async () => {
+    ?.addEventListener("click", async () => {
       if (!State.selectedOrderId) return;
-      const newPrice = document.getElementById("modalFinalPrice").value;
       try {
-        const newFinancials = await API.updateOrderFinalPrice(
+        await API.updateOrderFinalPrice(
           State.selectedOrderId,
-          newPrice,
+          document.getElementById("modalFinalPrice").value,
         );
-        const order = State.orders.find((o) => o.id === State.selectedOrderId);
-        order.details.financials = newFinancials;
-        order.total_price = newFinancials.final_price;
-        renderOrderFinancials(order);
-        loadOrders();
         Utils.showToast("Итоговая цена зафиксирована", "success");
-      } catch (err) {
-        Utils.showToast(err.message, "error");
-      }
-    });
-
-  document
-    .getElementById("btnAddExpense")
-    .addEventListener("click", async () => {
-      if (!State.selectedOrderId) return;
-      const amount = document.getElementById("expenseAmount").value;
-      const category = document.getElementById("expenseCategory").value;
-      const comment = document.getElementById("expenseComment").value;
-
-      if (!amount || amount <= 0)
-        return Utils.showToast("Введите корректную сумму", "error");
-
-      try {
-        const newFinancials = await API.addOrderExpense(
-          State.selectedOrderId,
-          amount,
-          category,
-          comment,
-        );
-        document.getElementById("expenseAmount").value = "";
-        document.getElementById("expenseComment").value = "";
-
-        const order = State.orders.find((o) => o.id === State.selectedOrderId);
-        order.details.financials = newFinancials;
-        renderOrderFinancials(order);
         loadOrders();
-        Utils.showToast("Расход по объекту списан", "success");
+        document.getElementById("orderModal").style.display = "none";
       } catch (err) {
         Utils.showToast(err.message, "error");
       }
     });
 
+  // Ручной заказ
+  document
+    .getElementById("btnOpenManualOrderModal")
+    ?.addEventListener(
+      "click",
+      () =>
+        (document.getElementById("manualOrderModal").style.display = "flex"),
+    );
+  document
+    .getElementById("btnCloseManualModal")
+    ?.addEventListener(
+      "click",
+      () =>
+        (document.getElementById("manualOrderModal").style.display = "none"),
+    );
   document
     .getElementById("formManualOrder")
-    .addEventListener("submit", async (e) => {
+    ?.addEventListener("submit", async (e) => {
       e.preventDefault();
       const data = {
         clientName: document.getElementById("manualName").value,
@@ -634,7 +852,6 @@ function bindGlobalEvents() {
         rooms: document.getElementById("manualRooms").value,
         wallType: document.getElementById("manualWallType").value,
       };
-
       try {
         await API.createManualOrder(data);
         document.getElementById("manualOrderModal").style.display = "none";
@@ -646,20 +863,97 @@ function bindGlobalEvents() {
       }
     });
 
+  // Инкассация
+  document
+    .getElementById("btnCloseIncassationModal")
+    ?.addEventListener(
+      "click",
+      () =>
+        (document.getElementById("incassationModal").style.display = "none"),
+    );
+  document
+    .getElementById("formIncassation")
+    ?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const brigadierId = document.getElementById("incBrigadeId").value;
+      const amount = document.getElementById("incAmount").value;
+      try {
+        await API.approveIncassation(brigadierId, amount);
+        Utils.showToast("Деньги приняты, долг списан!", "success");
+        document.getElementById("incassationModal").style.display = "none";
+        loadBrigades();
+        loadFinance();
+      } catch (err) {
+        Utils.showToast(err.message, "error");
+      }
+    });
+
+  // Транзакции Кассы
+  document
+    .getElementById("btnOpenTransactionModal")
+    ?.addEventListener(
+      "click",
+      () =>
+        (document.getElementById("transactionModal").style.display = "flex"),
+    );
+  document
+    .getElementById("btnCloseTransactionModal")
+    ?.addEventListener(
+      "click",
+      () =>
+        (document.getElementById("transactionModal").style.display = "none"),
+    );
+  document
+    .getElementById("formTransaction")
+    ?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const data = {
+        accountId: document.getElementById("txAccount").value,
+        type: document.getElementById("txType").value,
+        amount: document.getElementById("txAmount").value,
+        category: document.getElementById("txCategory").value,
+        comment: document.getElementById("txComment").value,
+      };
+      try {
+        await API.addFinanceTransaction(data);
+        document.getElementById("transactionModal").style.display = "none";
+        document.getElementById("formTransaction").reset();
+        Utils.showToast("Операция успешно проведена", "success");
+        loadFinance();
+      } catch (err) {
+        Utils.showToast(err.message, "error");
+      }
+    });
+
+  // Резервное копирование
+  document
+    .getElementById("btnDownloadBackup")
+    ?.addEventListener("click", async () => {
+      try {
+        Utils.showToast("Формирование дампа...", "info");
+        const res = await API.downloadBackup();
+        Utils.downloadBlob(
+          res,
+          `ProElectric_DB_${new Date().toISOString().slice(0, 10)}.json`,
+        );
+        Utils.showToast("Резервная копия скачана", "success");
+      } catch (e) {
+        Utils.showToast("Ошибка скачивания бекапа", "error");
+      }
+    });
+
+  // Рассылка
   document
     .getElementById("btnSendBroadcast")
-    .addEventListener("click", async () => {
+    ?.addEventListener("click", async () => {
       const text = document.getElementById("broadcastText").value;
       const target = document.getElementById("broadcastTarget").value;
       const image = document.getElementById("broadcastImage").value;
-
       if (!text) return Utils.showToast("Введите текст рассылки", "error");
-
       try {
         const res = await API.sendBroadcast(text, image, target);
         Utils.showToast(res.message, "success");
         document.getElementById("broadcastText").value = "";
-        document.getElementById("broadcastImage").value = "";
       } catch (err) {
         Utils.showToast(err.message, "error");
       }
@@ -679,7 +973,6 @@ async function loadSettings() {
     pricelist.forEach((section) => {
       const sectionDiv = document.createElement("div");
       sectionDiv.className = "pe-mb-6";
-
       sectionDiv.innerHTML = `<h4 class="pe-h4 pe-mb-4 pe-text-primary" style="border-bottom: 1px solid var(--pe-border); padding-bottom: 8px;">${section.category}</h4>`;
 
       const grid = document.createElement("div");
@@ -687,18 +980,17 @@ async function loadSettings() {
 
       section.items.forEach((item) => {
         grid.innerHTML += `
-                    <div class="pe-form-group">
-                        <label>${item.name} (${item.unit})</label>
-                        <input type="number" class="pe-input setting-input" data-key="${item.key}" value="${item.currentPrice}">
-                    </div>
-                `;
+          <div class="pe-form-group">
+            <label>${item.name} (${item.unit})</label>
+            <input type="number" class="pe-input setting-input" data-key="${item.key}" value="${item.currentPrice}">
+          </div>
+        `;
       });
-
       sectionDiv.appendChild(grid);
       container.appendChild(sectionDiv);
     });
   } catch (e) {
-    Utils.showToast("Ошибка загрузки динамического прайс-листа", "error");
+    Utils.showToast("Ошибка загрузки прайс-листа", "error");
   }
 }
 
@@ -707,19 +999,17 @@ document
   ?.addEventListener("click", async () => {
     const inputs = document.querySelectorAll(".setting-input");
     const payload = [];
-
-    inputs.forEach((input) => {
+    inputs.forEach((input) =>
       payload.push({
         key: input.getAttribute("data-key"),
         value: parseFloat(input.value) || 0,
-      });
-    });
-
+      }),
+    );
     try {
       await API.updateBulkSettings(payload);
       Utils.showToast("Прайс-лист успешно обновлен", "success");
     } catch (e) {
-      Utils.showToast("Ошибка при массовом обновлении цен", "error");
+      Utils.showToast("Ошибка при обновлении цен", "error");
     }
   });
 
@@ -735,26 +1025,27 @@ async function loadUsers() {
 
       const tr = document.createElement("tr");
       tr.innerHTML = `
-                <td>${u.telegram_id}</td>
-                <td>${u.first_name} <br> <small class="pe-text-muted">@${u.username || "нет"}</small></td>
-                <td>${u.phone || "—"}</td>
-                <td>
-                    <select class="pe-input pe-input-sm role-select" data-uid="${u.telegram_id}" ${isAdmin ? "disabled" : ""}>
-                        <option value="user" ${u.role === "user" ? "selected" : ""}>Клиент</option>
-                        <option value="manager" ${isManager ? "selected" : ""}>Мастер</option>
-                        ${isAdmin ? `<option value="${u.role}" selected>${u.role.toUpperCase()}</option>` : ""}
-                    </select>
-                </td>
-            `;
+        <td>${u.telegram_id}</td>
+        <td>${u.first_name} <br> <small class="pe-text-muted">@${u.username || "нет"}</small></td>
+        <td>${u.phone || "—"}</td>
+        <td>
+          <select class="pe-input pe-input-sm role-select" data-uid="${u.telegram_id}" ${isAdmin ? "disabled" : ""}>
+            <option value="user" ${u.role === "user" ? "selected" : ""}>Клиент</option>
+            <option value="manager" ${isManager ? "selected" : ""}>Мастер (Бригадир)</option>
+            ${isAdmin ? `<option value="${u.role}" selected>${u.role.toUpperCase()}</option>` : ""}
+          </select>
+        </td>
+      `;
       tbody.appendChild(tr);
     });
 
     document.querySelectorAll(".role-select").forEach((select) => {
       select.addEventListener("change", async (e) => {
-        const uid = e.target.getAttribute("data-uid");
-        const newRole = e.target.value;
         try {
-          await API.updateUserRole(uid, newRole);
+          await API.updateUserRole(
+            e.target.getAttribute("data-uid"),
+            e.target.value,
+          );
           Utils.showToast("Роль успешно изменена", "success");
         } catch (err) {
           Utils.showToast(err.message, "error");

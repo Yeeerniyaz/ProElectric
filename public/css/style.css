@@ -1,8 +1,9 @@
 /**
  * @file public/css/style.css
- * @description ProElectric ERP Design System (v9.1.2 Enterprise).
+ * @description ProElectric ERP Design System (v10.5.0 Enterprise PWA).
  * @architecture Modern CSS, Custom Properties, Grid/Flexbox, BEM-like (pe-*).
- * Полностью поддерживает динамические формы, BOM Manager и мобильную адаптивность.
+ * Полностью поддерживает Windows (Desktop), iOS/Android (PWA), динамические формы,
+ * BOM Manager, OTP Auth и анимации сокетов реального времени.
  */
 
 /* ==========================================================================
@@ -39,10 +40,14 @@
   --pe-transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   --pe-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
   --pe-shadow-glow: 0 0 40px rgba(59, 130, 246, 0.15);
+
+  /* PWA Safe Areas (Для челок iPhone/Android) */
+  --pe-safe-top: env(safe-area-inset-top, 0px);
+  --pe-safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* ==========================================================================
-   2. RESET & GLOBAL
+   2. RESET & GLOBAL (PWA OPTIMIZED)
    ========================================================================== */
 *,
 *::before,
@@ -50,6 +55,7 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  -webkit-tap-highlight-color: transparent; /* Убираем синее выделение на мобилках */
 }
 
 body.pe-theme-dark {
@@ -64,9 +70,10 @@ body.pe-theme-dark {
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
   overflow: hidden; /* Предотвращаем скролл body, контент скроллится внутри */
+  overscroll-behavior-y: none; /* Запрет pull-to-refresh в PWA */
 }
 
-/* Custom Scrollbar */
+/* Custom Scrollbar (Windows Desktop Style) */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -113,6 +120,8 @@ body.pe-theme-dark {
 .pe-text-danger {
   color: var(--pe-danger);
 }
+
+/* Spacing Helpers */
 .pe-mt-2 {
   margin-top: 0.5rem;
 }
@@ -132,6 +141,19 @@ body.pe-theme-dark {
   margin-bottom: 1.5rem;
 }
 
+/* Responsive Visibility Helpers */
+.pe-mobile-only {
+  display: none !important;
+}
+@media (max-width: 768px) {
+  .pe-mobile-only {
+    display: flex !important;
+  }
+  .pe-desktop-only {
+    display: none !important;
+  }
+}
+
 /* ==========================================================================
    3. COMPONENTS (BUTTONS, INPUTS, BADGES)
    ========================================================================== */
@@ -149,6 +171,7 @@ body.pe-theme-dark {
   transition: var(--pe-transition);
   outline: none;
   font-family: inherit;
+  touch-action: manipulation; /* Быстрый отклик на смартфонах */
 }
 .pe-btn:disabled {
   opacity: 0.5;
@@ -250,7 +273,6 @@ textarea.pe-input {
   min-height: 80px;
 }
 
-/* Утилита для ограничения ширины селектов (Фиксы для шапки таблицы) */
 .pe-select-inline {
   width: auto;
   min-width: 160px;
@@ -272,7 +294,6 @@ textarea.pe-input {
   height: 16px;
   color: var(--pe-text-muted);
 }
-
 .pe-input-group-sm {
   display: flex;
   gap: 0.5rem;
@@ -299,6 +320,7 @@ textarea.pe-input {
   background: rgba(245, 158, 11, 0.15);
   color: var(--pe-warning);
 }
+
 .badge-new,
 .badge-processing {
   background: rgba(59, 130, 246, 0.15);
@@ -330,7 +352,7 @@ textarea.pe-input {
 }
 
 /* ==========================================================================
-   4. LAYOUT: AUTH SCREEN
+   4. LAYOUT: AUTH SCREEN (OTP READY)
    ========================================================================== */
 .pe-auth-screen {
   position: fixed;
@@ -374,6 +396,7 @@ textarea.pe-input {
   width: 100%;
   max-width: 400px;
   box-shadow: var(--pe-shadow);
+  transition: var(--pe-transition);
 }
 .pe-auth-logo {
   text-align: center;
@@ -417,6 +440,8 @@ textarea.pe-input {
   display: flex;
   height: 100vh;
   width: 100vw;
+  padding-top: var(--pe-safe-top); /* PWA Notch Support */
+  padding-bottom: var(--pe-safe-bottom);
 }
 
 .pe-sidebar {
@@ -426,6 +451,7 @@ textarea.pe-input {
   display: flex;
   flex-direction: column;
   z-index: 100;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .pe-sidebar-header {
   height: 64px;
@@ -444,6 +470,7 @@ textarea.pe-input {
   flex: 1;
   padding: 1.5rem 1rem;
   overflow-y: auto;
+  overscroll-behavior-y: contain; /* PWA scroll fix */
 }
 .pe-nav-section {
   font-size: 0.75rem;
@@ -492,6 +519,7 @@ textarea.pe-input {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  overflow: hidden;
 }
 .pe-avatar {
   width: 36px;
@@ -502,14 +530,19 @@ textarea.pe-input {
   align-items: center;
   justify-content: center;
   color: var(--pe-primary);
+  flex-shrink: 0;
 }
 .pe-user-info {
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  white-space: nowrap;
 }
 .pe-user-name {
   font-size: 0.875rem;
   font-weight: 600;
+  text-overflow: ellipsis;
+  overflow: hidden;
 }
 .pe-user-role {
   font-size: 0.7rem;
@@ -521,6 +554,7 @@ textarea.pe-input {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  position: relative;
 }
 
 .pe-topbar {
@@ -536,7 +570,12 @@ textarea.pe-input {
 .pe-page-title {
   font-size: 1.125rem;
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
+
+/* Socket Connection Indicator */
 .pe-system-status {
   display: flex;
   align-items: center;
@@ -548,8 +587,28 @@ textarea.pe-input {
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  background: var(--pe-text-muted);
+  transition: background 0.3s;
+}
+.pe-status-dot.online {
   background: var(--pe-success);
   box-shadow: 0 0 8px var(--pe-success);
+  animation: pulse 2s infinite;
+}
+.pe-status-dot.offline {
+  background: var(--pe-danger);
+  box-shadow: 0 0 8px var(--pe-danger);
+}
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
 }
 
 .pe-content {
@@ -557,10 +616,11 @@ textarea.pe-input {
   padding: 2rem;
   overflow-y: auto;
   position: relative;
+  overscroll-behavior-y: contain;
 }
 
 /* ==========================================================================
-   6. VIEWS & CARDS
+   6. VIEWS, CARDS & KPI
    ========================================================================== */
 .pe-section-header {
   display: flex;
@@ -640,6 +700,10 @@ textarea.pe-input {
   background: rgba(245, 158, 11, 0.1);
   color: var(--pe-warning);
 }
+.pe-kpi-danger .pe-kpi-icon {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--pe-danger);
+}
 .pe-kpi-neutral .pe-kpi-icon {
   background: var(--pe-bg-surface-elevated);
   color: var(--pe-text-muted);
@@ -651,6 +715,7 @@ textarea.pe-input {
 }
 .pe-table-responsive {
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .pe-table {
   width: 100%;
@@ -664,6 +729,7 @@ textarea.pe-input {
   color: var(--pe-text-muted);
   border-bottom: 1px solid var(--pe-border);
   background: var(--pe-bg-surface-elevated);
+  white-space: nowrap;
 }
 .pe-table td {
   padding: 1rem 1.5rem;
@@ -681,7 +747,7 @@ textarea.pe-input {
   text-align: right;
 }
 
-/* Funnel */
+/* Funnel & Analytics */
 .pe-funnel {
   display: flex;
   flex-direction: column;
@@ -698,14 +764,16 @@ textarea.pe-input {
 .funnel-label {
   flex: 1;
   font-weight: 500;
+  font-size: 0.875rem;
 }
 .funnel-value {
   width: 100px;
   text-align: right;
   color: var(--pe-text-muted);
+  font-size: 0.875rem;
 }
 .funnel-sum {
-  width: 150px;
+  width: 120px;
   text-align: right;
   font-weight: 600;
   color: var(--pe-success);
@@ -794,6 +862,7 @@ textarea.pe-input {
   padding: 1.5rem;
   overflow-y: auto;
   flex: 1;
+  -webkit-overflow-scrolling: touch;
 }
 
 .pe-grid-2col {
@@ -835,42 +904,14 @@ textarea.pe-input {
   font-size: 0.875rem;
 }
 
-.pe-code-block {
-  background: #000;
-  padding: 1rem;
-  border-radius: var(--pe-radius-sm);
-  font-family: monospace;
-  font-size: 0.75rem;
-  color: #a1a1aa;
-  overflow-x: auto;
-  white-space: pre-wrap;
-}
-
-/* BOM Container (NEW in v9.1.2) */
+/* BOM Container */
 .pe-bom-container {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
   max-height: 300px;
   overflow-y: auto;
-  padding-right: 0.5rem; /* Отступ для красивого скроллбара */
-}
-
-/* Старый класс оставлен для обратной совместимости старых заказов (Legacy Fallback) */
-.pe-bom-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-.pe-bom-list li {
-  display: flex;
-  justify-content: space-between;
-  padding: 0.5rem 0;
-  border-bottom: 1px dashed var(--pe-border);
-  font-size: 0.875rem;
-}
-.pe-bom-list li:last-child {
-  border-bottom: none;
+  padding-right: 0.5rem;
 }
 
 /* Finance Controller Panel */
@@ -891,7 +932,6 @@ textarea.pe-input {
   gap: 0.5rem;
   color: var(--pe-success);
 }
-
 .pe-fin-row {
   display: flex;
   justify-content: space-between;
@@ -929,19 +969,13 @@ textarea.pe-input {
   margin-bottom: 0.5rem;
   border: 1px solid var(--pe-border);
 }
-.pe-expense-form {
-  background: var(--pe-bg-base);
-  padding: 1rem;
-  border-radius: var(--pe-radius-sm);
-  border: 1px dashed var(--pe-border);
-}
 
 /* ==========================================================================
-   8. TOASTS NOTIFICATIONS (ИСПРАВЛЕН ОБРЫВ)
+   8. TOASTS NOTIFICATIONS
    ========================================================================== */
 .pe-toast-container {
   position: fixed;
-  bottom: 2rem;
+  bottom: calc(2rem + var(--pe-safe-bottom));
   right: 2rem;
   z-index: 9999;
   display: flex;
@@ -949,7 +983,6 @@ textarea.pe-input {
   gap: 0.5rem;
   pointer-events: none;
 }
-
 .toast {
   background: var(--pe-bg-surface-elevated);
   border-left: 4px solid var(--pe-primary);
@@ -966,25 +999,21 @@ textarea.pe-input {
   transform: translateX(120%);
   transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
-
 .toast.show {
   transform: translateX(0);
 }
-
 .toast-success {
   border-left-color: var(--pe-success);
 }
 .toast-success svg {
   color: var(--pe-success);
 }
-
 .toast-error {
   border-left-color: var(--pe-danger);
 }
 .toast-error svg {
   color: var(--pe-danger);
 }
-
 .toast-info {
   border-left-color: var(--pe-primary);
 }
@@ -993,7 +1022,7 @@ textarea.pe-input {
 }
 
 /* ==========================================================================
-   9. RESPONSIVE (MOBILE SUPPORT)
+   9. RESPONSIVE (MOBILE SUPPORT v10.5.0 PWA)
    ========================================================================== */
 @media (max-width: 1024px) {
   .pe-grid-2col {
@@ -1005,27 +1034,58 @@ textarea.pe-input {
 }
 
 @media (max-width: 768px) {
+  .pe-auth-card {
+    padding: 1.5rem;
+    margin: 1rem;
+    border: none;
+  }
+
+  /* PWA Sidebar Drawer Behavior */
   .pe-sidebar {
     position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
     transform: translateX(-100%);
-    transition: var(--pe-transition);
+    box-shadow: none;
+    padding-top: var(--pe-safe-top);
   }
   .pe-sidebar.mobile-active {
     transform: translateX(0);
-    box-shadow: var(--pe-shadow);
+    box-shadow:
+      0 0 0 100vw rgba(0, 0, 0, 0.5),
+      var(--pe-shadow); /* Backdrop emulation */
   }
+
   .pe-topbar {
     padding: 0 1rem;
+    gap: 1rem;
   }
   .pe-content {
     padding: 1rem;
   }
   .pe-grid-kpi {
     grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+  .pe-section-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1rem;
   }
   .pe-header-actions {
     flex-direction: column;
-    align-items: stretch;
-    gap: 0.5rem;
   }
+  .pe-select-inline {
+    width: 100%;
+  }
+
+  .pe-toast-container {
+    right: 1rem;
+    left: 1rem;
+    bottom: calc(1rem + var(--pe-safe-bottom));
+  }
+  .toast {
+    transform: translateY(120%);
+  } /* На мобилках тосты выезжают снизу */
 }
