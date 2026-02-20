@@ -1,13 +1,12 @@
 /**
  * @file src/handlers/AdminHandler.js
- * @description Контроллер панели администратора (Enterprise Telegram Controller v10.1.0).
+ * @description Контроллер панели администратора (Enterprise Telegram Controller v10.5.1).
  * Управляет бизнес-процессами (Смена статусов, Дашборд, Роли, Настройки цен, Бригады).
  * Включает FSM для ввода метаданных заказа и инструменты DevOps (SQL, Backup).
- * Интегрирован с WebSockets для передачи real-time событий в Web CRM.
- * ДОБАВЛЕН БЛОК CASH FLOW: Подтверждение инкассации и списание долгов бригад.
+ * ИСПРАВЛЕНИЕ: Жесткое отсечение роли MANAGER (Бригадиров) от Админ-панели (Zero-Trust).
  *
  * @module AdminHandler
- * @version 10.1.0 (Senior Architect Edition - ERP & WebSockets & Cash Flow)
+ * @version 10.5.1 (Senior Architect Edition - Strict RBAC & Cash Flow)
  */
 
 import { Markup } from "telegraf";
@@ -174,16 +173,17 @@ const AdminKeyboards = {
 
 export const AdminHandler = {
   /**
-   * 1. 🚦 ВХОД В ПАНЕЛЬ И МАРШРУТИЗАЦИЯ
+   * 1. 🚦 ВХОД В ПАНЕЛЬ И МАРШРУТИЗАЦИЯ (STRICT RBAC)
    */
   async showAdminMenu(ctx) {
     try {
       const userId = ctx.from.id;
       const role = await UserService.getUserRole(userId);
 
-      if (![ROLES.OWNER, ROLES.ADMIN, ROLES.MANAGER].includes(role)) {
+      // ИСПРАВЛЕНИЕ: Жестко отсекаем менеджеров (Бригадиров) от Админ-панели
+      if (![ROLES.OWNER, ROLES.ADMIN].includes(role)) {
         return ctx.reply(
-          "⛔ <b>Доступ запрещен.</b> Уровень прав недостаточен.",
+          "⛔ <b>Доступ запрещен.</b> Раздел доступен только Руководству.\n<i>Если вы Бригадир, используйте кнопку «👷 Панель Бригадира» в главном меню.</i>",
           { parse_mode: "HTML" },
         );
       }
@@ -210,7 +210,8 @@ export const AdminHandler = {
     const userId = ctx.from.id;
     const role = await UserService.getUserRole(userId);
 
-    if (![ROLES.OWNER, ROLES.ADMIN, ROLES.MANAGER].includes(role)) return;
+    // ИСПРАВЛЕНИЕ: Менеджеры не могут отправлять текстовые команды админа
+    if (![ROLES.OWNER, ROLES.ADMIN].includes(role)) return;
 
     const state = ctx.session?.adminState || ADMIN_STATES.IDLE;
 
@@ -249,6 +250,7 @@ export const AdminHandler = {
             ["📂 Мои заявки", "💰 Прайс-лист"],
             ["📞 Контакты", "ℹ️ Как мы работаем"],
             ["👑 Админ-панель", "🔑 Доступ в Web CRM"],
+            ["👷 Панель Бригадира"],
           ]).resize(),
         );
     }

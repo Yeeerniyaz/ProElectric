@@ -1,11 +1,13 @@
 /**
  * @file src/app.js
- * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.5.0).
+ * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.6.0).
  * Отвечает за обработку HTTP-запросов, маршрутизацию CRM, глубокую аналитику
  * и интеграцию с сервисами (Бригады, Инкассация, OTP Auth, WebSockets).
+ * ИСПРАВЛЕНИЯ: Безопасный рендеринг аналитики, защита смены своей роли.
+ * НОВОЕ: Авто-рассылка Push-уведомлений Бригадам при появлении новых объектов.
  *
  * @module Application
- * @version 10.5.0 (Enterprise Analytics & Cash Flow Edition)
+ * @version 10.6.0 (Enterprise Analytics, Cash Flow & Lead Market Edition)
  * @author ProElectric Team
  */
 
@@ -20,7 +22,7 @@ import { fileURLToPath } from "url";
 // --- CORE IMPORTS ---
 import { config } from "./config.js";
 import * as db from "./database/index.js";
-import { bot, getSocketIO } from "./bot.js"; // NEW: Интеграция сокетов
+import { bot, getSocketIO } from "./bot.js"; // Интеграция сокетов и бота
 
 // --- SERVICES (Domain Logic) ---
 import { UserService } from "./services/UserService.js";
@@ -135,7 +137,7 @@ app.post("/api/auth/login", (req, res) => {
   return res.status(401).json({ error: "Неверный логин или пароль" });
 });
 
-// --- NEW: WEB OTP AUTHENTICATION (Zero-Trust) ---
+// --- WEB OTP AUTHENTICATION (Zero-Trust) ---
 app.post("/api/auth/otp/request", async (req, res) => {
   try {
     const { phone } = req.body;
@@ -230,7 +232,7 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 // =============================================================================
-// 3. 📊 DEEP ANALYTICS & DASHBOARD (NEW ENGINE)
+// 3. 📊 DEEP ANALYTICS & DASHBOARD (SAFE SQL ENGINE)
 // =============================================================================
 
 app.get("/api/dashboard/stats", requireAdmin, async (req, res) => {
@@ -259,7 +261,7 @@ app.get("/api/dashboard/stats", requireAdmin, async (req, res) => {
 // Глубокая аналитика: Юнит-экономика, средний чек и скорость работы
 app.get("/api/analytics/deep", requireAdmin, async (req, res) => {
   try {
-    // 1. Средний чек (AOV) и Средняя маржа
+    // 1. Средний чек (AOV) и Средняя маржа с безопасным COALESCE
     const avgQuery = await db.query(`
       SELECT 
         COALESCE(AVG(total_price), 0) as avg_check,
@@ -273,9 +275,9 @@ app.get("/api/analytics/deep", requireAdmin, async (req, res) => {
       FROM accounts WHERE type = 'brigade_acc' AND balance < 0
     `);
 
-    // 3. Анализ материалов (Какой % от выручки уходит на расходы)
+    // 3. Анализ расходов (Какой % от выручки уходит на материалы)
     const expensesQuery = await db.query(`
-      SELECT category, SUM(amount) as total
+      SELECT category, COALESCE(SUM(amount), 0) as total
       FROM object_expenses
       GROUP BY category
       ORDER BY total DESC
@@ -283,25 +285,28 @@ app.get("/api/analytics/deep", requireAdmin, async (req, res) => {
 
     res.json({
       economics: {
-        averageCheck: parseFloat(avgQuery.rows[0].avg_check),
-        averageMargin: parseFloat(avgQuery.rows[0].avg_margin),
-        totalBrigadeDebts: Math.abs(parseFloat(debtQuery.rows[0].total_debt)),
+        averageCheck: parseFloat(avgQuery.rows[0].avg_check || 0),
+        averageMargin: parseFloat(avgQuery.rows[0].avg_margin || 0),
+        totalBrigadeDebts: Math.abs(
+          parseFloat(debtQuery.rows[0].total_debt || 0),
+        ),
       },
-      expenseBreakdown: expensesQuery.rows,
+      expenseBreakdown: expensesQuery.rows || [],
     });
   } catch (error) {
+    console.error("[API] Deep Analytics Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // =============================================================================
-// 🏗 4. BRIGADES MANAGEMENT (ERP CORE) - NEW
+// 🏗 4. BRIGADES MANAGEMENT (ERP CORE)
 // =============================================================================
 
 app.get("/api/brigades", requireAdmin, async (req, res) => {
   try {
     const brigades = await db.getBrigades();
-    // Подгружаем балансы бригад (Долги/Заработок)
+    // Безопасная подгрузка балансов (даже если счета нет)
     for (let b of brigades) {
       const acc = await db.query(
         "SELECT balance FROM accounts WHERE user_id = $1 AND type = 'brigade_acc' LIMIT 1",
@@ -356,7 +361,7 @@ app.get("/api/brigades/:id/orders", requireAdmin, async (req, res) => {
 });
 
 // =============================================================================
-// 📦 5. ORDER MANAGEMENT (ADVANCED)
+// 📦 5. ORDER MANAGEMENT (ADVANCED) & LEAD MARKET
 // =============================================================================
 
 app.get("/api/orders", requireManager, async (req, res) => {
@@ -368,7 +373,7 @@ app.get("/api/orders", requireManager, async (req, res) => {
     let query = `
       SELECT o.*, u.first_name as client_name, u.phone as client_phone, b.name as brigade_name
       FROM orders o
-      JOIN users u ON o.user_id = u.telegram_id
+      LEFT JOIN users u ON o.user_id = u.telegram_id
       LEFT JOIN brigades b ON o.brigade_id = b.id
     `;
     const params = [];
@@ -384,6 +389,7 @@ app.get("/api/orders", requireManager, async (req, res) => {
     const result = await db.query(query, params);
     res.json(result.rows);
   } catch (error) {
+    console.error("[API] Orders GET Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -426,6 +432,42 @@ app.post("/api/orders", requireAdmin, async (req, res) => {
     const io = getSocketIO();
     if (io) io.emit("new_order", order);
 
+    // --- 🔥 НОВОЕ: БРОДКАСТ БРИГАДАМ (БИРЖА ЛИДОВ) ---
+    try {
+      const managersRes = await db.query(
+        "SELECT telegram_id FROM users WHERE role = 'manager'",
+      );
+      const fmtPrice = new Intl.NumberFormat("ru-RU").format(order.total_price);
+
+      for (const manager of managersRes.rows) {
+        await bot.telegram
+          .sendMessage(
+            manager.telegram_id,
+            `⚡️ <b>НОВЫЙ ОБЪЕКТ НА БИРЖЕ!</b>\n➖➖➖➖➖➖➖➖➖➖\n` +
+              `💰 <b>Смета:</b> ${fmtPrice} ₸\n` +
+              `📐 <b>Объем:</b> ${area} м² / Комнат: ${rooms}\n` +
+              `📍 <b>Адрес:</b> Уточняется (Оффлайн-заказ)\n➖➖➖➖➖➖➖➖➖➖\n` +
+              `<i>Кто первый заберет, того и объект!</i>`,
+            {
+              parse_mode: "HTML",
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    {
+                      text: "✅ Забрать объект",
+                      callback_data: `take_order_${order.id}`,
+                    },
+                  ],
+                ],
+              },
+            },
+          )
+          .catch(() => {}); // Игнорируем ошибку, если менеджер заблокировал бота
+      }
+    } catch (pushErr) {
+      console.error("[API] Ошибка рассылки на Биржу:", pushErr);
+    }
+
     res.json({ success: true, order });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -461,7 +503,7 @@ app.patch("/api/orders/:id/details", requireAdmin, async (req, res) => {
   }
 });
 
-// NEW: Назначение бригады вручную
+// Назначение бригады вручную
 app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -485,11 +527,11 @@ app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
   }
 });
 
-// NEW: Редактирование спецификации (BOM)
+// Редактирование спецификации (BOM)
 app.patch("/api/orders/:id/bom", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { newBomArray } = req.body; // Ожидаем массив [{name, qty, unit}]
+    const { newBomArray } = req.body;
     const updatedDetails = await OrderService.updateOrderDetails(
       id,
       "bom",
@@ -501,7 +543,7 @@ app.patch("/api/orders/:id/bom", requireAdmin, async (req, res) => {
   }
 });
 
-// NEW: Завершение объекта с расчетом Cash Flow (Триггер из Web CRM)
+// Завершение объекта с расчетом Cash Flow
 app.post("/api/orders/:id/finalize", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
@@ -610,7 +652,7 @@ app.post("/api/finance/transactions", requireAdmin, async (req, res) => {
   }
 });
 
-// NEW: Ручное проведение Инкассации из Админки
+// Ручное проведение Инкассации из Админки
 app.post("/api/finance/incassation/approve", requireAdmin, async (req, res) => {
   try {
     const { brigadierId, amount } = req.body;
@@ -677,7 +719,7 @@ app.post("/api/settings", requireAdmin, async (req, res) => {
   }
 });
 
-// NEW: Скачивание дампа базы (DevOps)
+// Скачивание дампа базы (DevOps)
 app.get("/api/system/backup", requireAdmin, async (req, res) => {
   try {
     const dump = { timestamp: new Date().toISOString(), database: {} };
@@ -724,9 +766,17 @@ app.get("/api/users", requireAdmin, async (req, res) => {
 app.post("/api/users/role", requireAdmin, async (req, res) => {
   try {
     const { userId, role } = req.body;
-    const initiatorId = req.session?.user?.id || 0;
+    const initiatorId = req.session?.user?.id;
+
+    // ИСПРАВЛЕНИЕ: Защита от смены собственной роли через Web CRM
+    if (String(initiatorId) === String(userId)) {
+      return res
+        .status(403)
+        .json({ error: "⛔ Вы не можете изменить свою собственную роль" });
+    }
+
     const updatedUser = await UserService.changeUserRole(
-      initiatorId,
+      initiatorId || 0,
       userId,
       role,
     );

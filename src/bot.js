@@ -1,12 +1,12 @@
 /**
  * @file src/bot.js
- * @description Ядро Telegram-бота (Dispatcher & Router v10.0.0 Enterprise).
+ * @description Ядро Telegram-бота (Dispatcher & Router v10.5.0 Enterprise).
  * Выполняет маршрутизацию всех входящих событий, управляет сессиями (FSM),
  * экспортирует экземпляр бота для Web CRM и управляет инстансом Socket.IO.
- * Внедрен маршрутизатор для процессов Инкассации (Cash Flow) и закрытия объектов.
+ * ИСПРАВЛЕНИЕ: Добавлен триггер для кнопки "Управление Бригадами".
  *
  * @module BotCore
- * @version 10.0.0 (Enterprise ERP Edition)
+ * @version 10.5.0 (Enterprise ERP Edition)
  */
 
 import { Telegraf, session } from "telegraf";
@@ -15,7 +15,7 @@ import { config } from "./config.js";
 // Импорт контроллеров бизнес-логики
 import { UserHandler } from "./handlers/UserHandler.js";
 import { AdminHandler } from "./handlers/AdminHandler.js";
-import { BrigadeHandler } from "./handlers/BrigadeHandler.js"; // Контроллер бригад
+import { BrigadeHandler } from "./handlers/BrigadeHandler.js";
 
 // =============================================================================
 // 1. ИНИЦИАЛИЗАЦИЯ ИНСТАНСА
@@ -77,9 +77,11 @@ bot.hears(USER_TRIGGERS, (ctx) => UserHandler.handleTextMessage(ctx));
 // --- Интерфейс управления (CRM) ---
 bot.hears("👑 Админ-панель", (ctx) => AdminHandler.showAdminMenu(ctx));
 
+// ИСПРАВЛЕНИЕ: Добавлен триггер "🏗 Управление Бригадами"
 const ADMIN_TRIGGERS = [
   "📊 Финансовый Отчет",
   "📦 Реестр объектов",
+  "🏗 Управление Бригадами",
   "⚙️ Настройки цен",
   "👥 Персонал",
   "👨‍💻 SQL Терминал",
@@ -95,7 +97,7 @@ bot.hears("👷 Панель Бригадира", (ctx) => BrigadeHandler.showMe
 const BRIGADE_TRIGGERS = [
   "💼 Биржа заказов", // Просмотр статусов 'new'
   "🛠 Мои объекты", // Управление своими заказами
-  "💸 Сверка и Выручка", // ИСПРАВЛЕНО: Теперь текст строго совпадает с кнопкой в BrigadeHandler
+  "💸 Сверка и Выручка", // Инкассация
   "🔙 В главное меню",
 ];
 bot.hears(BRIGADE_TRIGGERS, (ctx) => BrigadeHandler.handleMessage(ctx));
@@ -139,7 +141,7 @@ bot.action(/prompt_comment_(\d+)/, (ctx) =>
 
 bot.action("admin_refresh_dashboard", (ctx) => AdminHandler.showDashboard(ctx));
 
-// --- Админ: Действия по Инкассации (NEW) ---
+// --- Админ: Действия по Инкассации ---
 bot.action(/app_inc_(\d+)_([\d.]+)/, (ctx) =>
   AdminHandler.approveIncassation(ctx, ctx.match[1], ctx.match[2]),
 );
@@ -154,15 +156,20 @@ bot.action(/take_order_(\d+)/, (ctx) =>
 bot.action(/add_expense_(\d+)/, (ctx) =>
   BrigadeHandler.promptExpense(ctx, ctx.match[1]),
 );
-bot.action(/req_advance_(\d+)/, (ctx) =>
-  BrigadeHandler.promptAdvance(ctx, ctx.match[1]),
-);
-// NEW: Закрытие заказа бригадиром
 bot.action(/finish_order_(\d+)/, (ctx) =>
   BrigadeHandler.finishOrder(ctx, ctx.match[1]),
 );
-// NEW: Старт передачи выручки шефу
 bot.action("start_incassation", (ctx) => BrigadeHandler.promptIncassation(ctx));
+bot.action(/refuse_order_(\d+)/, (ctx) =>
+  BrigadeHandler.refuseOrder(ctx, ctx.match[1]),
+);
+bot.action(/prompt_transfer_(\d+)/, (ctx) =>
+  BrigadeHandler.promptTransfer(ctx, ctx.match[1]),
+);
+bot.action(/exec_transfer_(\d+)_(\d+)/, (ctx) =>
+  BrigadeHandler.executeTransfer(ctx, ctx.match[1], ctx.match[2]),
+);
+bot.action(/cancel_transfer_(\d+)/, (ctx) => BrigadeHandler.showMyObjects(ctx)); // Отмена передачи и возврат
 
 // =============================================================================
 // 7. ГЛОБАЛЬНЫЙ ПЕРЕХВАТЧИК (SMART INTERCEPTOR)

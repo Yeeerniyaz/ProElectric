@@ -1,14 +1,15 @@
 /**
  * @file src/handlers/BrigadeHandler.js
- * @description Контроллер интерфейса Бригадиров (ERP Brigade Module v10.1.0).
+ * @description Контроллер интерфейса Бригадиров (ERP Brigade Module v10.6.0).
  * Отвечает за:
- * 1. Биржу заказов.
- * 2. Управление своими объектами (расходы).
+ * 1. Биржу заказов (взятие свободных лидов из рассылки).
+ * 2. Управление своими объектами (расходы, закрытие).
  * 3. Статистику заработка (без контроля личных счетов).
  * 4. Учет Долга перед компанией и процесс передачи денег (Инкассация).
+ * 5. НОВОЕ: Отказ от объекта и прямая передача другой бригаде (Делегирование).
  *
  * @module BrigadeHandler
- * @version 10.1.0 (Enterprise ERP Edition - Cash Flow)
+ * @version 10.6.0 (Enterprise ERP Edition - Cash Flow & Lead Market)
  */
 
 import { Markup } from "telegraf";
@@ -57,6 +58,10 @@ const Keyboards = {
         ),
       ],
       [
+        Markup.button.callback("❌ Отказаться", `refuse_order_${orderId}`),
+        Markup.button.callback("🤝 Передать", `prompt_transfer_${orderId}`),
+      ],
+      [
         Markup.button.callback(
           "✅ ЗАВЕРШИТЬ ОБЪЕКТ",
           `finish_order_${orderId}`,
@@ -66,7 +71,12 @@ const Keyboards = {
 
   takeOrderAction: (orderId) =>
     Markup.inlineKeyboard([
-      [Markup.button.callback("✅ Взять в работу", `take_order_${orderId}`)],
+      [
+        Markup.button.callback(
+          "✅ Забрать объект себе",
+          `take_order_${orderId}`,
+        ),
+      ],
     ]),
 
   financeActions: () =>
@@ -180,9 +190,11 @@ export const BrigadeHandler = {
 
       for (const o of orders) {
         const addr = o.details?.address ? o.details.address : "Не указан";
+        const area = o.area || o.details?.params?.area || 0;
         const msg =
           `🆕 <b>Объект #${o.id}</b>\n` +
           `📍 Адрес: ${addr}\n` +
+          `📐 Объем: ${area} м²\n` +
           `💰 Сумма по смете: <b>${fmt(o.total_price)} ₸</b>\n` +
           `📅 Создан: ${new Date(o.created_at).toLocaleDateString("ru-RU")}`;
 
@@ -197,7 +209,10 @@ export const BrigadeHandler = {
   async takeOrder(ctx, orderId) {
     try {
       const brigade = await db.getBrigadeByManagerId(ctx.from.id);
-      if (!brigade) return ctx.answerCbQuery("❌ Вы не состоите в бригаде.");
+      if (!brigade)
+        return ctx.answerCbQuery("❌ Вы не состоите в бригаде.", {
+          show_alert: true,
+        });
 
       const order = await OrderService.getOrderById(orderId);
       if (!order || order.status !== "new") {
@@ -208,6 +223,7 @@ export const BrigadeHandler = {
 
       await OrderService.assignOrderToBrigade(orderId, brigade.id);
 
+      // Оповещаем Web CRM
       const io = getSocketIO();
       if (io)
         io.emit("order_updated", {
@@ -217,7 +233,7 @@ export const BrigadeHandler = {
         });
 
       await ctx.editMessageText(
-        `✅ <b>Объект #${orderId} успешно взят в работу!</b>\nВаша бригада: ${brigade.name}\nСтатус изменен на В РАБОТЕ.`,
+        `✅ <b>Объект #${orderId} успешно взят в работу!</b>\nВаша бригада: ${brigade.name}\nСтатус изменен на В РАБОТЕ.\n\nЗаказ перемещен в раздел "🛠 Мои объекты".`,
         { parse_mode: "HTML" },
       );
       await ctx.answerCbQuery("✅ Заказ ваш!");
@@ -252,7 +268,10 @@ export const BrigadeHandler = {
       );
 
       for (const o of activeOrders) {
-        const netProfit = o.details?.financials?.net_profit || o.total_price;
+        const netProfit =
+          o.details?.financials?.net_profit !== undefined
+            ? o.details.financials.net_profit
+            : o.total_price;
         const expenses = o.details?.financials?.total_expenses || 0;
 
         const msg =
@@ -267,6 +286,142 @@ export const BrigadeHandler = {
     } catch (e) {
       console.error(e);
       ctx.reply("❌ Ошибка загрузки ваших объектов.");
+    }
+  },
+
+  /**
+   * 3.5 🔄 ОТКАЗ И ПЕРЕДАЧА ЗАКАЗА (НОВОЕ)
+   */
+
+  // Отказ от заказа (возврат на биржу)
+  async refuseOrder(ctx, orderId) {
+    try {
+      const brigade = await db.getBrigadeByManagerId(ctx.from.id);
+      if (!brigade) return ctx.answerCbQuery("❌ Вы не состоите в бригаде.");
+
+      const order = await OrderService.getOrderById(orderId);
+      if (!order || order.brigade_id !== brigade.id) {
+        return ctx.answerCbQuery("⚠️ Это не ваш заказ или он уже закрыт.", {
+          show_alert: true,
+        });
+      }
+
+      // Возвращаем на биржу: убираем бригаду и ставим статус 'new'
+      await db.query(
+        "UPDATE orders SET brigade_id = NULL, status = 'new', updated_at = NOW() WHERE id = $1",
+        [orderId],
+      );
+
+      // Уведомляем Web CRM
+      const io = getSocketIO();
+      if (io)
+        io.emit("order_updated", { orderId, status: "new", brigade_id: null });
+
+      await ctx.editMessageText(
+        `❌ <b>Вы отказались от объекта #${orderId}</b>.\nОн возвращен на биржу и доступен другим бригадам.`,
+        { parse_mode: "HTML" },
+      );
+      await ctx.answerCbQuery("✅ Заказ возвращен на биржу");
+
+      // Можно опционально уведомить Шефа
+      if (config.bot.ownerId) {
+        await ctx.telegram
+          .sendMessage(
+            config.bot.ownerId,
+            `⚠️ Бригада <b>${brigade.name}</b> отказалась от объекта #${orderId}. Заказ возвращен на биржу.`,
+            { parse_mode: "HTML" },
+          )
+          .catch(() => {});
+      }
+    } catch (e) {
+      console.error("Ошибка отказа от заказа:", e);
+      ctx.answerCbQuery("❌ Системная ошибка.");
+    }
+  },
+
+  // Запрос кому передать заказ
+  async promptTransfer(ctx, orderId) {
+    try {
+      const brigade = await db.getBrigadeByManagerId(ctx.from.id);
+      if (!brigade) return ctx.answerCbQuery("❌ Ошибка бригады.");
+
+      // Загружаем всех активных бригад, кроме текущей
+      const res = await db.query(
+        "SELECT * FROM brigades WHERE is_active = true AND id != $1 ORDER BY name ASC",
+        [brigade.id],
+      );
+      const otherBrigades = res.rows;
+
+      if (otherBrigades.length === 0) {
+        return ctx.answerCbQuery(
+          "⚠️ Нет других активных бригад для передачи.",
+          { show_alert: true },
+        );
+      }
+
+      const buttons = otherBrigades.map((b) => [
+        Markup.button.callback(
+          `➡️ Передать: ${b.name}`,
+          `exec_transfer_${orderId}_${b.id}`,
+        ),
+      ]);
+      buttons.push([
+        Markup.button.callback("🔙 Отмена", `cancel_transfer_${orderId}`),
+      ]);
+
+      await ctx.editMessageText(
+        `🤝 <b>Кому вы хотите передать объект #${orderId}?</b>\nВыберите бригаду из списка ниже:`,
+        { parse_mode: "HTML", reply_markup: { inline_keyboard: buttons } },
+      );
+      await ctx.answerCbQuery();
+    } catch (e) {
+      console.error(e);
+      ctx.answerCbQuery("❌ Ошибка загрузки списка бригад.");
+    }
+  },
+
+  // Выполнение передачи другой бригаде
+  async executeTransfer(ctx, orderId, targetBrigadeId) {
+    try {
+      const myBrigade = await db.getBrigadeByManagerId(ctx.from.id);
+      const targetBrigadeRes = await db.query(
+        "SELECT * FROM brigades WHERE id = $1",
+        [targetBrigadeId],
+      );
+
+      if (targetBrigadeRes.rows.length === 0)
+        return ctx.answerCbQuery("❌ Целевая бригада не найдена.");
+      const targetBrigade = targetBrigadeRes.rows[0];
+
+      // Меняем привязку
+      await db.query(
+        "UPDATE orders SET brigade_id = $1, updated_at = NOW() WHERE id = $2",
+        [targetBrigade.id, orderId],
+      );
+
+      // Уведомляем Web CRM
+      const io = getSocketIO();
+      if (io)
+        io.emit("order_updated", { orderId, brigade_id: targetBrigade.id });
+
+      await ctx.editMessageText(
+        `✅ <b>Объект #${orderId} успешно передан бригаде "${targetBrigade.name}".</b>\nОн пропадет из вашего списка.`,
+        { parse_mode: "HTML" },
+      );
+
+      // Уведомляем новую бригаду о "подарке"
+      await ctx.telegram
+        .sendMessage(
+          targetBrigade.brigadier_id,
+          `🎁 <b>Вам передали объект!</b>\nБригада <b>${myBrigade.name}</b> передала вам в работу объект <b>#${orderId}</b>.\nПроверьте раздел "🛠 Мои объекты".`,
+          { parse_mode: "HTML" },
+        )
+        .catch(() => {});
+
+      await ctx.answerCbQuery("✅ Успешно передано");
+    } catch (e) {
+      console.error("Ошибка передачи:", e);
+      ctx.answerCbQuery("❌ Ошибка при передаче объекта.");
     }
   },
 
@@ -331,11 +486,10 @@ export const BrigadeHandler = {
   },
 
   /**
-   * 5. 📊 СТАТИСТИКА И ДОЛГИ (Вместо Балансов)
+   * 5. 📊 СТАТИСТИКА И ДОЛГИ
    */
   async showFinance(ctx) {
     try {
-      // Ищем системный ID для расчетов
       const resAcc = await db.query(
         "SELECT id FROM accounts WHERE user_id = $1 AND type = 'brigade_acc' LIMIT 1",
         [ctx.from.id],
@@ -350,7 +504,6 @@ export const BrigadeHandler = {
       const accountId = resAcc.rows[0].id;
       const fmt = (n) => new Intl.NumberFormat("ru-RU").format(n);
 
-      // Считаем Заработано (Только личная прибыль бригады) и Долг Шефу из истории
       const txRes = await db.query(
         `
         SELECT 
@@ -364,8 +517,6 @@ export const BrigadeHandler = {
 
       const data = txRes.rows[0];
       const earned = parseFloat(data.total_earned);
-
-      // Долг = (Удержанные деньги клиентов) минус (Переданные Шефу)
       const debt =
         parseFloat(data.total_held) - parseFloat(data.total_returned);
 
@@ -410,14 +561,13 @@ export const BrigadeHandler = {
     ctx.session.brigadeState = BRIGADE_STATES.IDLE;
     const brigadierId = ctx.from.id;
     const brigade = await db.getBrigadeByManagerId(brigadierId);
-    const ownerId = config.bot.ownerId; // Ваш ID из .env
+    const ownerId = config.bot.ownerId;
 
     if (!ownerId) {
       return ctx.reply("⚠️ Системная ошибка: ID Владельца не настроен.");
     }
 
     try {
-      // Вычисляем текущий долг для красивого уведомления Шефу
       const resAcc = await db.query(
         "SELECT id FROM accounts WHERE user_id = $1 AND type = 'brigade_acc' LIMIT 1",
         [brigadierId],
@@ -438,7 +588,6 @@ export const BrigadeHandler = {
       }
       const remainingDebt = currentDebt - amount;
 
-      // Отправляем МАКСИМАЛЬНО подробное уведомление Владельцу
       await ctx.telegram.sendMessage(
         ownerId,
         `💰 <b>ИНКАССАЦИЯ (Передача денег)</b>\n➖➖➖➖➖➖➖➖➖➖\n` +
@@ -479,7 +628,6 @@ export const BrigadeHandler = {
     try {
       await ctx.answerCbQuery("⏳ Закрытие объекта и расчет долей...");
 
-      // СЛОЖНАЯ ТРАНЗАКЦИЯ: Распределяет прибыль и вешает долг на бригаду
       const result = await db.finalizeOrderAndDistributeProfit(orderId);
 
       const io = getSocketIO();
@@ -495,7 +643,6 @@ export const BrigadeHandler = {
         { parse_mode: "HTML" },
       );
 
-      // Уведомление Шефу (Вам)
       const ownerId = config.bot.ownerId;
       if (ownerId) {
         ctx.telegram
