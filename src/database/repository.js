@@ -1,16 +1,16 @@
 /**
  * @file src/database/repository.js
- * @description Слой репозитория (Data Access Layer v10.7.0).
+ * @description Слой репозитория (Data Access Layer v10.8.0).
  * Содержит коллекцию готовых методов для работы с БД.
  * Внедрен глобальный финансовый модуль, система управления Бригадами (ERP),
  * распределение прибыли и Web OTP авторизация.
- * ИСПРАВЛЕНО: Глобальная касса изолирована от счетов бригад. Добавлен поиск Owner ID.
- * ДОБАВЛЕНО: Продвинутая аналитика (Timeline, Brigade Leaderboards, Deep Analytics).
+ * ИСПРАВЛЕНО: Динамическая аналитика для Бригадиров (фильтрация по brigade_id).
+ * ДОБАВЛЕНО: Таймлайн заказов (Order Analytics Timeline).
  *
  * Архитектура: Repository Pattern. Строгие транзакции (ACID) для финансов.
  *
  * @module Repository
- * @version 10.7.0 (Enterprise ERP Edition - Advanced Analytics)
+ * @version 10.8.0 (Enterprise ERP Edition - Dynamic Brigade Analytics)
  */
 
 import { query, getClient } from "./connection.js";
@@ -78,7 +78,6 @@ export const findUserById = async (telegramId) => {
   return res.rows[0];
 };
 
-// НОВОЕ: Поиск Владельца системы (для отправки уведомлений об инкассации)
 export const getSystemOwnerId = async () => {
   const sql = "SELECT telegram_id FROM users WHERE role = 'owner' LIMIT 1";
   const res = await query(sql);
@@ -127,7 +126,7 @@ export const getAllUsers = async (limit = 50, offset = 0) => {
   return res.rows;
 };
 
-// --- NEW: WEB OTP AUTHENTICATION ---
+// --- WEB OTP AUTHENTICATION ---
 
 export const setWebPassword = async (
   telegramId,
@@ -145,7 +144,6 @@ export const setWebPassword = async (
 };
 
 export const getWebAuthUser = async (phone) => {
-  // Ищем пользователя по номеру телефона (с плюсом или без)
   const cleanPhone = phone.replace(/\D/g, "");
   const sql = `
     SELECT * FROM users 
@@ -172,11 +170,9 @@ export const createOrder = async (userId, data) => {
     VALUES ($1, $2, $3, $4, $5, 'new', NOW(), NOW())
     RETURNING *
   `;
-
   const area =
     data.area ||
     (data.details && data.details.params ? data.details.params.area : 0);
-
   const res = await query(sql, [
     data.id,
     userId,
@@ -184,7 +180,6 @@ export const createOrder = async (userId, data) => {
     area,
     data.details || {},
   ]);
-
   return res.rows[0];
 };
 
@@ -202,59 +197,31 @@ export const updateOrderStatus = async (orderId, status) => {
 };
 
 export const updateOrderDetails = async (orderId, details, totalPrice) => {
-  const sql = `
-    UPDATE orders 
-    SET details = $1, total_price = $2, updated_at = NOW() 
-    WHERE id = $3 
-    RETURNING *
-  `;
+  const sql = `UPDATE orders SET details = $1, total_price = $2, updated_at = NOW() WHERE id = $3 RETURNING *`;
   const res = await query(sql, [details, totalPrice, orderId]);
   return res.rows[0];
 };
 
 export const getUserOrders = async (userId, limit = 20) => {
-  const sql = `
-    SELECT * FROM orders 
-    WHERE user_id = $1 
-    ORDER BY created_at DESC 
-    LIMIT $2
-  `;
+  const sql = `SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`;
   const res = await query(sql, [userId, limit]);
   return res.rows;
 };
 
-// --- NEW: ORDERS FOR BRIGADES ---
-
 export const getAvailableNewOrders = async () => {
-  // Биржа лидов: видим только новые заказы
-  const sql = `
-    SELECT * FROM orders 
-    WHERE status = 'new' 
-    ORDER BY created_at ASC
-  `;
+  const sql = `SELECT * FROM orders WHERE status = 'new' ORDER BY created_at ASC`;
   const res = await query(sql);
   return res.rows;
 };
 
 export const getBrigadeOrders = async (brigadeId) => {
-  // Заказы конкретной бригады
-  const sql = `
-    SELECT * FROM orders 
-    WHERE brigade_id = $1 
-    ORDER BY created_at DESC
-  `;
+  const sql = `SELECT * FROM orders WHERE brigade_id = $1 ORDER BY created_at DESC`;
   const res = await query(sql, [brigadeId]);
   return res.rows;
 };
 
 export const assignOrderToBrigade = async (orderId, brigadeId) => {
-  // Взять в работу
-  const sql = `
-    UPDATE orders 
-    SET brigade_id = $1, status = 'work', updated_at = NOW() 
-    WHERE id = $2 AND status = 'new'
-    RETURNING *
-  `;
+  const sql = `UPDATE orders SET brigade_id = $1, status = 'work', updated_at = NOW() WHERE id = $2 AND status = 'new' RETURNING *`;
   const res = await query(sql, [brigadeId, orderId]);
   return res.rows[0];
 };
@@ -267,20 +234,14 @@ export const getOrderExpenses = async (orderId) => {
 };
 
 // =============================================================================
-// 🛠 BRIGADES REPOSITORY (ERP CORE) - NEW
+// 🛠 BRIGADES REPOSITORY (ERP CORE)
 // =============================================================================
 
 export const createBrigade = async (name, brigadierId, profitPercentage) => {
   const client = await getClient();
   try {
     await client.query("BEGIN");
-
-    // 1. Создаем бригаду
-    const sqlBrigade = `
-      INSERT INTO brigades (name, brigadier_id, profit_percentage, created_at, updated_at)
-      VALUES ($1, $2, $3, NOW(), NOW())
-      RETURNING *
-    `;
+    const sqlBrigade = `INSERT INTO brigades (name, brigadier_id, profit_percentage, created_at, updated_at) VALUES ($1, $2, $3, NOW(), NOW()) RETURNING *`;
     const resBrigade = await client.query(sqlBrigade, [
       name,
       brigadierId,
@@ -288,20 +249,13 @@ export const createBrigade = async (name, brigadierId, profitPercentage) => {
     ]);
     const brigade = resBrigade.rows[0];
 
-    // 2. Сразу создаем суб-счет для бригады в таблице accounts
-    const sqlAccount = `
-      INSERT INTO accounts (user_id, name, type, balance, created_at, updated_at)
-      VALUES ($1, $2, 'brigade_acc', 0, NOW(), NOW())
-    `;
-    const accountName = `Счет бригады: ${name}`;
-    await client.query(sqlAccount, [brigadierId, accountName]);
+    const sqlAccount = `INSERT INTO accounts (user_id, name, type, balance, created_at, updated_at) VALUES ($1, $2, 'brigade_acc', 0, NOW(), NOW())`;
+    await client.query(sqlAccount, [brigadierId, `Счет бригады: ${name}`]);
 
-    // 3. Обновляем роль пользователя на manager, если он был user
     await client.query(
       "UPDATE users SET role = 'manager' WHERE telegram_id = $1 AND role = 'user'",
       [brigadierId],
     );
-
     await client.query("COMMIT");
     return brigade;
   } catch (error) {
@@ -325,28 +279,19 @@ export const getBrigadeByManagerId = async (telegramId) => {
 };
 
 export const updateBrigade = async (brigadeId, profitPercentage, isActive) => {
-  const sql = `
-    UPDATE brigades 
-    SET profit_percentage = COALESCE($1, profit_percentage), 
-        is_active = COALESCE($2, is_active), 
-        updated_at = NOW()
-    WHERE id = $3
-    RETURNING *
-  `;
+  const sql = `UPDATE brigades SET profit_percentage = COALESCE($1, profit_percentage), is_active = COALESCE($2, is_active), updated_at = NOW() WHERE id = $3 RETURNING *`;
   const res = await query(sql, [profitPercentage, isActive, brigadeId]);
   return res.rows[0];
 };
 
 // =============================================================================
-// 💸 CORPORATE FINANCE REPOSITORY (GLOBAL CASHBOX v10.0)
+// 💸 CORPORATE FINANCE REPOSITORY (GLOBAL CASHBOX)
 // =============================================================================
 
 export const getAccounts = async () => {
-  // ИСПРАВЛЕНИЕ: Исключаем счета бригад из глобальной кассы фирмы
   let res = await query(
     "SELECT * FROM accounts WHERE type != 'brigade_acc' ORDER BY id ASC",
   );
-
   if (res.rows.length === 0) {
     await query(
       `INSERT INTO accounts (name, type, balance, created_at, updated_at) VALUES ('Главная Касса (Наличные)', 'cash', 0, NOW(), NOW())`,
@@ -358,7 +303,6 @@ export const getAccounts = async () => {
       "SELECT * FROM accounts WHERE type != 'brigade_acc' ORDER BY id ASC",
     );
   }
-
   return res.rows;
 };
 
@@ -369,8 +313,7 @@ export const getCompanyTransactions = async (limit = 100) => {
     LEFT JOIN accounts a ON t.account_id = a.id
     LEFT JOIN users u ON t.user_id = u.telegram_id
     WHERE a.type != 'brigade_acc'
-    ORDER BY t.created_at DESC
-    LIMIT $1
+    ORDER BY t.created_at DESC LIMIT $1
   `;
   const res = await query(sql, [limit]);
   return res.rows;
@@ -387,12 +330,7 @@ export const addCompanyTransaction = async ({
   const client = await getClient();
   try {
     await client.query("BEGIN");
-
-    const sqlTx = `
-      INSERT INTO transactions (account_id, user_id, amount, type, category, comment, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, NOW())
-      RETURNING *
-    `;
+    const sqlTx = `INSERT INTO transactions (account_id, user_id, amount, type, category, comment, created_at) VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING *`;
     const resTx = await client.query(sqlTx, [
       accountId,
       userId,
@@ -401,19 +339,14 @@ export const addCompanyTransaction = async ({
       category,
       comment,
     ]);
-    const transaction = resTx.rows[0];
 
     const operator = type === "income" ? "+" : "-";
-    const sqlAcc = `
-      UPDATE accounts 
-      SET balance = balance ${operator} $1, updated_at = NOW() 
-      WHERE id = $2 
-      RETURNING balance
-    `;
-    await client.query(sqlAcc, [amount, accountId]);
-
+    await client.query(
+      `UPDATE accounts SET balance = balance ${operator} $1, updated_at = NOW() WHERE id = $2`,
+      [amount, accountId],
+    );
     await client.query("COMMIT");
-    return transaction;
+    return resTx.rows[0];
   } catch (error) {
     await client.query("ROLLBACK");
     throw new Error(`Ошибка проведения транзакции: ${error.message}`);
@@ -423,33 +356,17 @@ export const addCompanyTransaction = async ({
 };
 
 export const addOrderExpense = async (orderId, amount, category, comment) => {
-  const sql = `
-    INSERT INTO object_expenses (order_id, amount, category, comment, created_at)
-    VALUES ($1, $2, $3, $4, NOW())
-    RETURNING *
-  `;
+  const sql = `INSERT INTO object_expenses (order_id, amount, category, comment, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING *`;
   const res = await query(sql, [orderId, amount, category, comment]);
   return res.rows[0];
 };
 
-// --- CASH FLOW MODULE: ФИНАЛИЗАЦИЯ И ИНКАССАЦИЯ (NEW ERP LOGIC) ---
-
-/**
- * Закрытие заказа с логикой CASH FLOW (Наличные остаются у бригады).
- * Записывает долю в "плюс" и полную прибыль наличными в "минус" (Долг компании).
- */
 export const finalizeOrderAndDistributeProfit = async (orderId) => {
   const client = await getClient();
   try {
     await client.query("BEGIN");
 
-    // 1. Получаем инфу по заказу и бригаде
-    const sqlOrder = `
-      SELECT o.total_price, o.brigade_id, b.profit_percentage, b.brigadier_id, b.name as brigade_name
-      FROM orders o
-      JOIN brigades b ON o.brigade_id = b.id
-      WHERE o.id = $1 AND o.status = 'work'
-    `;
+    const sqlOrder = `SELECT o.total_price, o.brigade_id, b.profit_percentage, b.brigadier_id, b.name as brigade_name FROM orders o JOIN brigades b ON o.brigade_id = b.id WHERE o.id = $1 AND o.status = 'work'`;
     const resOrder = await client.query(sqlOrder, [orderId]);
     if (resOrder.rows.length === 0)
       throw new Error(
@@ -457,44 +374,34 @@ export const finalizeOrderAndDistributeProfit = async (orderId) => {
       );
     const order = resOrder.rows[0];
 
-    // 2. Считаем чистую прибыль
-    const sqlExp =
-      "SELECT COALESCE(SUM(amount), 0) as total_expenses FROM object_expenses WHERE order_id = $1";
-    const resExp = await client.query(sqlExp, [orderId]);
+    const resExp = await client.query(
+      "SELECT COALESCE(SUM(amount), 0) as total_expenses FROM object_expenses WHERE order_id = $1",
+      [orderId],
+    );
     const totalExpenses = parseFloat(resExp.rows[0].total_expenses);
+    const netProfit = parseFloat(order.total_price) - totalExpenses;
 
-    const totalPrice = parseFloat(order.total_price);
-    const netProfit = totalPrice - totalExpenses; // Вся маржа (Наличка на руках)
-
-    if (netProfit <= 0) {
+    if (netProfit <= 0)
       throw new Error(
         "Чистая прибыль отрицательная. Авто-распределение невозможно.",
       );
-    }
 
-    // 3. Высчитываем заработанную долю бригады
-    const brigadePercentage = parseFloat(order.profit_percentage) / 100;
-    const brigadeShare = netProfit * brigadePercentage;
+    const brigadeShare =
+      netProfit * (parseFloat(order.profit_percentage) / 100);
     const ownerShare = netProfit - brigadeShare;
 
-    // 4. Ищем счет бригады
-    const sqlBrigadeAcc =
-      "SELECT id FROM accounts WHERE user_id = $1 AND type = 'brigade_acc' LIMIT 1";
-    const resBrigadeAcc = await client.query(sqlBrigadeAcc, [
-      order.brigadier_id,
-    ]);
+    const resBrigadeAcc = await client.query(
+      "SELECT id FROM accounts WHERE user_id = $1 AND type = 'brigade_acc' LIMIT 1",
+      [order.brigadier_id],
+    );
     const brigadeAccountId = resBrigadeAcc.rows[0]?.id;
-
     if (!brigadeAccountId) throw new Error("Не найден системный счет бригады.");
 
-    // 5. Двойная запись (Double-Entry Bookkeeping) для баланса бригады:
-    // Баланс = +Доля_Бригады (Заработано) -Чистая_Прибыль (Получено на руки) = -Доля_Шефа (Долг компании)
     await client.query(
       "UPDATE accounts SET balance = balance + $1 - $2, updated_at = NOW() WHERE id = $3",
       [brigadeShare, netProfit, brigadeAccountId],
     );
 
-    // Транзакция 1: Начисление заработка
     await client.query(
       "INSERT INTO transactions (account_id, user_id, amount, type, category, comment, order_id, created_at) VALUES ($1, $2, $3, 'income', 'Заработок', $4, $5, NOW())",
       [
@@ -505,8 +412,6 @@ export const finalizeOrderAndDistributeProfit = async (orderId) => {
         orderId,
       ],
     );
-
-    // Транзакция 2: Фиксация наличности на руках (Долг перед Шефом)
     await client.query(
       "INSERT INTO transactions (account_id, user_id, amount, type, category, comment, order_id, created_at) VALUES ($1, $2, $3, 'expense', 'Удержание', $4, $5, NOW())",
       [
@@ -518,15 +423,10 @@ export const finalizeOrderAndDistributeProfit = async (orderId) => {
       ],
     );
 
-    // ВЛАДЕЛЬЦУ ДЕНЬГИ ПОКА НЕ НАЧИСЛЯЕМ (Они физически у бригады).
-    // Зачислим только после Инкассации.
-
-    // 6. Закрываем заказ
     await client.query(
       "UPDATE orders SET status = 'done', updated_at = NOW() WHERE id = $1",
       [orderId],
     );
-
     await client.query("COMMIT");
     return { netProfit, brigadeShare, ownerShare };
   } catch (error) {
@@ -537,10 +437,6 @@ export const finalizeOrderAndDistributeProfit = async (orderId) => {
   }
 };
 
-/**
- * Проведение ИНКАССАЦИИ (Сверка и передача наличных Шефу).
- * Списывает долг с бригады и зачисляет деньги в Главную кассу владельца.
- */
 export const processIncassation = async (
   brigadierId,
   amount,
@@ -549,8 +445,6 @@ export const processIncassation = async (
   const client = await getClient();
   try {
     await client.query("BEGIN");
-
-    // Ищем счет бригады
     const resBrigadeAcc = await client.query(
       "SELECT id FROM accounts WHERE user_id = $1 AND type = 'brigade_acc' LIMIT 1",
       [brigadierId],
@@ -560,7 +454,6 @@ export const processIncassation = async (
     if (!brigadeAccountId || !ownerAccountId)
       throw new Error("Счет бригады или счет Владельца не найден.");
 
-    // 1. Погашение долга Бригады (плюсуем баланс, так как они отдали наличку)
     await client.query(
       "UPDATE accounts SET balance = balance + $1, updated_at = NOW() WHERE id = $2",
       [amount, brigadeAccountId],
@@ -570,7 +463,6 @@ export const processIncassation = async (
       [brigadeAccountId, brigadierId, amount],
     );
 
-    // 2. Реальное зачисление денег Владельцу
     await client.query(
       "UPDATE accounts SET balance = balance + $1, updated_at = NOW() WHERE id = $2",
       [amount, ownerAccountId],
@@ -591,22 +483,33 @@ export const processIncassation = async (
 };
 
 // =============================================================================
-// 📊 ANALYTICS, TIMELINE & DASHBOARD (ADVANCED MODULE)
+// 📊 ADVANCED ANALYTICS (DYNAMIC BRIGADE FILTERING)
 // =============================================================================
 
-export const getGlobalStats = async () => {
-  const sqlUsers = "SELECT COUNT(*) as count FROM users";
-  const sqlRevenue =
-    "SELECT SUM(total_price) as sum FROM orders WHERE status = 'done'";
-  const sqlActive =
-    "SELECT COUNT(*) as count FROM users WHERE updated_at > NOW() - INTERVAL '24 hours'";
+export const getGlobalStats = async (brigadeId = null) => {
+  if (brigadeId) {
+    const sqlRevenue =
+      "SELECT SUM(total_price) as sum FROM orders WHERE status = 'done' AND brigade_id = $1";
+    const sqlActive =
+      "SELECT COUNT(*) as count FROM orders WHERE status = 'work' AND brigade_id = $1";
+    const [resRevenue, resActive] = await Promise.all([
+      query(sqlRevenue, [brigadeId]),
+      query(sqlActive, [brigadeId]),
+    ]);
+    return {
+      totalUsers: 0,
+      totalRevenue: parseFloat(resRevenue.rows[0]?.sum || 0),
+      active24h: parseInt(resActive.rows[0]?.count || 0),
+    };
+  }
 
   const [resUsers, resRevenue, resActive] = await Promise.all([
-    query(sqlUsers),
-    query(sqlRevenue),
-    query(sqlActive),
+    query("SELECT COUNT(*) as count FROM users"),
+    query("SELECT SUM(total_price) as sum FROM orders WHERE status = 'done'"),
+    query(
+      "SELECT COUNT(*) as count FROM users WHERE updated_at > NOW() - INTERVAL '24 hours'",
+    ),
   ]);
-
   return {
     totalUsers: parseInt(resUsers.rows[0].count),
     totalRevenue: parseFloat(resRevenue.rows[0].sum || 0),
@@ -614,36 +517,52 @@ export const getGlobalStats = async () => {
   };
 };
 
-export const getOrdersFunnel = async () => {
-  const sql = `
-    SELECT status, COUNT(*) as count, SUM(total_price) as sum
-    FROM orders
-    GROUP BY status
-  `;
-  const res = await query(sql);
+export const getOrdersFunnel = async (brigadeId = null) => {
+  let sql = `SELECT status, COUNT(*) as count, SUM(total_price) as sum FROM orders`;
+  const params = [];
+  if (brigadeId) {
+    sql += ` WHERE brigade_id = $1`;
+    params.push(brigadeId);
+  }
+  sql += ` GROUP BY status`;
+  const res = await query(sql, params);
   return res.rows;
 };
 
-// НОВОЕ: Глубокая аналитика (Средний чек, Дебиторка, Расходы)
-export const getDeepAnalyticsData = async () => {
-  const avgQuery = await query(`
-    SELECT 
-      COALESCE(AVG(total_price), 0) as avg_check,
-      COALESCE(AVG(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)), 0) as avg_margin
-    FROM orders WHERE status = 'done'
-  `);
+export const getDeepAnalyticsData = async (brigadeId = null) => {
+  let avgSql = `SELECT COALESCE(AVG(total_price), 0) as avg_check, COALESCE(AVG(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)), 0) as avg_margin FROM orders WHERE status = 'done'`;
+  let expensesSql = `SELECT category, COALESCE(SUM(amount), 0) as total FROM object_expenses GROUP BY category ORDER BY total DESC`;
+  const params = [];
 
-  const debtQuery = await query(`
-    SELECT COALESCE(SUM(balance), 0) as total_debt 
-    FROM accounts WHERE type = 'brigade_acc' AND balance < 0
-  `);
+  if (brigadeId) {
+    avgSql += ` AND brigade_id = $1`;
+    expensesSql = `
+      SELECT e.category, COALESCE(SUM(e.amount), 0) as total
+      FROM object_expenses e JOIN orders o ON e.order_id = o.id
+      WHERE o.brigade_id = $1 GROUP BY e.category ORDER BY total DESC
+    `;
+    params.push(brigadeId);
+  }
 
-  const expensesQuery = await query(`
-    SELECT category, COALESCE(SUM(amount), 0) as total
-    FROM object_expenses
-    GROUP BY category
-    ORDER BY total DESC
-  `);
+  const avgQuery = await query(avgSql, params);
+  const expensesQuery = await query(expensesSql, params);
+
+  let debtQuery;
+  if (brigadeId) {
+    const bRes = await query(
+      "SELECT brigadier_id FROM brigades WHERE id = $1",
+      [brigadeId],
+    );
+    const brigadierId = bRes.rows[0]?.brigadier_id || 0;
+    debtQuery = await query(
+      `SELECT COALESCE(SUM(balance), 0) as total_debt FROM accounts WHERE type = 'brigade_acc' AND user_id = $1 AND balance < 0`,
+      [brigadierId],
+    );
+  } else {
+    debtQuery = await query(
+      `SELECT COALESCE(SUM(balance), 0) as total_debt FROM accounts WHERE type = 'brigade_acc' AND balance < 0`,
+    );
+  }
 
   return {
     economics: {
@@ -657,30 +576,52 @@ export const getDeepAnalyticsData = async () => {
   };
 };
 
-// НОВОЕ: Таймлайн (Доходы фирмы по месяцам)
-export const getTimelineAnalytics = async () => {
-  const sql = `
+export const getTimelineAnalytics = async (brigadeId = null) => {
+  let sql = `
     SELECT 
       TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM') as month,
       COALESCE(SUM(total_price), 0) as gross_revenue,
       COALESCE(SUM(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)), 0) as net_profit,
       COUNT(id) as closed_orders
-    FROM orders 
-    WHERE status = 'done'
-    GROUP BY DATE_TRUNC('month', created_at)
-    ORDER BY month DESC
-    LIMIT 12;
+    FROM orders WHERE status = 'done'
   `;
-  const res = await query(sql);
+  const params = [];
+  if (brigadeId) {
+    sql += ` AND brigade_id = $1`;
+    params.push(brigadeId);
+  }
+  sql += ` GROUP BY DATE_TRUNC('month', created_at) ORDER BY month DESC LIMIT 12;`;
+
+  const res = await query(sql, params);
   return res.rows;
 };
 
-// НОВОЕ: Эффективность и доходы в разрезе каждой бригады
+// НОВОЕ: Таймлайн создания и закрытия заказов (Объектная аналитика)
+export const getOrdersTimelineAnalytics = async (brigadeId = null) => {
+  let sql = `
+    SELECT 
+      TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM') as month,
+      COUNT(id) FILTER (WHERE status = 'new') as new_orders,
+      COUNT(id) FILTER (WHERE status = 'work' OR status = 'processing') as work_orders,
+      COUNT(id) FILTER (WHERE status = 'done') as done_orders,
+      COUNT(id) FILTER (WHERE status = 'cancel') as cancel_orders
+    FROM orders 
+  `;
+  const params = [];
+  if (brigadeId) {
+    sql += ` WHERE brigade_id = $1`;
+    params.push(brigadeId);
+  }
+  sql += ` GROUP BY DATE_TRUNC('month', created_at) ORDER BY month DESC LIMIT 12;`;
+
+  const res = await query(sql, params);
+  return res.rows;
+};
+
 export const getBrigadesAnalytics = async () => {
   const sql = `
     SELECT 
-      b.id, 
-      b.name,
+      b.id, b.name,
       COUNT(o.id) as closed_orders_count,
       COALESCE(SUM(o.total_price), 0) as total_revenue_brought,
       COALESCE(SUM(COALESCE((o.details->'financials'->>'net_profit')::numeric, o.total_price)), 0) as total_net_profit_brought,

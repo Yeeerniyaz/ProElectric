@@ -1,12 +1,12 @@
 /**
  * @file public/js/api.js
- * @description Frontend API Client (ERP Middleware v10.7.0).
+ * @description Frontend API Client (ERP Middleware v10.8.0).
  * Обеспечивает строгую типизацию запросов к REST API сервера ProElectric.
  * Включает методы OTP-авторизации, глубокой аналитики, управления бригадами и инкассации.
- * ДОБАВЛЕНО: Эндпоинты для Timeline (График доходов) и Рейтинга бригад.
+ * ДОБАВЛЕНО: Эндпоинт для Таймлайна Заказов (Orders Timeline).
  *
  * @module API
- * @version 10.7.0 (Enterprise ERP & Advanced Analytics Edition)
+ * @version 10.8.0 (Enterprise ERP & Advanced Analytics Edition)
  */
 
 const API_BASE = "/api";
@@ -90,10 +90,13 @@ export const API = {
   // Глубокая аналитика (юнит-экономика)
   getDeepAnalytics: () => fetchWrapper("/analytics/deep"),
 
-  // НОВОЕ: Таймлайн (Доходы фирмы по месяцам)
+  // Таймлайн (Доходы фирмы по месяцам)
   getTimeline: () => fetchWrapper("/analytics/timeline"),
 
-  // НОВОЕ: Рейтинг бригад (Leaderboard: кто сколько заработал и должен)
+  // НОВОЕ: Таймлайн (Количество заказов по статусам)
+  getOrdersTimeline: () => fetchWrapper("/analytics/orders-timeline"),
+
+  // Рейтинг бригад (Leaderboard: кто сколько заработал и должен)
   getBrigadesAnalytics: () => fetchWrapper("/analytics/brigades"),
 
   // ==========================================

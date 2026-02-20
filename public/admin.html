@@ -6,7 +6,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
     />
-    <title>ProElectric ERP | v10.7 Enterprise</title>
+    <title>ProElectric ERP | v10.8 Enterprise</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -29,7 +29,7 @@
           <h2>
             ProElectric <span class="pe-badge pe-badge-primary">ERP</span>
           </h2>
-          <p class="pe-text-muted">Enterprise Management System v10.7</p>
+          <p class="pe-text-muted">Enterprise Management System v10.8</p>
         </div>
 
         <form id="phoneForm" class="pe-form">
@@ -282,6 +282,18 @@
               </div>
             </div>
 
+            <div class="pe-card pe-mb-6" id="ordersTimelineBlock">
+              <div class="pe-card-header">
+                <h3 class="pe-h3">Динамика заказов (Orders Flow)</h3>
+              </div>
+              <div
+                class="pe-card-body"
+                style="position: relative; height: 300px"
+              >
+                <canvas id="ordersTimelineChart"></canvas>
+              </div>
+            </div>
+
             <div class="pe-grid-2col-sm pe-mb-6">
               <div class="pe-card">
                 <div class="pe-card-header">
@@ -291,7 +303,7 @@
                   <div class="pe-funnel" id="funnelChart"></div>
                 </div>
               </div>
-              <div class="pe-card admin-only-block" id="expensesBlock">
+              <div class="pe-card" id="expensesBlock">
                 <div class="pe-card-header">
                   <h3 class="pe-h3">Анализ расходов (Cost Breakdown)</h3>
                 </div>

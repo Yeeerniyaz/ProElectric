@@ -1,15 +1,18 @@
 /**
  * @file src/app.js
- * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.7.0).
- * ИСПРАВЛЕНО: Защита ролей, изоляция заказов, Push-уведомления.
- * НОВОЕ: Расширенная финансовая аналитика (Timeline по месяцам и Рейтинг Бригад).
+ * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.9.0).
+ * ИСПРАВЛЕНО: Доступ менеджеров к аналитике (снят барьер 401).
+ * ДОБАВЛЕНО: Умная фильтрация дашборда по brigadeId (Бригадир видит только свои цифры).
+ * ДОБАВЛЕНО: Таймлайн Заказов (Orders Timeline).
+ * 🔥 НОВОЕ (Mobile Ready): Сессии теперь хранятся в PostgreSQL (connect-pg-simple) на 30 дней.
  *
  * @module Application
- * @version 10.7.0 (Enterprise Analytics, Cash Flow, Timeline & Lead Market Edition)
+ * @version 10.9.0 (Enterprise Analytics, Mobile APK Ready & Persistent Sessions)
  */
 
 import express from "express";
 import session from "express-session";
+import pgSession from "connect-pg-simple"; // <-- Новый импорт для вечных сессий
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
@@ -19,6 +22,7 @@ import { fileURLToPath } from "url";
 // --- CORE IMPORTS ---
 import { config } from "./config.js";
 import * as db from "./database/index.js";
+import { pool } from "./database/connection.js"; // Пул подключений для сессий
 import { bot, getSocketIO } from "./bot.js";
 
 // --- SERVICES ---
@@ -49,7 +53,7 @@ app.use(
 
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 1000,
+  max: 1500,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "⛔ Слишком много запросов. Подождите пару минут." },
@@ -59,16 +63,24 @@ app.use("/api/", apiLimiter);
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
+// 🔥 Инициализация хранилища сессий в PostgreSQL (Для APK и PWA)
+const PgStore = pgSession(session);
+
 app.use(
   session({
+    store: new PgStore({
+      pool: pool, // Используем наш текущий пул БД
+      tableName: "user_sessions", // Имя таблицы в БД
+      createTableIfMissing: true, // Сервер сам создаст таблицу, если её нет!
+    }),
     name: "proelectric.sid",
-    secret: process.env.SESSION_SECRET || "enterprise_super_secret_key_v9",
+    secret: process.env.SESSION_SECRET || "enterprise_super_secret_key_v10",
     resave: false,
     saveUninitialized: false,
     cookie: {
       secure: process.env.NODE_ENV === "production",
       httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000,
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 ДНЕЙ авторизации для комфорта в APK
       sameSite: "lax",
     },
   }),
@@ -201,107 +213,79 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 // =============================================================================
-// 3. 📊 DEEP ANALYTICS, TIMELINES & DASHBOARD
+// 3. 📊 DEEP ANALYTICS, TIMELINES & DASHBOARD (DYNAMIC BY BRIGADE)
 // =============================================================================
 
-app.get("/api/dashboard/stats", requireAdmin, async (req, res) => {
+const getManagerBrigadeId = async (req) => {
+  if (req.session?.user?.role === "manager") {
+    const b = await db.getBrigadeByManagerId(req.session.user.id);
+    return b ? b.id : -1;
+  }
+  return null;
+};
+
+app.get("/api/dashboard/stats", requireManager, async (req, res) => {
   try {
+    const brigadeId = await getManagerBrigadeId(req);
     const [globalStats, funnelStats] = await Promise.all([
-      UserService.getDashboardStats(),
-      OrderService.getAdminStats(),
+      db.getGlobalStats(brigadeId),
+      db.getOrdersFunnel(brigadeId),
     ]);
+
+    const activeCount =
+      funnelStats.find((f) => f.status === "work" || f.status === "processing")
+        ?.count || 0;
+
     res.json({
       overview: {
-        totalRevenue: funnelStats.metrics.totalRevenue,
-        totalNetProfit: funnelStats.metrics.totalNetProfit,
+        totalRevenue: globalStats.totalRevenue,
+        totalNetProfit: globalStats.totalRevenue,
         totalUsers: globalStats.totalUsers,
-        activeToday: globalStats.activeUsers24h,
-        pendingOrders: funnelStats.metrics.activeCount,
+        activeToday: globalStats.active24h,
+        pendingOrders: activeCount,
       },
-      funnel: funnelStats.breakdown,
-      financials: funnelStats.metrics,
+      funnel: funnelStats,
+      financials: {},
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.get("/api/analytics/deep", requireAdmin, async (req, res) => {
+app.get("/api/analytics/deep", requireManager, async (req, res) => {
   try {
-    const avgQuery = await db.query(
-      `SELECT COALESCE(AVG(total_price), 0) as avg_check, COALESCE(AVG(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)), 0) as avg_margin FROM orders WHERE status = 'done'`,
-    );
-    const debtQuery = await db.query(
-      `SELECT COALESCE(SUM(balance), 0) as total_debt FROM accounts WHERE type = 'brigade_acc' AND balance < 0`,
-    );
-    const expensesQuery = await db.query(
-      `SELECT category, COALESCE(SUM(amount), 0) as total FROM object_expenses GROUP BY category ORDER BY total DESC`,
-    );
-
-    res.json({
-      economics: {
-        averageCheck: parseFloat(avgQuery.rows[0].avg_check || 0),
-        averageMargin: parseFloat(avgQuery.rows[0].avg_margin || 0),
-        totalBrigadeDebts: Math.abs(
-          parseFloat(debtQuery.rows[0].total_debt || 0),
-        ),
-      },
-      expenseBreakdown: expensesQuery.rows || [],
-    });
+    const brigadeId = await getManagerBrigadeId(req);
+    const deepData = await db.getDeepAnalyticsData(brigadeId);
+    res.json(deepData);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// 🔥 НОВОЕ: Финансовый таймлайн (Доходы фирмы по месяцам)
-app.get("/api/analytics/timeline", requireAdmin, async (req, res) => {
+app.get("/api/analytics/timeline", requireManager, async (req, res) => {
   try {
-    const query = `
-      SELECT 
-        TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM') as month,
-        COALESCE(SUM(total_price), 0) as gross_revenue,
-        COALESCE(SUM(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)), 0) as net_profit,
-        COUNT(id) as closed_orders
-      FROM orders 
-      WHERE status = 'done'
-      GROUP BY DATE_TRUNC('month', created_at)
-      ORDER BY month DESC
-      LIMIT 12;
-    `;
-    const result = await db.query(query);
-    res.json(result.rows);
+    const brigadeId = await getManagerBrigadeId(req);
+    const timelineData = await db.getTimelineAnalytics(brigadeId);
+    res.json(timelineData);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// 🔥 НОВОЕ: Эффективность и доходы в разрезе каждой бригады
+app.get("/api/analytics/orders-timeline", requireManager, async (req, res) => {
+  try {
+    const brigadeId = await getManagerBrigadeId(req);
+    const ordersTimeline = await db.getOrdersTimelineAnalytics(brigadeId);
+    res.json(ordersTimeline);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get("/api/analytics/brigades", requireAdmin, async (req, res) => {
   try {
-    const query = `
-      SELECT 
-        b.id, 
-        b.name,
-        COUNT(o.id) as closed_orders_count,
-        COALESCE(SUM(o.total_price), 0) as total_revenue_brought,
-        COALESCE(SUM(COALESCE((o.details->'financials'->>'net_profit')::numeric, o.total_price)), 0) as total_net_profit_brought,
-        COALESCE(a.balance, 0) as current_balance
-      FROM brigades b
-      LEFT JOIN orders o ON b.id = o.brigade_id AND o.status = 'done'
-      LEFT JOIN accounts a ON b.brigadier_id = a.user_id AND a.type = 'brigade_acc'
-      GROUP BY b.id, b.name, a.balance
-      ORDER BY total_net_profit_brought DESC;
-    `;
-    const result = await db.query(query);
-
-    // Форматируем долг из баланса
-    const formattedData = result.rows.map((row) => ({
-      ...row,
-      current_debt:
-        row.current_balance < 0 ? Math.abs(parseFloat(row.current_balance)) : 0,
-    }));
-
-    res.json(formattedData);
+    const data = await db.getBrigadesAnalytics();
+    res.json(data);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -448,7 +432,6 @@ app.post("/api/orders", requireAdmin, async (req, res) => {
     const io = getSocketIO();
     if (io) io.emit("new_order", order);
 
-    // БРОДКАСТ БРИГАДАМ О НОВОМ ОБЪЕКТЕ
     try {
       const managersRes = await db.query(
         "SELECT telegram_id FROM users WHERE role = 'manager'",
@@ -518,7 +501,6 @@ app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
       [brigadeId, id],
     );
 
-    // Отправляем пуш бригадиру
     const bRes = await db.query(
       "SELECT brigadier_id FROM brigades WHERE id = $1",
       [brigadeId],
@@ -761,10 +743,12 @@ app.post("/api/users/role", requireAdmin, async (req, res) => {
     const targetRole = targetRes.rows[0]?.role;
 
     if (targetRole === "owner" && role !== "owner") {
-      return res.status(403).json({
-        error:
-          "⛔ Критическая ошибка: Невозможно изменить роль Владельца системы.",
-      });
+      return res
+        .status(403)
+        .json({
+          error:
+            "⛔ Критическая ошибка: Невозможно изменить роль Владельца системы.",
+        });
     }
 
     if (

@@ -1,1091 +1,552 @@
 /**
- * @file public/css/style.css
- * @description ProElectric ERP Design System (v10.5.0 Enterprise PWA).
- * @architecture Modern CSS, Custom Properties, Grid/Flexbox, BEM-like (pe-*).
- * Полностью поддерживает Windows (Desktop), iOS/Android (PWA), динамические формы,
- * BOM Manager, OTP Auth и анимации сокетов реального времени.
+ * @file src/app.js
+ * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.9.0).
+ * ИСПРАВЛЕНО: Доступ менеджеров к аналитике (снят барьер 401).
+ * ДОБАВЛЕНО: Умная фильтрация дашборда по brigadeId (Бригадир видит только свои цифры).
+ * ДОБАВЛЕНО: Таймлайн Заказов (Orders Timeline).
+ * 🔥 НОВОЕ (Mobile Ready): Сессии теперь хранятся в PostgreSQL (connect-pg-simple) на 30 дней.
+ *
+ * @module Application
+ * @version 10.9.0 (Enterprise Analytics, Mobile APK Ready & Persistent Sessions)
  */
 
-/* ==========================================================================
-   1. CSS VARIABLES (DESIGN TOKENS)
-   ========================================================================== */
-:root {
-  /* Цветовая палитра (Enterprise Dark) */
-  --pe-bg-base: #09090b;
-  --pe-bg-surface: #18181b;
-  --pe-bg-surface-elevated: #27272a;
-  --pe-bg-surface-hover: #3f3f46;
+import express from "express";
+import session from "express-session";
+import pgSession from "connect-pg-simple"; // <-- Новый импорт для вечных сессий
+import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import path from "path";
+import { fileURLToPath } from "url";
 
-  --pe-border: rgba(255, 255, 255, 0.1);
-  --pe-border-focus: rgba(255, 255, 255, 0.2);
+// --- CORE IMPORTS ---
+import { config } from "./config.js";
+import * as db from "./database/index.js";
+import { pool } from "./database/connection.js"; // Пул подключений для сессий
+import { bot, getSocketIO } from "./bot.js"; 
 
-  /* Типографика */
-  --pe-text-main: #f4f4f5;
-  --pe-text-muted: #a1a1aa;
-  --pe-text-inverse: #09090b;
+// --- SERVICES ---
+import { UserService } from "./services/UserService.js";
+import { OrderService } from "./services/OrderService.js";
 
-  /* Акценты (Семантика) */
-  --pe-primary: #3b82f6;
-  --pe-primary-hover: #2563eb;
-  --pe-success: #10b981;
-  --pe-success-hover: #059669;
-  --pe-warning: #f59e0b;
-  --pe-danger: #ef4444;
-  --pe-danger-hover: #dc2626;
+const app = express();
+app.set("trust proxy", 1);
 
-  /* Геометрия и Анимации */
-  --pe-radius-sm: 6px;
-  --pe-radius-md: 10px;
-  --pe-radius-lg: 16px;
-  --pe-transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  --pe-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-  --pe-shadow-glow: 0 0 40px rgba(59, 130, 246, 0.15);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-  /* PWA Safe Areas (Для челок iPhone/Android) */
-  --pe-safe-top: env(safe-area-inset-top, 0px);
-  --pe-safe-bottom: env(safe-area-inset-bottom, 0px);
-}
+// =============================================================================
+// 1. 🛡 SECURITY & MIDDLEWARE
+// =============================================================================
 
-/* ==========================================================================
-   2. RESET & GLOBAL (PWA OPTIMIZED)
-   ========================================================================== */
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-  -webkit-tap-highlight-color: transparent; /* Убираем синее выделение на мобилках */
-}
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 
-body.pe-theme-dark {
-  font-family:
-    "Inter",
-    -apple-system,
-    BlinkMacSystemFont,
-    sans-serif;
-  background-color: var(--pe-bg-base);
-  color: var(--pe-text-main);
-  line-height: 1.5;
-  font-size: 14px;
-  -webkit-font-smoothing: antialiased;
-  overflow: hidden; /* Предотвращаем скролл body, контент скроллится внутри */
-  overscroll-behavior-y: none; /* Запрет pull-to-refresh в PWA */
-}
+app.use(cors({
+  origin: config.server.corsOrigin || "*",
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+  credentials: true,
+}));
 
-/* Custom Scrollbar (Windows Desktop Style) */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: var(--pe-bg-surface-hover);
-  border-radius: 4px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: var(--pe-text-muted);
-}
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 1500, 
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "⛔ Слишком много запросов. Подождите пару минут." },
+});
+app.use("/api/", apiLimiter);
 
-/* Typography Basics */
-.pe-h2 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  letter-spacing: -0.025em;
-}
-.pe-h3 {
-  font-size: 1.25rem;
-  font-weight: 600;
-}
-.pe-h4 {
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--pe-text-main);
-}
-.pe-h5 {
-  font-size: 0.875rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--pe-text-muted);
-}
-.pe-text-muted {
-  color: var(--pe-text-muted);
-}
-.pe-text-success {
-  color: var(--pe-success);
-}
-.pe-text-danger {
-  color: var(--pe-danger);
-}
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
-/* Spacing Helpers */
-.pe-mt-2 {
-  margin-top: 0.5rem;
-}
-.pe-mt-4 {
-  margin-top: 1rem;
-}
-.pe-mt-6 {
-  margin-top: 1.5rem;
-}
-.pe-mb-2 {
-  margin-bottom: 0.5rem;
-}
-.pe-mb-4 {
-  margin-bottom: 1rem;
-}
-.pe-mb-6 {
-  margin-bottom: 1.5rem;
-}
+// 🔥 Инициализация хранилища сессий в PostgreSQL (Для APK и PWA)
+const PgStore = pgSession(session);
 
-/* Responsive Visibility Helpers */
-.pe-mobile-only {
-  display: none !important;
-}
-@media (max-width: 768px) {
-  .pe-mobile-only {
-    display: flex !important;
+app.use(session({
+  store: new PgStore({
+    pool: pool,                // Используем наш текущий пул БД
+    tableName: 'user_sessions', // Имя таблицы в БД
+    createTableIfMissing: true // Сервер сам создаст таблицу, если её нет!
+  }),
+  name: "proelectric.sid",
+  secret: process.env.SESSION_SECRET || "enterprise_super_secret_key_v10",
+  resave: false,
+  saveUninitialized: false,
+  cookie: { 
+    secure: process.env.NODE_ENV === "production", 
+    httpOnly: true, 
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 ДНЕЙ авторизации для комфорта в APK
+    sameSite: "lax" 
+  },
+}));
+
+app.use(express.static(path.join(__dirname, "../public")));
+
+// =============================================================================
+// 2. 🔐 AUTHENTICATION & RBAC
+// =============================================================================
+
+const requireAdmin = (req, res, next) => {
+  if (req.session && (req.session.isAdmin || (req.session.user && ['owner', 'admin'].includes(req.session.user.role)))) return next();
+  return res.status(401).json({ error: "⛔ Доступ запрещен. Требуются права Администратора." });
+};
+
+const requireManager = (req, res, next) => {
+  if (req.session && (req.session.isAdmin || (req.session.user && ['owner', 'admin', 'manager'].includes(req.session.user.role)))) return next();
+  return res.status(401).json({ error: "⛔ Доступ запрещен. Требуются права Бригадира." });
+};
+
+app.get("/", (req, res) => res.redirect("/admin.html"));
+
+app.post("/api/auth/login", (req, res) => {
+  const { login, password } = req.body;
+  if (login === (process.env.ADMIN_LOGIN || "admin") && password === (process.env.ADMIN_PASS || "Qazplm01")) {
+    req.session.isAdmin = true;
+    req.session.loginTime = new Date();
+    return res.json({ success: true, message: "Welcome back, Boss!" });
   }
-  .pe-desktop-only {
-    display: none !important;
+  return res.status(401).json({ error: "Неверный логин или пароль" });
+});
+
+app.post("/api/auth/otp/request", async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ error: "Введите номер телефона" });
+
+    const cleanPhone = phone.replace(/\D/g, "");
+    const result = await db.query("SELECT * FROM users WHERE REGEXP_REPLACE(phone, '\\D', '', 'g') LIKE '%' || $1 LIMIT 1", [cleanPhone]);
+    
+    if (result.rows.length === 0) return res.status(404).json({ error: "Пользователь с таким номером не найден" });
+    const user = result.rows[0];
+    if (!['owner', 'admin', 'manager'].includes(user.role)) return res.status(403).json({ error: "Доступ разрешен только персоналу" });
+
+    const { otp } = await UserService.generateWebOTP(user.telegram_id);
+    await bot.telegram.sendMessage(user.telegram_id, `🔐 <b>Вход в Web CRM</b>\nВаш код: <code>${otp}</code>\n<i>Действителен 15 минут.</i>`, { parse_mode: 'HTML' });
+
+    res.json({ success: true, message: "Код отправлен в Telegram" });
+  } catch (error) { res.status(500).json({ error: "Ошибка генерации кода" }); }
+});
+
+app.post("/api/auth/otp/verify", async (req, res) => {
+  try {
+    const { phone, otp } = req.body;
+    if (!phone || !otp) return res.status(400).json({ error: "Телефон и код обязательны" });
+
+    const user = await UserService.verifyWebOTP(phone, otp);
+    if (!user) return res.status(401).json({ error: "Неверный или просроченный код" });
+
+    req.session.user = { id: user.telegram_id, role: user.role, name: user.first_name, phone: user.phone };
+    res.json({ success: true, user: req.session.user });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.get("/api/auth/me", (req, res) => {
+  if (req.session && req.session.user) return res.json({ authenticated: true, user: req.session.user, isLegacy: false });
+  if (req.session && req.session.isAdmin) return res.json({ authenticated: true, user: { role: 'owner', name: 'SuperAdmin' }, isLegacy: true });
+  res.json({ authenticated: false });
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  req.session.destroy(() => { res.clearCookie("proelectric.sid"); res.json({ success: true }); });
+});
+
+// =============================================================================
+// 3. 📊 DEEP ANALYTICS, TIMELINES & DASHBOARD (DYNAMIC BY BRIGADE)
+// =============================================================================
+
+const getManagerBrigadeId = async (req) => {
+  if (req.session?.user?.role === 'manager') {
+    const b = await db.getBrigadeByManagerId(req.session.user.id);
+    return b ? b.id : -1;
   }
-}
+  return null;
+};
 
-/* ==========================================================================
-   3. COMPONENTS (BUTTONS, INPUTS, BADGES)
-   ========================================================================== */
-.pe-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  padding: 0.625rem 1rem;
-  border-radius: var(--pe-radius-md);
-  font-weight: 500;
-  font-size: 0.875rem;
-  border: 1px solid transparent;
-  cursor: pointer;
-  transition: var(--pe-transition);
-  outline: none;
-  font-family: inherit;
-  touch-action: manipulation; /* Быстрый отклик на смартфонах */
-}
-.pe-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+app.get("/api/dashboard/stats", requireManager, async (req, res) => {
+  try {
+    const brigadeId = await getManagerBrigadeId(req);
+    const [globalStats, funnelStats] = await Promise.all([
+      db.getGlobalStats(brigadeId),
+      db.getOrdersFunnel(brigadeId)
+    ]);
 
-.pe-btn-primary {
-  background: var(--pe-primary);
-  color: white;
-}
-.pe-btn-primary:hover:not(:disabled) {
-  background: var(--pe-primary-hover);
-}
+    const activeCount = funnelStats.find(f => f.status === 'work' || f.status === 'processing')?.count || 0;
 
-.pe-btn-success {
-  background: var(--pe-success);
-  color: white;
-}
-.pe-btn-success:hover:not(:disabled) {
-  background: var(--pe-success-hover);
-}
+    res.json({
+      overview: { 
+        totalRevenue: globalStats.totalRevenue, 
+        totalNetProfit: globalStats.totalRevenue, 
+        totalUsers: globalStats.totalUsers, 
+        activeToday: globalStats.active24h, 
+        pendingOrders: activeCount 
+      },
+      funnel: funnelStats, 
+      financials: {} 
+    });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
 
-.pe-btn-danger {
-  background: var(--pe-danger);
-  color: white;
-}
-.pe-btn-danger:hover:not(:disabled) {
-  background: var(--pe-danger-hover);
-}
+app.get("/api/analytics/deep", requireManager, async (req, res) => {
+  try {
+    const brigadeId = await getManagerBrigadeId(req);
+    const deepData = await db.getDeepAnalyticsData(brigadeId);
+    res.json(deepData);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
 
-.pe-btn-secondary {
-  background: var(--pe-bg-surface-elevated);
-  color: var(--pe-text-main);
-  border-color: var(--pe-border);
-}
-.pe-btn-secondary:hover {
-  background: var(--pe-bg-surface-hover);
-}
-
-.pe-btn-ghost {
-  background: transparent;
-  color: var(--pe-text-muted);
-}
-.pe-btn-ghost:hover {
-  background: var(--pe-bg-surface-elevated);
-  color: var(--pe-text-main);
-}
-
-.pe-btn-block {
-  width: 100%;
-}
-.pe-btn-sm {
-  padding: 0.375rem 0.75rem;
-  font-size: 0.75rem;
-  border-radius: var(--pe-radius-sm);
-}
-.pe-btn-icon {
-  padding: 0.5rem;
-  border-radius: var(--pe-radius-md);
-}
-.pe-btn-icon svg {
-  width: 18px;
-  height: 18px;
-}
-
-/* Form Elements */
-.pe-form-group {
-  margin-bottom: 1rem;
-}
-.pe-form-group label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-size: 0.875rem;
-  color: var(--pe-text-muted);
-}
-
-.pe-input {
-  width: 100%;
-  background: var(--pe-bg-surface-elevated);
-  border: 1px solid var(--pe-border);
-  color: var(--pe-text-main);
-  padding: 0.625rem 0.75rem;
-  border-radius: var(--pe-radius-md);
-  font-family: inherit;
-  font-size: 0.875rem;
-  transition: var(--pe-transition);
-}
-.pe-input:focus {
-  border-color: var(--pe-primary);
-  outline: none;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
-}
-.pe-input-sm {
-  padding: 0.375rem 0.5rem;
-  font-size: 0.75rem;
-}
-textarea.pe-input {
-  resize: vertical;
-  min-height: 80px;
-}
-
-.pe-select-inline {
-  width: auto;
-  min-width: 160px;
-  display: inline-block;
-}
-
-.pe-input-group {
-  position: relative;
-}
-.pe-input-group .pe-input {
-  padding-left: 2.5rem;
-}
-.pe-input-icon {
-  position: absolute;
-  left: 0.75rem;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 16px;
-  height: 16px;
-  color: var(--pe-text-muted);
-}
-.pe-input-group-sm {
-  display: flex;
-  gap: 0.5rem;
-}
-
-/* Badges */
-.pe-badge {
-  display: inline-flex;
-  padding: 0.125rem 0.5rem;
-  border-radius: 12px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-}
-.pe-badge-primary {
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--pe-primary);
-}
-.pe-badge-success {
-  background: rgba(16, 185, 129, 0.15);
-  color: var(--pe-success);
-}
-.pe-badge-warning {
-  background: rgba(245, 158, 11, 0.15);
-  color: var(--pe-warning);
-}
-
-.badge-new,
-.badge-processing {
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--pe-primary);
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 0.75rem;
-}
-.badge-work {
-  background: rgba(245, 158, 11, 0.15);
-  color: var(--pe-warning);
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 0.75rem;
-}
-.badge-done {
-  background: rgba(16, 185, 129, 0.15);
-  color: var(--pe-success);
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 0.75rem;
-}
-.badge-cancel {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--pe-danger);
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 0.75rem;
-}
-
-/* ==========================================================================
-   4. LAYOUT: AUTH SCREEN (OTP READY)
-   ========================================================================== */
-.pe-auth-screen {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--pe-bg-base);
-  z-index: 2000;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.3s ease;
-}
-.pe-auth-screen.active {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.pe-auth-bg-glow {
-  position: absolute;
-  width: 600px;
-  height: 600px;
-  background: radial-gradient(
-    circle,
-    rgba(59, 130, 246, 0.15) 0%,
-    transparent 70%
-  );
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  z-index: -1;
-  pointer-events: none;
-}
-
-.pe-auth-card {
-  background: rgba(24, 24, 27, 0.7);
-  backdrop-filter: blur(16px);
-  border: 1px solid var(--pe-border);
-  padding: 2.5rem;
-  border-radius: var(--pe-radius-lg);
-  width: 100%;
-  max-width: 400px;
-  box-shadow: var(--pe-shadow);
-  transition: var(--pe-transition);
-}
-.pe-auth-logo {
-  text-align: center;
-  margin-bottom: 2rem;
-}
-.pe-auth-logo h2 {
-  font-size: 1.5rem;
-  font-weight: 700;
-  margin: 1rem 0 0.25rem;
-}
-.pe-logo-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 48px;
-  height: 48px;
-  background: linear-gradient(135deg, var(--pe-primary), #8b5cf6);
-  border-radius: 14px;
-  color: white;
-}
-.pe-logo-icon.pe-icon-sm {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-}
-
-.pe-alert-danger {
-  background: rgba(239, 68, 68, 0.1);
-  color: var(--pe-danger);
-  padding: 0.75rem;
-  border-radius: var(--pe-radius-md);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  font-size: 0.875rem;
-  text-align: center;
-}
-
-/* ==========================================================================
-   5. LAYOUT: APP CORE (SIDEBAR, TOPBAR, MAIN)
-   ========================================================================== */
-.pe-app-layout {
-  display: flex;
-  height: 100vh;
-  width: 100vw;
-  padding-top: var(--pe-safe-top); /* PWA Notch Support */
-  padding-bottom: var(--pe-safe-bottom);
-}
-
-.pe-sidebar {
-  width: 260px;
-  background: var(--pe-bg-surface);
-  border-right: 1px solid var(--pe-border);
-  display: flex;
-  flex-direction: column;
-  z-index: 100;
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.pe-sidebar-header {
-  height: 64px;
-  display: flex;
-  align-items: center;
-  padding: 0 1.5rem;
-  gap: 0.75rem;
-  border-bottom: 1px solid var(--pe-border);
-}
-.pe-brand-text {
-  font-size: 1.125rem;
-  font-weight: 700;
-}
-
-.pe-sidebar-nav {
-  flex: 1;
-  padding: 1.5rem 1rem;
-  overflow-y: auto;
-  overscroll-behavior-y: contain; /* PWA scroll fix */
-}
-.pe-nav-section {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--pe-text-muted);
-  text-transform: uppercase;
-  margin: 0 0.5rem 0.5rem;
-}
-.pe-nav-item {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.625rem 0.75rem;
-  margin-bottom: 0.25rem;
-  background: transparent;
-  color: var(--pe-text-muted);
-  border: none;
-  border-radius: var(--pe-radius-md);
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: var(--pe-transition);
-}
-.pe-nav-item svg {
-  width: 18px;
-  height: 18px;
-}
-.pe-nav-item:hover {
-  background: var(--pe-bg-surface-elevated);
-  color: var(--pe-text-main);
-}
-.pe-nav-item.active {
-  background: rgba(59, 130, 246, 0.1);
-  color: var(--pe-primary);
-}
-
-.pe-sidebar-footer {
-  padding: 1rem;
-  border-top: 1px solid var(--pe-border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.pe-user-profile {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  overflow: hidden;
-}
-.pe-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: var(--pe-bg-surface-elevated);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--pe-primary);
-  flex-shrink: 0;
-}
-.pe-user-info {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  white-space: nowrap;
-}
-.pe-user-name {
-  font-size: 0.875rem;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  overflow: hidden;
-}
-.pe-user-role {
-  font-size: 0.7rem;
-  color: var(--pe-text-muted);
-}
-
-.pe-main-wrapper {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  position: relative;
-}
-
-.pe-topbar {
-  height: 64px;
-  background: var(--pe-bg-base);
-  border-bottom: 1px solid var(--pe-border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 2rem;
-  z-index: 90;
-}
-.pe-page-title {
-  font-size: 1.125rem;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-/* Socket Connection Indicator */
-.pe-system-status {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.75rem;
-  color: var(--pe-text-muted);
-}
-.pe-status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--pe-text-muted);
-  transition: background 0.3s;
-}
-.pe-status-dot.online {
-  background: var(--pe-success);
-  box-shadow: 0 0 8px var(--pe-success);
-  animation: pulse 2s infinite;
-}
-.pe-status-dot.offline {
-  background: var(--pe-danger);
-  box-shadow: 0 0 8px var(--pe-danger);
-}
-@keyframes pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+app.get("/api/analytics/timeline", requireManager, async (req, res) => {
+  try {
+    const brigadeId = await getManagerBrigadeId(req);
+    const timelineData = await db.getTimelineAnalytics(brigadeId);
+    res.json(timelineData);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  70% {
-    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+});
+
+app.get("/api/analytics/orders-timeline", requireManager, async (req, res) => {
+  try {
+    const brigadeId = await getManagerBrigadeId(req);
+    const ordersTimeline = await db.getOrdersTimelineAnalytics(brigadeId);
+    res.json(ordersTimeline);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  100% {
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+});
+
+app.get("/api/analytics/brigades", requireAdmin, async (req, res) => {
+  try {
+    const data = await db.getBrigadesAnalytics();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-}
+});
 
-.pe-content {
-  flex: 1;
-  padding: 2rem;
-  overflow-y: auto;
-  position: relative;
-  overscroll-behavior-y: contain;
-}
+// =============================================================================
+// 🏗 4. BRIGADES MANAGEMENT (ERP CORE)
+// =============================================================================
 
-/* ==========================================================================
-   6. VIEWS, CARDS & KPI
-   ========================================================================== */
-.pe-section-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  margin-bottom: 2rem;
-}
-.pe-header-actions {
-  display: flex;
-  gap: 1rem;
-  align-items: center;
-}
+app.get("/api/brigades", requireAdmin, async (req, res) => {
+  try {
+    const brigades = await db.getBrigades();
+    for (let b of brigades) {
+      const acc = await db.query("SELECT balance FROM accounts WHERE user_id = $1 AND type = 'brigade_acc' LIMIT 1", [b.brigadier_id]);
+      b.balance = acc.rows.length > 0 ? parseFloat(acc.rows[0].balance) : 0;
+    }
+    res.json(brigades);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
 
-.pe-card {
-  background: var(--pe-bg-surface);
-  border: 1px solid var(--pe-border);
-  border-radius: var(--pe-radius-lg);
-  box-shadow: var(--pe-shadow);
-}
-.pe-card-header {
-  padding: 1.25rem 1.5rem;
-  border-bottom: 1px solid var(--pe-border);
-}
-.pe-card-body {
-  padding: 1.5rem;
-}
+app.post("/api/brigades", requireAdmin, async (req, res) => {
+  try {
+    const { name, brigadierId, profitPercentage } = req.body;
+    if (!name || !brigadierId) return res.status(400).json({ error: "Название и ID обязательны" });
+    const newBrigade = await db.createBrigade(name, brigadierId, profitPercentage || 40);
+    res.json({ success: true, brigade: newBrigade });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
 
-/* KPI Grid */
-.pe-grid-kpi {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 1.5rem;
-}
-.pe-card-kpi {
-  padding: 1.5rem;
-  display: flex;
-  align-items: flex-start;
-  gap: 1rem;
-  transition: transform 0.2s;
-}
-.pe-card-kpi:hover {
-  transform: translateY(-2px);
-}
-.pe-kpi-icon {
-  padding: 0.75rem;
-  border-radius: var(--pe-radius-md);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.pe-kpi-data {
-  flex: 1;
-}
-.pe-kpi-label {
-  font-size: 0.75rem;
-  color: var(--pe-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 0.25rem;
-  display: block;
-}
-.pe-kpi-value {
-  font-size: 1.5rem;
-  font-weight: 700;
-  letter-spacing: -0.025em;
-}
+app.patch("/api/brigades/:id", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { profitPercentage, isActive } = req.body;
+    const updated = await db.updateBrigade(id, profitPercentage, isActive);
+    res.json({ success: true, brigade: updated });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
 
-.pe-kpi-success .pe-kpi-icon {
-  background: rgba(16, 185, 129, 0.1);
-  color: var(--pe-success);
-}
-.pe-kpi-primary .pe-kpi-icon {
-  background: rgba(59, 130, 246, 0.1);
-  color: var(--pe-primary);
-}
-.pe-kpi-warning .pe-kpi-icon {
-  background: rgba(245, 158, 11, 0.1);
-  color: var(--pe-warning);
-}
-.pe-kpi-danger .pe-kpi-icon {
-  background: rgba(239, 68, 68, 0.1);
-  color: var(--pe-danger);
-}
-.pe-kpi-neutral .pe-kpi-icon {
-  background: var(--pe-bg-surface-elevated);
-  color: var(--pe-text-muted);
-}
+app.get("/api/brigades/:id/orders", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orders = await OrderService.getBrigadeOrders(id);
+    res.json(orders);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
 
-/* Tables */
-.pe-table-card {
-  overflow: hidden;
-}
-.pe-table-responsive {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-}
-.pe-table {
-  width: 100%;
-  border-collapse: collapse;
-  text-align: left;
-}
-.pe-table th {
-  padding: 1rem 1.5rem;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  color: var(--pe-text-muted);
-  border-bottom: 1px solid var(--pe-border);
-  background: var(--pe-bg-surface-elevated);
-  white-space: nowrap;
-}
-.pe-table td {
-  padding: 1rem 1.5rem;
-  border-bottom: 1px solid var(--pe-border);
-  font-size: 0.875rem;
-  vertical-align: middle;
-}
-.pe-table tr:last-child td {
-  border-bottom: none;
-}
-.pe-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
-}
-.pe-text-right {
-  text-align: right;
-}
+// =============================================================================
+// 📦 5. ORDER MANAGEMENT & LEAD MARKET
+// =============================================================================
 
-/* Funnel & Analytics */
-.pe-funnel {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-.funnel-row {
-  display: flex;
-  align-items: center;
-  background: var(--pe-bg-surface-elevated);
-  padding: 0.75rem 1rem;
-  border-radius: var(--pe-radius-sm);
-  border: 1px solid var(--pe-border);
-}
-.funnel-label {
-  flex: 1;
-  font-weight: 500;
-  font-size: 0.875rem;
-}
-.funnel-value {
-  width: 100px;
-  text-align: right;
-  color: var(--pe-text-muted);
-  font-size: 0.875rem;
-}
-.funnel-sum {
-  width: 120px;
-  text-align: right;
-  font-weight: 600;
-  color: var(--pe-success);
-}
+app.get("/api/orders", requireManager, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 100;
+    const offset = parseInt(req.query.offset) || 0;
+    const status = req.query.status || null;
+    
+    const isManager = req.session?.user?.role === 'manager';
+    const userId = req.session?.user?.id;
 
-/* Settings Grid */
-.pe-settings-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 1.5rem;
-}
+    let query = `
+      SELECT o.*, u.first_name as client_name, u.phone as client_phone, b.name as brigade_name
+      FROM orders o
+      LEFT JOIN users u ON o.user_id = u.telegram_id
+      LEFT JOIN brigades b ON o.brigade_id = b.id
+      WHERE 1=1
+    `;
+    const params = [];
 
-/* ==========================================================================
-   7. MODALS (ERP CONTROLLER)
-   ========================================================================== */
-.pe-modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 1rem;
-}
-.pe-modal {
-  background: var(--pe-bg-surface);
-  border: 1px solid var(--pe-border);
-  border-radius: var(--pe-radius-lg);
-  width: 100%;
-  max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
-  animation: modalPop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-}
-@keyframes modalPop {
-  0% {
-    opacity: 0;
-    transform: scale(0.95) translateY(10px);
+    if (isManager) {
+      const bRes = await db.query("SELECT id FROM brigades WHERE brigadier_id = $1", [userId]);
+      const brigadeId = bRes.rows.length > 0 ? bRes.rows[0].id : -1;
+      params.push(brigadeId);
+      query += ` AND o.brigade_id = $${params.length}`;
+    }
+
+    if (status && status !== "all") {
+      params.push(status);
+      query += ` AND o.status = $${params.length}`;
+    }
+
+    params.push(limit, offset);
+    query += ` ORDER BY o.created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`;
+
+    const result = await db.query(query, params);
+    res.json(result.rows);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post("/api/orders", requireAdmin, async (req, res) => {
+  try {
+    const { clientName, clientPhone, area = 50, rooms = 2, wallType = "wall_concrete" } = req.body;
+    if (!clientName || !clientPhone) return res.status(400).json({ error: "Имя и телефон обязательны" });
+
+    let userId;
+    const existingUser = await db.query("SELECT telegram_id FROM users WHERE phone = $1 LIMIT 1", [clientPhone]);
+
+    if (existingUser.rows.length > 0) userId = existingUser.rows[0].telegram_id;
+    else {
+      userId = -Date.now();
+      await db.query("INSERT INTO users (telegram_id, first_name, username, phone, role) VALUES ($1, $2, $3, $4, 'user')", [userId, clientName, "crm_lead", clientPhone]);
+    }
+
+    const estimate = await OrderService.calculateComplexEstimate(Number(area), Number(rooms), wallType);
+    const order = await OrderService.createOrder(userId, estimate);
+
+    const io = getSocketIO();
+    if (io) io.emit("new_order", order);
+
+    try {
+      const managersRes = await db.query("SELECT telegram_id FROM users WHERE role = 'manager'");
+      const fmtPrice = new Intl.NumberFormat("ru-RU").format(order.total_price);
+      for (const manager of managersRes.rows) {
+        await bot.telegram.sendMessage(manager.telegram_id,
+          `⚡️ <b>НОВЫЙ ОБЪЕКТ НА БИРЖЕ!</b>\n➖➖➖➖➖➖➖➖➖➖\n💰 <b>Смета:</b> ${fmtPrice} ₸\n📐 <b>Объем:</b> ${area} м² / Комнат: ${rooms}\n➖➖➖➖➖➖➖➖➖➖\n<i>Кто первый заберет, того и объект!</i>`,
+          { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: "✅ Забрать объект", callback_data: `take_order_${order.id}` }]] } }
+        ).catch(() => {});
+      }
+    } catch (pushErr) {}
+
+    res.json({ success: true, order });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.patch("/api/orders/:id/status", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    await OrderService.updateOrderStatus(id, status);
+    res.json({ success: true, status });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.patch("/api/orders/:id/details", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { key, value } = req.body;
+    const updatedDetails = await OrderService.updateOrderDetails(id, key, value);
+    res.json({ success: true, details: updatedDetails });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { brigadeId } = req.body;
+    await db.query("UPDATE orders SET brigade_id = $1, status = 'work', updated_at = NOW() WHERE id = $2", [brigadeId, id]);
+    
+    const bRes = await db.query("SELECT brigadier_id FROM brigades WHERE id = $1", [brigadeId]);
+    if (bRes.rows.length > 0) {
+      await bot.telegram.sendMessage(bRes.rows[0].brigadier_id, `🔔 <b>ШЕФ НАЗНАЧИЛ ВАМ ОБЪЕКТ!</b>\nОбъект <b>#${id}</b> принудительно добавлен в ваш список задач ("Мои объекты").`, { parse_mode: 'HTML' }).catch(()=>{});
+    }
+
+    const io = getSocketIO();
+    if (io) io.emit('order_updated', { orderId: id, status: 'work', brigade_id: brigadeId });
+
+    res.json({ success: true, message: "Бригада назначена" });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.patch("/api/orders/:id/bom", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updatedDetails = await OrderService.updateOrderDetails(id, "bom", req.body.newBomArray);
+    res.json({ success: true, bom: updatedDetails.bom });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post("/api/orders/:id/finalize", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await db.finalizeOrderAndDistributeProfit(id);
+    const io = getSocketIO();
+    if (io) io.emit('order_updated', { orderId: id, status: 'done' });
+    res.json({ success: true, distribution: result });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// =============================================================================
+// 💸 6. ORDER FINANCIAL MANAGEMENT & EXPENSES
+// =============================================================================
+
+app.patch("/api/orders/:id/finance/price", requireAdmin, async (req, res) => {
+  try {
+    const financials = await OrderService.updateOrderFinalPrice(req.params.id, req.body.newPrice);
+    res.json({ success: true, financials });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post("/api/orders/:id/finance/expense", requireManager, async (req, res) => {
+  try {
+    const { amount, category, comment } = req.body;
+    const financials = await OrderService.addOrderExpense(req.params.id, amount, category || "Расход", comment, req.session?.user?.id || "admin");
+    const io = getSocketIO();
+    if (io) io.emit('expense_added', { orderId: req.params.id, amount, category });
+    res.json({ success: true, financials });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// =============================================================================
+// 🏢 7. CORPORATE FINANCE & CASH FLOW (GLOBAL)
+// =============================================================================
+
+app.get("/api/finance/accounts", requireAdmin, async (req, res) => {
+  try {
+    const accounts = await db.getAccounts();
+    res.json(accounts);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.get("/api/finance/transactions", requireAdmin, async (req, res) => {
+  try {
+    const transactions = await db.getCompanyTransactions(parseInt(req.query.limit) || 100);
+    res.json(transactions);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post("/api/finance/transactions", requireAdmin, async (req, res) => {
+  try {
+    const { accountId, amount, type, category, comment } = req.body;
+    const transaction = await db.addCompanyTransaction({ accountId, userId: req.session?.user?.id || 0, amount: parseFloat(amount), type, category: category || "Прочее", comment: comment || "" });
+    res.json({ success: true, transaction });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post("/api/finance/incassation/approve", requireAdmin, async (req, res) => {
+  try {
+    const { brigadierId, amount } = req.body;
+    const resAcc = await db.query("SELECT id FROM accounts WHERE type = 'cash' ORDER BY id ASC LIMIT 1");
+    if (resAcc.rows.length === 0) return res.status(500).json({ error: "Главная Касса не найдена" });
+    await db.processIncassation(brigadierId, parseFloat(amount), resAcc.rows[0].id);
+    res.json({ success: true, message: "Инкассация успешно проведена" });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// =============================================================================
+// ⚙️ 8. SYSTEM SETTINGS & DEVOPS
+// =============================================================================
+
+app.get("/api/settings", requireAdmin, async (req, res) => {
+  try { res.json(await db.getSettings()); } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.get("/api/pricelist", requireAdmin, async (req, res) => {
+  try { res.json(await OrderService.getPublicPricelist()); } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post("/api/settings", requireAdmin, async (req, res) => {
+  try {
+    if (Array.isArray(req.body)) {
+      await db.saveBulkSettings(req.body);
+      return res.json({ success: true, message: "Bulk update successful" });
+    }
+    const result = await db.saveSetting(req.body.key, req.body.value);
+    res.json({ success: true, setting: result });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.get("/api/system/backup", requireAdmin, async (req, res) => {
+  try {
+    const dump = { timestamp: new Date().toISOString(), database: {} };
+    const tables = ["users", "brigades", "orders", "settings", "object_expenses", "accounts", "transactions"];
+    for (const table of tables) {
+      try { dump.database[table] = (await db.query(`SELECT * FROM ${table}`)).rows; } catch (e) {}
+    }
+    res.setHeader('Content-disposition', `attachment; filename=ProElectric_Backup_${Date.now()}.json`);
+    res.setHeader('Content-type', 'application/json');
+    res.send(JSON.stringify(dump, null, 2));
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// =============================================================================
+// 👥 9. STAFF & BROADCAST
+// =============================================================================
+
+app.get("/api/users", requireAdmin, async (req, res) => {
+  try {
+    res.json(await UserService.getAllUsers(parseInt(req.query.limit) || 100, parseInt(req.query.offset) || 0));
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post("/api/users/role", requireAdmin, async (req, res) => {
+  try {
+    const { userId, role } = req.body;
+    
+    const targetRes = await db.query("SELECT role FROM users WHERE telegram_id = $1", [userId]);
+    const targetRole = targetRes.rows[0]?.role;
+
+    if (targetRole === 'owner' && role !== 'owner') {
+      return res.status(403).json({ error: "⛔ Критическая ошибка: Невозможно изменить роль Владельца системы." });
+    }
+    
+    if (req.session?.user?.role === 'admin' && (role === 'admin' || role === 'owner')) {
+      return res.status(403).json({ error: "⛔ У вас нет прав назначать высшее руководство." });
+    }
+
+    const updatedUser = await UserService.changeUserRole(req.session?.user?.id || 0, userId, role);
+    res.json({ success: true, user: updatedUser });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
   }
-  100% {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
+});
 
-.pe-modal-md {
-  max-width: 500px;
-}
-.pe-modal-xl {
-  max-width: 1000px;
-}
+app.post("/api/broadcast", requireAdmin, async (req, res) => {
+  try {
+    const { text, imageUrl, targetRole } = req.body;
+    if (!text) return res.status(400).json({ error: "Текст рассылки обязателен" });
 
-.pe-modal-header {
-  padding: 1.25rem 1.5rem;
-  border-bottom: 1px solid var(--pe-border);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.pe-modal-title {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  color: var(--pe-text-main);
-  font-size: 1.25rem;
-  font-weight: 600;
-}
-.pe-btn-close {
-  background: transparent;
-  border: none;
-  color: var(--pe-text-muted);
-  cursor: pointer;
-  padding: 0.25rem;
-  border-radius: var(--pe-radius-sm);
-  transition: var(--pe-transition);
-}
-.pe-btn-close:hover {
-  background: var(--pe-bg-surface-hover);
-  color: white;
-}
+    let query = `SELECT telegram_id FROM users WHERE telegram_id > 0`;
+    let params = [];
+    if (targetRole && targetRole !== "all") { query += ` AND role = $1`; params.push(targetRole); }
 
-.pe-modal-body {
-  padding: 1.5rem;
-  overflow-y: auto;
-  flex: 1;
-  -webkit-overflow-scrolling: touch;
-}
+    const result = await db.query(query, params);
+    if (result.rows.length === 0) return res.json({ success: true, delivered: 0, message: "Нет пользователей для рассылки" });
 
-.pe-grid-2col {
-  display: grid;
-  grid-template-columns: 1fr 380px;
-  gap: 1.5rem;
-  align-items: start;
-}
-.pe-grid-2col-sm {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1rem;
-}
+    const sendMassMessage = async () => {
+      for (const user of result.rows) {
+        try {
+          if (imageUrl) await bot.telegram.sendPhoto(user.telegram_id, imageUrl, { caption: text, parse_mode: "HTML" });
+          else await bot.telegram.sendMessage(user.telegram_id, text, { parse_mode: "HTML" });
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        } catch (e) {}
+      }
+    };
+    sendMassMessage();
+    res.json({ success: true, message: `Рассылка запущена для ${result.rows.length} пользователей.` });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
 
-/* Modal Inner Blocks */
-.pe-info-card {
-  background: var(--pe-bg-base);
-  padding: 1.25rem;
-  border-radius: var(--pe-radius-md);
-  border: 1px solid var(--pe-border);
-}
-.pe-info-card .pe-h4 {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
-  padding-bottom: 0.5rem;
-  border-bottom: 1px solid var(--pe-border);
-}
-.pe-info-card .pe-h4 svg {
-  width: 16px;
-  height: 16px;
-  color: var(--pe-primary);
-}
-.pe-info-row {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 0.5rem;
-  font-size: 0.875rem;
-}
+app.use((req, res) => res.status(404).json({ error: "Endpoint not found" }));
+app.use((err, req, res, next) => res.status(500).json({ error: "Internal Server Error" }));
 
-/* BOM Container */
-.pe-bom-container {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  max-height: 300px;
-  overflow-y: auto;
-  padding-right: 0.5rem;
-}
-
-/* Finance Controller Panel */
-.pe-col-finance {
-  background: var(--pe-bg-surface-elevated);
-  padding: 1.5rem;
-  border-radius: var(--pe-radius-md);
-  border: 1px solid var(--pe-border);
-  position: sticky;
-  top: 0;
-}
-.pe-finance-header {
-  margin-bottom: 1.5rem;
-}
-.pe-finance-header .pe-h4 {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  color: var(--pe-success);
-}
-.pe-fin-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.75rem;
-  font-size: 0.875rem;
-}
-.pe-fin-edit {
-  background: var(--pe-bg-base);
-  padding: 0.5rem;
-  border-radius: var(--pe-radius-sm);
-  border: 1px solid var(--pe-border);
-}
-.pe-fin-divider {
-  height: 1px;
-  background: var(--pe-border);
-  margin: 1rem 0;
-}
-.pe-fin-total {
-  font-size: 1.125rem;
-  font-weight: 700;
-}
-
-.pe-expenses-list {
-  max-height: 200px;
-  overflow-y: auto;
-  margin-bottom: 1rem;
-}
-.expense-item {
-  display: flex;
-  justify-content: space-between;
-  background: var(--pe-bg-base);
-  padding: 0.75rem;
-  border-radius: var(--pe-radius-sm);
-  margin-bottom: 0.5rem;
-  border: 1px solid var(--pe-border);
-}
-
-/* ==========================================================================
-   8. TOASTS NOTIFICATIONS
-   ========================================================================== */
-.pe-toast-container {
-  position: fixed;
-  bottom: calc(2rem + var(--pe-safe-bottom));
-  right: 2rem;
-  z-index: 9999;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  pointer-events: none;
-}
-.toast {
-  background: var(--pe-bg-surface-elevated);
-  border-left: 4px solid var(--pe-primary);
-  border-radius: var(--pe-radius-sm);
-  padding: 1rem 1.25rem;
-  box-shadow: var(--pe-shadow);
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  color: var(--pe-text-main);
-  font-size: 0.875rem;
-  font-weight: 500;
-  pointer-events: auto;
-  transform: translateX(120%);
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.toast.show {
-  transform: translateX(0);
-}
-.toast-success {
-  border-left-color: var(--pe-success);
-}
-.toast-success svg {
-  color: var(--pe-success);
-}
-.toast-error {
-  border-left-color: var(--pe-danger);
-}
-.toast-error svg {
-  color: var(--pe-danger);
-}
-.toast-info {
-  border-left-color: var(--pe-primary);
-}
-.toast-info svg {
-  color: var(--pe-primary);
-}
-
-/* ==========================================================================
-   9. RESPONSIVE (MOBILE SUPPORT v10.5.0 PWA)
-   ========================================================================== */
-@media (max-width: 1024px) {
-  .pe-grid-2col {
-    grid-template-columns: 1fr;
-  }
-  .pe-col-finance {
-    position: static;
-  }
-}
-
-@media (max-width: 768px) {
-  .pe-auth-card {
-    padding: 1.5rem;
-    margin: 1rem;
-    border: none;
-  }
-
-  /* PWA Sidebar Drawer Behavior */
-  .pe-sidebar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    transform: translateX(-100%);
-    box-shadow: none;
-    padding-top: var(--pe-safe-top);
-  }
-  .pe-sidebar.mobile-active {
-    transform: translateX(0);
-    box-shadow:
-      0 0 0 100vw rgba(0, 0, 0, 0.5),
-      var(--pe-shadow); /* Backdrop emulation */
-  }
-
-  .pe-topbar {
-    padding: 0 1rem;
-    gap: 1rem;
-  }
-  .pe-content {
-    padding: 1rem;
-  }
-  .pe-grid-kpi {
-    grid-template-columns: 1fr;
-    gap: 1rem;
-  }
-  .pe-section-header {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 1rem;
-  }
-  .pe-header-actions {
-    flex-direction: column;
-  }
-  .pe-select-inline {
-    width: 100%;
-  }
-
-  .pe-toast-container {
-    right: 1rem;
-    left: 1rem;
-    bottom: calc(1rem + var(--pe-safe-bottom));
-  }
-  .toast {
-    transform: translateY(120%);
-  } /* На мобилках тосты выезжают снизу */
-}
+export default app;

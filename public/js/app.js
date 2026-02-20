@@ -1,13 +1,13 @@
 /**
  * @file public/js/app.js
- * @description Frontend Application Controller (SPA Logic v10.7.0 Enterprise).
+ * @description Frontend Application Controller (SPA Logic v10.8.0 Enterprise).
  * Управляет состоянием интерфейса, модальными окнами, OTP-авторизацией.
  * Включает Глобальный Финансовый Модуль, ERP Бригад, Deep Analytics и WebSockets.
- * ДОБАВЛЕНО: Интеграция Chart.js для Таймлайна, Рейтинг Бригад (Leaderboard)
- * и строгий RBAC-рендеринг интерфейса (Admin vs Manager).
+ * ДОБАВЛЕНО: Интеграция Chart.js для Таймлайна Заказов (Orders Timeline),
+ * Рейтинга Бригад (Leaderboard) и строгого RBAC-рендеринга.
  *
  * @module AppController
- * @version 10.7.0 (PWA, Chart.js, Cash Flow & UI Safe Edition)
+ * @version 10.8.0 (PWA, Chart.js, Cash Flow & UI Safe Edition)
  */
 
 import { API } from "./api.js";
@@ -78,17 +78,17 @@ const Utils = {
 
 const State = {
   currentView: "dashboardView",
-  user: null, // Хранит данные текущего пользователя (роль, имя)
+  user: null,
   orders: [],
   users: [],
   brigades: [],
   selectedOrderId: null,
   currentBOM: [],
   financeAccounts: [],
-  timelineChartInstance: null, // Хранение объекта графика
+  timelineChartInstance: null,
+  ordersTimelineChartInstance: null, // Хранение объекта графика заказов
 };
 
-// Инициализация WebSockets (Real-Time)
 const socket = typeof io !== "undefined" ? io() : null;
 
 if (socket) {
@@ -103,7 +103,6 @@ if (socket) {
     document.getElementById("socketStatusText").textContent = "Offline";
   });
 
-  // Реактивные обновления UI
   socket.on("order_updated", (data) => {
     if (State.currentView === "ordersView") loadOrders();
     if (State.currentView === "dashboardView") loadDashboard();
@@ -129,7 +128,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 // =============================================================================
-// 3. 🔐 АВТОРИЗАЦИЯ, OTP И RBAC РОУТИНГ (СТРОГОЕ РАЗДЕЛЕНИЕ)
+// 3. 🔐 АВТОРИЗАЦИЯ, OTP И RBAC РОУТИНГ
 // =============================================================================
 
 async function checkSession() {
@@ -140,7 +139,6 @@ async function checkSession() {
       document.getElementById("loginView").classList.remove("active");
       document.getElementById("appLayout").style.display = "flex";
 
-      // Настройка UI профиля
       document.getElementById("currentUserName").textContent =
         State.user.name || "Boss";
       document.getElementById("currentUserRole").textContent = State.user.role
@@ -162,23 +160,19 @@ function showLogin() {
   document.getElementById("appLayout").style.display = "none";
 }
 
-// 🔥 СТРОГОЕ РАЗДЕЛЕНИЕ ИНТЕРФЕЙСА (ADMIN vs MANAGER)
 function applyRoleRestrictions(role) {
   const isAdmin = role === "owner" || role === "admin";
 
-  // 1. Управляем видимостью админских блоков
   document
     .querySelectorAll(".admin-only-nav, .admin-only-block")
     .forEach((el) => {
       el.style.display = isAdmin ? "" : "none";
     });
 
-  // 2. Управляем видимостью менеджерских блоков
   document.querySelectorAll(".manager-only-block").forEach((el) => {
     el.style.display = isAdmin ? "none" : "";
   });
 
-  // 3. Динамическая подмена текстов
   if (!isAdmin) {
     const navOrdersText = document.getElementById("navOrdersText");
     if (navOrdersText) navOrdersText.textContent = "Мои Объекты";
@@ -199,7 +193,6 @@ function bindAuthEvents() {
   const otpForm = document.getElementById("otpForm");
   const loginError = document.getElementById("loginError");
 
-  // Шаг 1: Запрос OTP
   phoneForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const phone = document.getElementById("authPhone").value;
@@ -226,7 +219,6 @@ function bindAuthEvents() {
     }
   });
 
-  // Шаг 2: Ввод OTP
   otpForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const phone = document.getElementById("authPhone").value;
@@ -248,14 +240,12 @@ function bindAuthEvents() {
     }
   });
 
-  // Вернуться к вводу телефона
   document.getElementById("btnBackToPhone").addEventListener("click", () => {
     otpForm.style.display = "none";
     phoneForm.style.display = "block";
     document.getElementById("authOtp").value = "";
   });
 
-  // Выход
   document.getElementById("logoutBtn").addEventListener("click", async () => {
     try {
       await API.logout();
@@ -265,7 +255,6 @@ function bindAuthEvents() {
     }
   });
 
-  // Навигация (SPA Routing)
   document.querySelectorAll(".nav-btn").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       document
@@ -279,10 +268,7 @@ function bindAuthEvents() {
       });
 
       State.currentView = targetId;
-
-      // На мобилках автоматически закрываем сайдбар после клика
       document.getElementById("appSidebar").classList.remove("mobile-active");
-
       loadViewData(targetId);
     });
   });
@@ -341,7 +327,6 @@ async function loadDashboard() {
       State.user &&
       (State.user.role === "owner" || State.user.role === "admin");
 
-    // Обновление верхних карточек (для Админа)
     if (isAdmin) {
       const elNetProfit = document.getElementById("statNetProfit");
       const elRevenue = document.getElementById("statRevenue");
@@ -360,12 +345,10 @@ async function loadDashboard() {
           deepData.economics.totalBrigadeDebts || 0,
         );
     } else {
-      // Для Бригадира считаем только его личный заработок по его закрытым заказам
       const myOrders = await API.getOrders("done");
       let myTotalEarned = 0;
       myOrders.forEach((o) => {
         const net = o.details?.financials?.net_profit || o.total_price;
-        // Грубый просчет, лучше брать с API транзакций, но пока так:
         myTotalEarned += net;
       });
       const elManagerEarned = document.getElementById("statManagerEarned");
@@ -382,14 +365,19 @@ async function loadDashboard() {
     renderFunnel(stats.funnel);
     renderExpensesChart(deepData.expenseBreakdown);
 
-    // Загрузка Таймлайна и Рейтинга только для Администрации
     if (isAdmin) {
-      const [timelineData, brigadesData] = await Promise.all([
-        API.getTimeline(),
-        API.getBrigadesAnalytics(),
-      ]);
+      const [timelineData, brigadesData, ordersTimelineData] =
+        await Promise.all([
+          API.getTimeline(),
+          API.getBrigadesAnalytics(),
+          API.getOrdersTimeline(),
+        ]);
       renderTimelineChart(timelineData);
       renderLeaderboard(brigadesData);
+      renderOrdersTimelineChart(ordersTimelineData);
+    } else {
+      const ordersTimelineData = await API.getOrdersTimeline();
+      renderOrdersTimelineChart(ordersTimelineData);
     }
   } catch (e) {
     console.error(e);
@@ -401,14 +389,12 @@ function renderTimelineChart(data) {
   const canvas = document.getElementById("timelineChart");
   if (!canvas || typeof Chart === "undefined") return;
 
-  // Очистка старого инстанса
   if (State.timelineChartInstance) {
     State.timelineChartInstance.destroy();
   }
 
   if (!Array.isArray(data) || data.length === 0) return;
 
-  // Данные с сервера идут DESC (от новых к старым), переворачиваем для графика слева-направо
   const sortedData = [...data].reverse();
   const labels = sortedData.map((d) => d.month);
   const revenue = sortedData.map((d) => parseFloat(d.gross_revenue));
@@ -442,9 +428,7 @@ function renderTimelineChart(data) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: {
-        legend: { labels: { color: "#f4f4f5" } },
-      },
+      plugins: { legend: { labels: { color: "#f4f4f5" } } },
       scales: {
         x: {
           ticks: { color: "#a1a1aa" },
@@ -452,6 +436,52 @@ function renderTimelineChart(data) {
         },
         y: {
           ticks: { color: "#a1a1aa" },
+          grid: { color: "rgba(255,255,255,0.05)" },
+        },
+      },
+    },
+  });
+}
+
+function renderOrdersTimelineChart(data) {
+  const canvas = document.getElementById("ordersTimelineChart");
+  if (!canvas || typeof Chart === "undefined") return;
+
+  if (State.ordersTimelineChartInstance) {
+    State.ordersTimelineChartInstance.destroy();
+  }
+
+  if (!Array.isArray(data) || data.length === 0) return;
+
+  const sortedData = [...data].reverse();
+  const labels = sortedData.map((d) => d.month);
+  const newOrders = sortedData.map((d) => parseInt(d.new_orders) || 0);
+  const workOrders = sortedData.map((d) => parseInt(d.work_orders) || 0);
+  const doneOrders = sortedData.map((d) => parseInt(d.done_orders) || 0);
+
+  State.ordersTimelineChartInstance = new Chart(canvas, {
+    type: "bar",
+    data: {
+      labels: labels,
+      datasets: [
+        { label: "Новые", data: newOrders, backgroundColor: "#3b82f6" },
+        { label: "В работе", data: workOrders, backgroundColor: "#f59e0b" },
+        { label: "Завершено", data: doneOrders, backgroundColor: "#10b981" },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: "#f4f4f5" } } },
+      scales: {
+        x: {
+          stacked: true,
+          ticks: { color: "#a1a1aa" },
+          grid: { color: "rgba(255,255,255,0.05)" },
+        },
+        y: {
+          stacked: true,
+          ticks: { color: "#a1a1aa", stepSize: 1 },
           grid: { color: "rgba(255,255,255,0.05)" },
         },
       },
@@ -643,7 +673,6 @@ window.openOrderModal = (orderId) => {
   document.getElementById("modalOrderTitle").textContent =
     `Объект #${order.id} (${area} м²)`;
 
-  // Настройка статуса
   const statusSelect = document.getElementById("modalOrderStatus");
   statusSelect.innerHTML = `
     <option value="new">Новый (Биржа)</option>
@@ -654,7 +683,6 @@ window.openOrderModal = (orderId) => {
   `;
   statusSelect.value = order.status;
 
-  // Настройка Бригады (Только для Админов)
   const brigadeSelect = document.getElementById("modalOrderBrigade");
   if (
     State.user &&
@@ -668,12 +696,10 @@ window.openOrderModal = (orderId) => {
       });
     }
   } else {
-    // Бригадир не может менять бригаду
     brigadeSelect.innerHTML = `<option>${order.brigade_name || "Не назначена"}</option>`;
     brigadeSelect.disabled = true;
   }
 
-  // Кнопка Финализации (Cash Flow)
   const btnFinalize = document.getElementById("btnFinalizeOrder");
   if (order.status === "work" && order.brigade_id) {
     btnFinalize.style.display = "flex";
@@ -872,7 +898,6 @@ function bindGlobalEvents() {
     .getElementById("orderStatusFilter")
     ?.addEventListener("change", loadOrders);
 
-  // Модалка заказов
   document
     .getElementById("btnCloseOrderModal")
     ?.addEventListener("click", () => {
@@ -907,7 +932,6 @@ function bindGlobalEvents() {
       }
     });
 
-  // ФИНАЛИЗАЦИЯ
   document
     .getElementById("btnFinalizeOrder")
     ?.addEventListener("click", async () => {
@@ -962,7 +986,6 @@ function bindGlobalEvents() {
       }
     });
 
-  // Ручной заказ
   document
     .getElementById("btnOpenManualOrderModal")
     ?.addEventListener(
@@ -999,7 +1022,6 @@ function bindGlobalEvents() {
       }
     });
 
-  // Инкассация
   document
     .getElementById("btnCloseIncassationModal")
     ?.addEventListener(
@@ -1024,7 +1046,6 @@ function bindGlobalEvents() {
       }
     });
 
-  // Транзакции Кассы
   document
     .getElementById("btnOpenTransactionModal")
     ?.addEventListener(
@@ -1061,7 +1082,6 @@ function bindGlobalEvents() {
       }
     });
 
-  // Резервное копирование
   document
     .getElementById("btnDownloadBackup")
     ?.addEventListener("click", async () => {
@@ -1078,7 +1098,6 @@ function bindGlobalEvents() {
       }
     });
 
-  // Рассылка
   document
     .getElementById("btnSendBroadcast")
     ?.addEventListener("click", async () => {
@@ -1188,7 +1207,6 @@ async function loadUsers() {
       tbody.appendChild(tr);
     });
 
-    // Обработка 403 ошибки при попытке изменить свою роль
     document.querySelectorAll(".role-select").forEach((select) => {
       select.addEventListener("change", async (e) => {
         try {
