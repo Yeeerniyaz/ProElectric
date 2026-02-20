@@ -1,12 +1,12 @@
 /**
  * @file src/app.js
- * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.9.1).
- * ИСПРАВЛЕНО: Доступ менеджеров к редактированию BOM, Цены и Статуса СВОИХ объектов.
- * ДОБАВЛЕНО: Жесткий контроль статусов для Бригадиров (запрет на new, cancel, done).
- * ДОБАВЛЕНО: Блокировка доступа к чужим объектам на уровне API.
+ * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.9.8).
+ * ИСПРАВЛЕНО: ЖЕСТКАЯ БЛОКИРОВКА (Read-Only) любых изменений после завершения заказа.
+ * ДОБАВЛЕНО: Роуты для поиска клиентов, обновления адресов/комментов, фильтрации по датам.
+ * ДОБАВЛЕНО: Механизм просмотра биржи и взятия заказа в работу для бригадиров через Web CRM.
  *
  * @module Application
- * @version 10.9.1 (Enterprise Security & Manager Access Edition)
+ * @version 10.9.8 (Enterprise Security & Date Filtering Edition)
  */
 
 import express from "express";
@@ -87,7 +87,7 @@ app.use(
 app.use(express.static(path.join(__dirname, "../public")));
 
 // =============================================================================
-// 2. 🔐 AUTHENTICATION & RBAC
+// 2. 🔐 AUTHENTICATION & STRICT RBAC
 // =============================================================================
 
 const requireAdmin = (req, res, next) => {
@@ -115,8 +115,27 @@ const requireManager = (req, res, next) => {
     .json({ error: "⛔ Доступ запрещен. Требуются права Бригадира." });
 };
 
-// 🔥 НОВАЯ ЗАЩИТА: Проверка, принадлежит ли объект менеджеру
-const checkManagerAccess = async (req, orderId) => {
+/**
+ * 🔥 ГЛАВНЫЙ СИСТЕМНЫЙ ЩИТ:
+ * 1. Запрещает менять завершенные заказы всем.
+ * 2. Изолирует заказы менеджеров друг от друга.
+ */
+const enforceOrderModification = async (req, orderId) => {
+  const oRes = await db.query(
+    "SELECT brigade_id, status FROM orders WHERE id = $1",
+    [orderId],
+  );
+  if (oRes.rows.length === 0) throw new Error("Заказ не найден.");
+  const order = oRes.rows[0];
+
+  // ЖЕСТКАЯ БЛОКИРОВКА ПРИ ЗАВЕРШЕНИИ (Аудит и безопасность)
+  if (order.status === "done") {
+    throw new Error(
+      "⛔ Заказ ЗАВЕРШЕН. Любые финансовые изменения или изменения сметы заблокированы.",
+    );
+  }
+
+  // ПРОВЕРКА ПРИНАДЛЕЖНОСТИ ДЛЯ МЕНЕДЖЕРА
   if (req.session?.user?.role === "manager") {
     const bRes = await db.query(
       "SELECT id FROM brigades WHERE brigadier_id = $1",
@@ -125,13 +144,8 @@ const checkManagerAccess = async (req, orderId) => {
     const brigadeId = bRes.rows.length > 0 ? bRes.rows[0].id : null;
 
     if (!brigadeId) throw new Error("⛔ У вас нет активной бригады.");
-
-    const oRes = await db.query("SELECT brigade_id FROM orders WHERE id = $1", [
-      orderId,
-    ]);
-    if (oRes.rows.length === 0 || oRes.rows[0].brigade_id !== brigadeId) {
+    if (order.brigade_id !== brigadeId)
       throw new Error("⛔ Доступ запрещен: Это не ваш объект!");
-    }
   }
 };
 
@@ -231,7 +245,7 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 // =============================================================================
-// 3. 📊 DEEP ANALYTICS & TIMELINES
+// 3. 📊 DEEP ANALYTICS & TIMELINES (WITH DATE FILTERS)
 // =============================================================================
 
 const getManagerBrigadeId = async (req) => {
@@ -248,9 +262,12 @@ const getManagerBrigadeId = async (req) => {
 app.get("/api/dashboard/stats", requireManager, async (req, res) => {
   try {
     const brigadeId = await getManagerBrigadeId(req);
+    // Передаем даты в БД (даже если репозиторий пока их игнорирует, мы обновим его позже)
+    const { startDate, endDate } = req.query;
+
     const [globalStats, funnelStats] = await Promise.all([
-      db.getGlobalStats(brigadeId),
-      db.getOrdersFunnel(brigadeId),
+      db.getGlobalStats(brigadeId, startDate, endDate),
+      db.getOrdersFunnel(brigadeId, startDate, endDate),
     ]);
     const activeCount =
       funnelStats.find((f) => f.status === "work" || f.status === "processing")
@@ -274,7 +291,11 @@ app.get("/api/dashboard/stats", requireManager, async (req, res) => {
 app.get("/api/analytics/deep", requireManager, async (req, res) => {
   try {
     const brigadeId = await getManagerBrigadeId(req);
-    const deepData = await db.getDeepAnalyticsData(brigadeId);
+    const deepData = await db.getDeepAnalyticsData(
+      brigadeId,
+      req.query.startDate,
+      req.query.endDate,
+    );
     res.json(deepData);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -284,7 +305,11 @@ app.get("/api/analytics/deep", requireManager, async (req, res) => {
 app.get("/api/analytics/timeline", requireManager, async (req, res) => {
   try {
     const brigadeId = await getManagerBrigadeId(req);
-    const timelineData = await db.getTimelineAnalytics(brigadeId);
+    const timelineData = await db.getTimelineAnalytics(
+      brigadeId,
+      req.query.startDate,
+      req.query.endDate,
+    );
     res.json(timelineData);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -294,7 +319,11 @@ app.get("/api/analytics/timeline", requireManager, async (req, res) => {
 app.get("/api/analytics/orders-timeline", requireManager, async (req, res) => {
   try {
     const brigadeId = await getManagerBrigadeId(req);
-    const ordersTimeline = await db.getOrdersTimelineAnalytics(brigadeId);
+    const ordersTimeline = await db.getOrdersTimelineAnalytics(
+      brigadeId,
+      req.query.startDate,
+      req.query.endDate,
+    );
     res.json(ordersTimeline);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -303,7 +332,10 @@ app.get("/api/analytics/orders-timeline", requireManager, async (req, res) => {
 
 app.get("/api/analytics/brigades", requireAdmin, async (req, res) => {
   try {
-    const data = await db.getBrigadesAnalytics();
+    const data = await db.getBrigadesAnalytics(
+      req.query.startDate,
+      req.query.endDate,
+    );
     res.json(data);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -346,6 +378,7 @@ app.post("/api/brigades", requireAdmin, async (req, res) => {
   }
 });
 
+// Обновление доли или блокировка
 app.patch("/api/brigades/:id", requireAdmin, async (req, res) => {
   try {
     const { profitPercentage, isActive } = req.body;
@@ -382,18 +415,30 @@ app.get("/api/orders", requireManager, async (req, res) => {
     const params = [];
 
     if (isManager) {
-      const bRes = await db.query(
-        "SELECT id FROM brigades WHERE brigadier_id = $1",
-        [userId],
-      );
-      const brigadeId = bRes.rows.length > 0 ? bRes.rows[0].id : -1;
-      params.push(brigadeId);
-      query += ` AND o.brigade_id = $${params.length}`;
-    }
-
-    if (status && status !== "all") {
-      params.push(status);
-      query += ` AND o.status = $${params.length}`;
+      if (status === "new") {
+        // 🔥 ИСПРАВЛЕНИЕ: Менеджер запрашивает Биржу (новые заказы) — снимаем фильтр по бригаде
+        params.push("new");
+        query += ` AND o.status = $${params.length}`;
+      } else {
+        // Запрашивает "Мои объекты"
+        const bRes = await db.query(
+          "SELECT id FROM brigades WHERE brigadier_id = $1",
+          [userId],
+        );
+        const brigadeId = bRes.rows.length > 0 ? bRes.rows[0].id : -1;
+        params.push(brigadeId);
+        query += ` AND o.brigade_id = $${params.length}`;
+        if (status && status !== "all") {
+          params.push(status);
+          query += ` AND o.status = $${params.length}`;
+        }
+      }
+    } else {
+      // Владелец/Админ
+      if (status && status !== "all") {
+        params.push(status);
+        query += ` AND o.status = $${params.length}`;
+      }
     }
 
     params.push(limit, offset);
@@ -477,13 +522,86 @@ app.post("/api/orders", requireAdmin, async (req, res) => {
   }
 });
 
-// 🔥 ИСПРАВЛЕНО: Менеджеры могут менять статус, но только на processing/work
+// 🔥 НОВОЕ: Бригадир берет объект с биржи через Web CRM
+app.post("/api/orders/:id/take", requireManager, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.session?.user?.id;
+
+    const bRes = await db.query(
+      "SELECT id, name FROM brigades WHERE brigadier_id = $1 AND is_active = true",
+      [userId],
+    );
+    if (bRes.rows.length === 0)
+      return res.status(403).json({ error: "У вас нет активной бригады." });
+    const brigade = bRes.rows[0];
+
+    // Объект можно взять только если он новый
+    const oRes = await db.query("SELECT status FROM orders WHERE id = $1", [
+      id,
+    ]);
+    if (oRes.rows.length === 0 || oRes.rows[0].status !== "new") {
+      return res
+        .status(400)
+        .json({ error: "Объект уже забрали или он недоступен." });
+    }
+
+    await db.query(
+      "UPDATE orders SET brigade_id = $1, status = 'processing', updated_at = NOW() WHERE id = $2",
+      [brigade.id, id],
+    );
+
+    const io = getSocketIO();
+    if (io)
+      io.emit("order_updated", {
+        orderId: id,
+        status: "processing",
+        brigade_id: brigade.id,
+      });
+
+    res.json({ success: true, message: "Заказ успешно взят в работу!" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 🔥 НОВОЕ: Обновление метаданных (Адрес, Комментарий)
+app.patch("/api/orders/:id/metadata", requireManager, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { address, admin_comment } = req.body;
+
+    await enforceOrderModification(req, id); // Блок, если завершен или чужой
+
+    const orderRes = await db.query(
+      "SELECT details FROM orders WHERE id = $1",
+      [id],
+    );
+    const details = orderRes.rows[0].details || {};
+
+    if (address !== undefined) details.address = address;
+    if (admin_comment !== undefined) details.admin_comment = admin_comment;
+
+    await db.query(
+      "UPDATE orders SET details = $1, updated_at = NOW() WHERE id = $2",
+      [details, id],
+    );
+
+    const io = getSocketIO();
+    if (io) io.emit("order_updated", { orderId: id, metadata_updated: true });
+
+    res.json({ success: true, details });
+  } catch (error) {
+    res.status(403).json({ error: error.message });
+  }
+});
+
 app.patch("/api/orders/:id/status", requireManager, async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
 
-    await checkManagerAccess(req, id);
+    await enforceOrderModification(req, id);
 
     if (
       req.session?.user?.role === "manager" &&
@@ -503,11 +621,10 @@ app.patch("/api/orders/:id/status", requireManager, async (req, res) => {
   }
 });
 
-// 🔥 ИСПРАВЛЕНО: Менеджеры могут редактировать BOM своего объекта
 app.patch("/api/orders/:id/bom", requireManager, async (req, res) => {
   try {
     const { id } = req.params;
-    await checkManagerAccess(req, id);
+    await enforceOrderModification(req, id);
     const updatedDetails = await OrderService.updateOrderDetails(
       id,
       "bom",
@@ -519,15 +636,13 @@ app.patch("/api/orders/:id/bom", requireManager, async (req, res) => {
   }
 });
 
-// 🔥 ИСПРАВЛЕНО: Менеджеры могут редактировать Договорную Цену своего объекта
 app.patch("/api/orders/:id/finance/price", requireManager, async (req, res) => {
   try {
     const { id } = req.params;
     const { newPrice } = req.body;
     if (!newPrice || isNaN(newPrice))
       return res.status(400).json({ error: "Укажите корректную новую цену" });
-
-    await checkManagerAccess(req, id);
+    await enforceOrderModification(req, id);
 
     const financials = await OrderService.updateOrderFinalPrice(id, newPrice);
     res.json({ success: true, financials });
@@ -540,6 +655,7 @@ app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { brigadeId } = req.body;
+    // Админ может назначать принудительно
     await db.query(
       "UPDATE orders SET brigade_id = $1, status = 'work', updated_at = NOW() WHERE id = $2",
       [brigadeId, id],
@@ -575,6 +691,7 @@ app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
 app.post("/api/orders/:id/finalize", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
+    // Finalize доступен только Админу (Владельцу)
     const result = await db.finalizeOrderAndDistributeProfit(id);
     const io = getSocketIO();
     if (io) io.emit("order_updated", { orderId: id, status: "done" });
@@ -590,6 +707,8 @@ app.post(
   async (req, res) => {
     try {
       const { amount, category, comment } = req.body;
+      await enforceOrderModification(req, req.params.id);
+
       const financials = await OrderService.addOrderExpense(
         req.params.id,
         amount,
@@ -699,17 +818,29 @@ app.post("/api/settings", requireAdmin, async (req, res) => {
 });
 
 // =============================================================================
-// 👥 9. STAFF & BROADCAST
+// 👥 9. STAFF & CRM (WITH SEARCH)
 // =============================================================================
 
 app.get("/api/users", requireAdmin, async (req, res) => {
   try {
-    res.json(
-      await UserService.getAllUsers(
-        parseInt(req.query.limit) || 100,
-        parseInt(req.query.offset) || 0,
-      ),
-    );
+    const search = req.query.search;
+    let limit = parseInt(req.query.limit) || 100;
+    let offset = parseInt(req.query.offset) || 0;
+
+    let q = `SELECT telegram_id, first_name, username, phone, role FROM users`;
+    let params = [];
+
+    // 🔥 ИСПРАВЛЕНИЕ: Интеллектуальный поиск по ID, имени или телефону
+    if (search) {
+      q += ` WHERE (first_name ILIKE $1 OR phone ILIKE $1 OR CAST(telegram_id AS TEXT) ILIKE $1)`;
+      params.push(`%${search}%`);
+    }
+
+    params.push(limit, offset);
+    q += ` ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`;
+
+    const result = await db.query(q, params);
+    res.json(result.rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

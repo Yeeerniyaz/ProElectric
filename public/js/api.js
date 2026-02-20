@@ -1,15 +1,38 @@
 /**
  * @file public/js/api.js
- * @description Frontend API Client (ERP Middleware v10.8.0).
+ * @description Frontend API Client (ERP Middleware v10.9.8).
  * Обеспечивает строгую типизацию запросов к REST API сервера ProElectric.
- * Включает методы OTP-авторизации, глубокой аналитики, управления бригадами и инкассации.
- * ДОБАВЛЕНО: Эндпоинт для Таймлайна Заказов (Orders Timeline).
+ * ДОБАВЛЕНО: Поддержка фильтров по датам (startDate, endDate) для аналитики.
+ * ДОБАВЛЕНО: Эндпоинты для обновления адресов/комментариев и взятия заказа с биржи.
+ * ДОБАВЛЕНО: Поиск пользователей по CRM.
+ * Ни одна старая функция не была удалена.
  *
  * @module API
- * @version 10.8.0 (Enterprise ERP & Advanced Analytics Edition)
+ * @version 10.9.8 (Enterprise ERP & Advanced Analytics Edition)
  */
 
 const API_BASE = "/api";
+
+/**
+ * Умный сборщик параметров запроса (Query String Builder).
+ * Игнорирует пустые значения (null, undefined, "").
+ * @param {Object} params - Объект с параметрами { startDate: '2023-01-01', limit: 100 }
+ * @returns {string} - Сформированная строка '?startDate=2023-01-01&limit=100'
+ */
+const buildQuery = (params) => {
+  const query = new URLSearchParams();
+  for (const key in params) {
+    if (
+      params[key] !== undefined &&
+      params[key] !== null &&
+      params[key] !== ""
+    ) {
+      query.append(key, params[key]);
+    }
+  }
+  const str = query.toString();
+  return str ? `?${str}` : "";
+};
 
 /**
  * Универсальная обертка для HTTP-запросов (Fetch Wrapper).
@@ -83,21 +106,28 @@ export const API = {
   checkAuth: () => fetchWrapper("/auth/me"),
 
   // ==========================================
-  // 📊 DASHBOARD & ADVANCED ANALYTICS (NEW)
+  // 📊 DASHBOARD & ADVANCED ANALYTICS (WITH DATES)
   // ==========================================
-  getStats: () => fetchWrapper("/dashboard/stats"),
+  getStats: (startDate, endDate) =>
+    fetchWrapper(`/dashboard/stats${buildQuery({ startDate, endDate })}`),
 
   // Глубокая аналитика (юнит-экономика)
-  getDeepAnalytics: () => fetchWrapper("/analytics/deep"),
+  getDeepAnalytics: (startDate, endDate) =>
+    fetchWrapper(`/analytics/deep${buildQuery({ startDate, endDate })}`),
 
   // Таймлайн (Доходы фирмы по месяцам)
-  getTimeline: () => fetchWrapper("/analytics/timeline"),
+  getTimeline: (startDate, endDate) =>
+    fetchWrapper(`/analytics/timeline${buildQuery({ startDate, endDate })}`),
 
-  // НОВОЕ: Таймлайн (Количество заказов по статусам)
-  getOrdersTimeline: () => fetchWrapper("/analytics/orders-timeline"),
+  // Таймлайн (Количество заказов по статусам)
+  getOrdersTimeline: (startDate, endDate) =>
+    fetchWrapper(
+      `/analytics/orders-timeline${buildQuery({ startDate, endDate })}`,
+    ),
 
   // Рейтинг бригад (Leaderboard: кто сколько заработал и должен)
-  getBrigadesAnalytics: () => fetchWrapper("/analytics/brigades"),
+  getBrigadesAnalytics: (startDate, endDate) =>
+    fetchWrapper(`/analytics/brigades${buildQuery({ startDate, endDate })}`),
 
   // ==========================================
   // 🏗 BRIGADES MANAGEMENT (ERP)
@@ -122,10 +152,20 @@ export const API = {
   // 📦 ORDERS MANAGEMENT
   // ==========================================
   getOrders: (status = "all", limit = 100, offset = 0) =>
-    fetchWrapper(`/orders?status=${status}&limit=${limit}&offset=${offset}`),
+    fetchWrapper(`/orders${buildQuery({ status, limit, offset })}`),
 
   createManualOrder: (data) =>
     fetchWrapper("/orders", { method: "POST", body: JSON.stringify(data) }),
+
+  // 🔥 НОВОЕ: Взять заказ с биржи (Для Бригадиров из Web CRM)
+  takeOrderWeb: (id) => fetchWrapper(`/orders/${id}/take`, { method: "POST" }),
+
+  // 🔥 НОВОЕ: Обновление метаданных (Адрес и Системный комментарий)
+  updateOrderMetadata: (id, address, admin_comment) =>
+    fetchWrapper(`/orders/${id}/metadata`, {
+      method: "PATCH",
+      body: JSON.stringify({ address, admin_comment }),
+    }),
 
   updateOrderStatus: (id, status) =>
     fetchWrapper(`/orders/${id}/status`, {
@@ -176,7 +216,7 @@ export const API = {
   getFinanceAccounts: () => fetchWrapper("/finance/accounts"),
 
   getFinanceTransactions: (limit = 100) =>
-    fetchWrapper(`/finance/transactions?limit=${limit}`),
+    fetchWrapper(`/finance/transactions${buildQuery({ limit })}`),
 
   addFinanceTransaction: (data) =>
     fetchWrapper("/finance/transactions", {
@@ -216,8 +256,10 @@ export const API = {
   // ==========================================
   // 👥 STAFF & BROADCAST
   // ==========================================
-  getUsers: (limit = 100, offset = 0) =>
-    fetchWrapper(`/users?limit=${limit}&offset=${offset}`),
+
+  // 🔥 ИСПРАВЛЕНО: Добавлен параметр search для умного поиска
+  getUsers: (search = "", limit = 100, offset = 0) =>
+    fetchWrapper(`/users${buildQuery({ search, limit, offset })}`),
 
   updateUserRole: (userId, role) =>
     fetchWrapper("/users/role", {

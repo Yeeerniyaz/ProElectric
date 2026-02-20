@@ -1,12 +1,12 @@
 /**
  * @file public/js/app.js
- * @description Frontend Application Controller (SPA Logic v10.9.1 Enterprise).
+ * @description Frontend Application Controller (SPA Logic v10.9.9 Enterprise).
  * Управляет состоянием интерфейса, модальными окнами, OTP-авторизацией.
- * Включает Глобальный Финансовый Модуль, ERP Бригад, Deep Analytics и WebSockets.
- * ИСПРАВЛЕНО: Доступ Бригадиров к изменению Цены, BOM и Статусов (только разрешенных).
+ * ДОБАВЛЕНО: Таймлайны (фильтрация по датам), Поиск CRM, Режим Read-Only для 'done'.
+ * ДОБАВЛЕНО: Взятие заказа с биржи (Web), Метаданные (Адрес/Коммент), Создание Бригад.
  *
  * @module AppController
- * @version 10.9.1 (PWA, Chart.js, Cash Flow & Manager Permissions)
+ * @version 10.9.9 (PWA, Chart.js, Cash Flow & Full ERP Control)
  */
 
 import { API } from "./api.js";
@@ -86,6 +86,10 @@ const State = {
   financeAccounts: [],
   timelineChartInstance: null,
   ordersTimelineChartInstance: null,
+  // Глобальные фильтры
+  dateStart: "",
+  dateEnd: "",
+  searchUserTerm: "",
 };
 
 const socket = typeof io !== "undefined" ? io() : null;
@@ -174,10 +178,10 @@ function applyRoleRestrictions(role) {
 
   if (!isAdmin) {
     const navOrdersText = document.getElementById("navOrdersText");
-    if (navOrdersText) navOrdersText.textContent = "Мои Объекты";
+    if (navOrdersText) navOrdersText.textContent = "Мои Объекты / Биржа";
 
     const ordersPageTitle = document.getElementById("ordersPageTitle");
-    if (ordersPageTitle) ordersPageTitle.textContent = "Мои Объекты";
+    if (ordersPageTitle) ordersPageTitle.textContent = "Мои Объекты / Биржа";
 
     const dashboardTitle = document.getElementById("dashboardMainTitle");
     if (dashboardTitle) dashboardTitle.textContent = "Моя Статистика";
@@ -185,7 +189,6 @@ function applyRoleRestrictions(role) {
     const dashboardSub = document.getElementById("dashboardSubTitle");
     if (dashboardSub) dashboardSub.textContent = "Ваши показатели и заработок";
 
-    // 🔥 ИСПРАВЛЕНИЕ: Принудительно показываем блок изменения цены для Бригадиров
     const priceBlock = document.getElementById("modalFinalPriceBlock");
     if (priceBlock) priceBlock.style.display = "flex";
   }
@@ -321,9 +324,20 @@ function loadViewData(viewId) {
 
 async function loadDashboard() {
   try {
+    const btn = document.getElementById("refreshStatsBtn");
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = `<i data-feather="loader" class="spin"></i> Загрузка...`;
+      if (typeof feather !== "undefined") feather.replace();
+    }
+
+    // Читаем даты из UI
+    State.dateStart = document.getElementById("filterDateStart")?.value || "";
+    State.dateEnd = document.getElementById("filterDateEnd")?.value || "";
+
     const [stats, deepData] = await Promise.all([
-      API.getStats(),
-      API.getDeepAnalytics(),
+      API.getStats(State.dateStart, State.dateEnd),
+      API.getDeepAnalytics(State.dateStart, State.dateEnd),
     ]);
 
     const isAdmin =
@@ -348,7 +362,7 @@ async function loadDashboard() {
           deepData.economics.totalBrigadeDebts || 0,
         );
     } else {
-      const myOrders = await API.getOrders("done");
+      const myOrders = await API.getOrders("done"); // Менеджеру считаем только сделанное
       let myTotalEarned = 0;
       myOrders.forEach((o) => {
         const net = o.details?.financials?.net_profit || o.total_price;
@@ -371,20 +385,35 @@ async function loadDashboard() {
     if (isAdmin) {
       const [timelineData, brigadesData, ordersTimelineData] =
         await Promise.all([
-          API.getTimeline(),
-          API.getBrigadesAnalytics(),
-          API.getOrdersTimeline(),
+          API.getTimeline(State.dateStart, State.dateEnd),
+          API.getBrigadesAnalytics(State.dateStart, State.dateEnd),
+          API.getOrdersTimeline(State.dateStart, State.dateEnd),
         ]);
       renderTimelineChart(timelineData);
       renderLeaderboard(brigadesData);
       renderOrdersTimelineChart(ordersTimelineData);
     } else {
-      const ordersTimelineData = await API.getOrdersTimeline();
+      const ordersTimelineData = await API.getOrdersTimeline(
+        State.dateStart,
+        State.dateEnd,
+      );
       renderOrdersTimelineChart(ordersTimelineData);
+    }
+
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `<i data-feather="refresh-cw"></i> Применить`;
+      if (typeof feather !== "undefined") feather.replace();
     }
   } catch (e) {
     console.error(e);
     Utils.showToast("Ошибка загрузки аналитики", "error");
+    const btn = document.getElementById("refreshStatsBtn");
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `<i data-feather="refresh-cw"></i> Применить`;
+      feather.replace();
+    }
   }
 }
 
@@ -589,22 +618,51 @@ async function loadBrigades() {
       const debtClass = debt > 0 ? "pe-text-danger fw-bold" : "pe-text-success";
 
       const tr = document.createElement("tr");
+
       tr.innerHTML = `
         <td><b>#${b.id}</b> ${b.name || "Без названия"}</td>
         <td><code>${b.brigadier_id}</code></td>
         <td>${b.profit_percentage || 0}%</td>
         <td class="${debtClass}">${Utils.formatCurrency(debt)}</td>
-        <td><span class="pe-badge ${b.is_active ? "badge-done" : "badge-cancel"}">${b.is_active ? "Активна" : "Отключена"}</span></td>
-        <td class="pe-text-right">
+        <td><span class="pe-badge ${b.is_active ? "badge-done" : "badge-cancel"}">${b.is_active ? "Активна" : "Заблокирована"}</span></td>
+        <td class="pe-text-right" style="display:flex; flex-direction:column; gap:0.5rem; align-items:flex-end;">
           ${debt > 0 ? `<button class="pe-btn pe-btn-sm pe-btn-success" onclick="openIncassationModal(${b.brigadier_id}, '${b.name || "Бригада"}')">Списать долг</button>` : ""}
+          <div style="display:flex; gap:0.25rem;">
+             <button class="pe-btn pe-btn-sm pe-btn-secondary" onclick="window.openEditBrigadeModal(${b.id}, ${b.profit_percentage})"><i data-feather="percent"></i></button>
+             <button class="pe-btn pe-btn-sm ${b.is_active ? "pe-btn-danger" : "pe-btn-primary"}" onclick="window.toggleBrigadeStatus(${b.id}, ${!b.is_active})">
+               ${b.is_active ? "🚫 Блок" : "✅ Акт"}
+             </button>
+          </div>
         </td>
       `;
       tbody.appendChild(tr);
     });
+    if (typeof feather !== "undefined") feather.replace();
   } catch (e) {
     Utils.showToast("Ошибка загрузки бригад", "error");
   }
 }
+
+window.toggleBrigadeStatus = async (brigadeId, isActive) => {
+  const actionText = isActive ? "АКТИВИРОВАТЬ" : "ЗАБЛОКИРОВАТЬ";
+  if (!confirm(`Вы уверены, что хотите ${actionText} эту бригаду?`)) return;
+  try {
+    await API.updateBrigade(brigadeId, null, isActive);
+    Utils.showToast(
+      `Бригада успешно ${isActive ? "активирована" : "заблокирована"}`,
+      "success",
+    );
+    loadBrigades();
+  } catch (err) {
+    Utils.showToast(err.message, "error");
+  }
+};
+
+window.openEditBrigadeModal = (id, percent) => {
+  document.getElementById("editBrigId").value = id;
+  document.getElementById("editBrigProfit").value = percent;
+  document.getElementById("editBrigadeModal").style.display = "flex";
+};
 
 window.openIncassationModal = (brigadierId, brigadeName) => {
   document.getElementById("incBrigadeId").value = brigadierId;
@@ -676,11 +734,25 @@ window.openOrderModal = (orderId) => {
   document.getElementById("modalOrderTitle").textContent =
     `Объект #${order.id} (${area} м²)`;
 
+  // Поля метаданных
+  document.getElementById("modalOrderAddress").value =
+    order.details?.address || "";
+  document.getElementById("modalOrderComment").value =
+    order.details?.admin_comment || "";
+
   const statusSelect = document.getElementById("modalOrderStatus");
   const isAdmin =
     State.user && (State.user.role === "owner" || State.user.role === "admin");
+  const isDone = order.status === "done";
 
-  // 🔥 ИСПРАВЛЕНИЕ: Менеджер видит только разрешенные для него статусы
+  // Кнопка взять в работу (Биржа)
+  const btnTake = document.getElementById("btnTakeOrderWeb");
+  if (!isAdmin && order.status === "new") {
+    btnTake.style.display = "flex";
+  } else {
+    btnTake.style.display = "none";
+  }
+
   if (isAdmin) {
     statusSelect.innerHTML = `
       <option value="new">Новый (Биржа)</option>
@@ -694,7 +766,6 @@ window.openOrderModal = (orderId) => {
       <option value="processing">Взят в расчет / Замер</option>
       <option value="work">В работе (Монтаж)</option>
     `;
-    // Если заказ уже Завершен или Отменен, менеджер должен просто видеть этот статус, но менять его уже не сможет
     if (!["processing", "work"].includes(order.status)) {
       statusSelect.innerHTML += `<option value="${order.status}" disabled>${order.status.toUpperCase()}</option>`;
     }
@@ -716,17 +787,28 @@ window.openOrderModal = (orderId) => {
   }
 
   const btnFinalize = document.getElementById("btnFinalizeOrder");
-  // Финализировать заказ (перевести в done и начислить долги) может только Админ
   if (isAdmin && order.status === "work" && order.brigade_id) {
     btnFinalize.style.display = "flex";
   } else {
     btnFinalize.style.display = "none";
   }
 
+  // 🔥 РЕЖИМ READ-ONLY ДЛЯ ЗАВЕРШЕННЫХ ОБЪЕКТОВ
+  const warningDiv = document.getElementById("orderDoneWarning");
+  const editables = document.querySelectorAll(".order-editable-field");
+
+  if (isDone) {
+    warningDiv.style.display = "block";
+    editables.forEach((el) => (el.disabled = true));
+  } else {
+    warningDiv.style.display = "none";
+    editables.forEach((el) => (el.disabled = false));
+  }
+
   State.currentBOM = Array.isArray(order.details?.bom)
     ? JSON.parse(JSON.stringify(order.details.bom))
     : [];
-  renderBOMEditor();
+  renderBOMEditor(isDone);
   renderOrderFinancials(order);
 
   document.getElementById("orderModal").style.display = "flex";
@@ -777,7 +859,7 @@ function renderOrderFinancials(order) {
   }
 }
 
-function renderBOMEditor() {
+function renderBOMEditor(isDone) {
   const container = document.getElementById("modalBOMList");
   container.innerHTML = "";
 
@@ -792,24 +874,26 @@ function renderBOMEditor() {
       row.style.marginBottom = "0.5rem";
       row.style.alignItems = "center";
       row.innerHTML = `
-        <input type="text" class="pe-input pe-input-sm" style="flex:1;" value="${item.name}" placeholder="Наименование" onchange="window.updateBOMItem(${index}, 'name', this.value)">
-        <input type="number" class="pe-input pe-input-sm" style="width:70px;" value="${item.qty}" placeholder="Кол-во" onchange="window.updateBOMItem(${index}, 'qty', this.value)">
-        <input type="text" class="pe-input pe-input-sm" style="width:60px;" value="${item.unit}" placeholder="Ед." onchange="window.updateBOMItem(${index}, 'unit', this.value)">
-        <button class="pe-btn pe-btn-danger pe-btn-sm pe-btn-icon" onclick="window.removeBOMItem(${index})"><i data-feather="trash-2"></i></button>
+        <input type="text" class="pe-input pe-input-sm" style="flex:1;" value="${item.name}" placeholder="Наименование" onchange="window.updateBOMItem(${index}, 'name', this.value)" ${isDone ? "disabled" : ""}>
+        <input type="number" class="pe-input pe-input-sm" style="width:70px;" value="${item.qty}" placeholder="Кол-во" onchange="window.updateBOMItem(${index}, 'qty', this.value)" ${isDone ? "disabled" : ""}>
+        <input type="text" class="pe-input pe-input-sm" style="width:60px;" value="${item.unit}" placeholder="Ед." onchange="window.updateBOMItem(${index}, 'unit', this.value)" ${isDone ? "disabled" : ""}>
+        ${!isDone ? `<button class="pe-btn pe-btn-danger pe-btn-sm pe-btn-icon" onclick="window.removeBOMItem(${index})"><i data-feather="trash-2"></i></button>` : ""}
       `;
       container.appendChild(row);
     });
   }
 
-  const controls = document.createElement("div");
-  controls.style.display = "flex";
-  controls.style.gap = "0.5rem";
-  controls.style.marginTop = "1rem";
-  controls.innerHTML = `
-    <button class="pe-btn pe-btn-secondary pe-btn-sm" onclick="window.addBOMItem()"><i data-feather="plus"></i> Добавить</button>
-    <button class="pe-btn pe-btn-primary pe-btn-sm" onclick="window.saveBOMArray()"><i data-feather="save"></i> Сохранить BOM</button>
-  `;
-  container.appendChild(controls);
+  if (!isDone) {
+    const controls = document.createElement("div");
+    controls.style.display = "flex";
+    controls.style.gap = "0.5rem";
+    controls.style.marginTop = "1rem";
+    controls.innerHTML = `
+      <button class="pe-btn pe-btn-secondary pe-btn-sm" onclick="window.addBOMItem()"><i data-feather="plus"></i> Добавить</button>
+      <button class="pe-btn pe-btn-primary pe-btn-sm" onclick="window.saveBOMArray()"><i data-feather="save"></i> Сохранить BOM</button>
+    `;
+    container.appendChild(controls);
+  }
   if (typeof feather !== "undefined") feather.replace();
 }
 
@@ -817,11 +901,11 @@ window.updateBOMItem = (i, f, v) =>
   (State.currentBOM[i][f] = f === "qty" ? parseFloat(v) || 0 : v);
 window.removeBOMItem = (i) => {
   State.currentBOM.splice(i, 1);
-  renderBOMEditor();
+  renderBOMEditor(false);
 };
 window.addBOMItem = () => {
   State.currentBOM.push({ name: "", qty: 1, unit: "шт" });
-  renderBOMEditor();
+  renderBOMEditor(false);
 };
 window.saveBOMArray = async () => {
   if (!State.selectedOrderId) return;
@@ -914,11 +998,50 @@ function bindGlobalEvents() {
     .getElementById("orderStatusFilter")
     ?.addEventListener("change", loadOrders);
 
+  // Живой поиск по пользователям
+  document.getElementById("searchUserInput")?.addEventListener("input", (e) => {
+    State.searchUserTerm = e.target.value;
+    // Дебаунс для поиска
+    clearTimeout(window.searchTimeout);
+    window.searchTimeout = setTimeout(() => {
+      loadUsers();
+    }, 500);
+  });
+
   document
     .getElementById("btnCloseOrderModal")
     ?.addEventListener("click", () => {
       document.getElementById("orderModal").style.display = "none";
       State.selectedOrderId = null;
+    });
+
+  document
+    .getElementById("btnTakeOrderWeb")
+    ?.addEventListener("click", async () => {
+      if (!State.selectedOrderId) return;
+      try {
+        await API.takeOrderWeb(State.selectedOrderId);
+        Utils.showToast("Вы забрали заказ с биржи!", "success");
+        document.getElementById("orderModal").style.display = "none";
+        loadOrders();
+      } catch (e) {
+        Utils.showToast(e.message, "error");
+      }
+    });
+
+  document
+    .getElementById("btnSaveMetadata")
+    ?.addEventListener("click", async () => {
+      if (!State.selectedOrderId) return;
+      const address = document.getElementById("modalOrderAddress").value;
+      const comment = document.getElementById("modalOrderComment").value;
+      try {
+        await API.updateOrderMetadata(State.selectedOrderId, address, comment);
+        Utils.showToast("Данные объекта сохранены", "success");
+        loadOrders();
+      } catch (e) {
+        Utils.showToast(e.message, "error");
+      }
     });
 
   document
@@ -943,6 +1066,7 @@ function bindGlobalEvents() {
         await API.updateOrderStatus(State.selectedOrderId, e.target.value);
         Utils.showToast("Статус обновлен", "success");
         loadOrders();
+        document.getElementById("orderModal").style.display = "none"; // Закрываем, чтобы обновить UI (Read-Only)
       } catch (err) {
         Utils.showToast(err.message, "error");
       }
@@ -996,12 +1120,37 @@ function bindGlobalEvents() {
         );
         Utils.showToast("Итоговая цена зафиксирована", "success");
         loadOrders();
+      } catch (err) {
+        Utils.showToast(err.message, "error");
+      }
+    });
+
+  document
+    .getElementById("btnAddExpense")
+    ?.addEventListener("click", async () => {
+      if (!State.selectedOrderId) return;
+      const amount = document.getElementById("newExpenseAmount").value;
+      const cat = document.getElementById("newExpenseCat").value;
+      if (!amount || amount <= 0)
+        return Utils.showToast("Введите корректную сумму", "error");
+      try {
+        await API.addOrderExpense(
+          State.selectedOrderId,
+          amount,
+          cat,
+          "Web CRM",
+        );
+        Utils.showToast("Расход добавлен", "success");
+        document.getElementById("newExpenseAmount").value = "";
+        document.getElementById("newExpenseCat").value = "";
+        loadOrders();
         document.getElementById("orderModal").style.display = "none";
       } catch (err) {
         Utils.showToast(err.message, "error");
       }
     });
 
+  // Модалка: Оффлайн заказ
   document
     .getElementById("btnOpenManualOrderModal")
     ?.addEventListener(
@@ -1033,6 +1182,64 @@ function bindGlobalEvents() {
         document.getElementById("formManualOrder").reset();
         Utils.showToast("Оффлайн-заказ успешно создан!", "success");
         loadOrders();
+      } catch (err) {
+        Utils.showToast(err.message, "error");
+      }
+    });
+
+  // Модалка: Бригады
+  document
+    .getElementById("btnOpenBrigadeModal")
+    ?.addEventListener(
+      "click",
+      () => (document.getElementById("brigadeModal").style.display = "flex"),
+    );
+  document
+    .getElementById("btnCloseBrigadeModal")
+    ?.addEventListener(
+      "click",
+      () => (document.getElementById("brigadeModal").style.display = "none"),
+    );
+  document
+    .getElementById("formBrigade")
+    ?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        await API.createBrigade(
+          document.getElementById("brigNewName").value,
+          document.getElementById("brigNewId").value,
+          document.getElementById("brigNewProfit").value,
+        );
+        document.getElementById("brigadeModal").style.display = "none";
+        document.getElementById("formBrigade").reset();
+        Utils.showToast("Бригада создана", "success");
+        loadBrigades();
+      } catch (err) {
+        Utils.showToast(err.message, "error");
+      }
+    });
+
+  // Модалка: Редактирование % Бригады
+  document
+    .getElementById("btnCloseEditBrigadeModal")
+    ?.addEventListener(
+      "click",
+      () =>
+        (document.getElementById("editBrigadeModal").style.display = "none"),
+    );
+  document
+    .getElementById("formEditBrigade")
+    ?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        await API.updateBrigade(
+          document.getElementById("editBrigId").value,
+          document.getElementById("editBrigProfit").value,
+          null,
+        );
+        document.getElementById("editBrigadeModal").style.display = "none";
+        Utils.showToast("Процент успешно изменен", "success");
+        loadBrigades();
       } catch (err) {
         Utils.showToast(err.message, "error");
       }
@@ -1119,10 +1326,9 @@ function bindGlobalEvents() {
     ?.addEventListener("click", async () => {
       const text = document.getElementById("broadcastText").value;
       const target = document.getElementById("broadcastTarget").value;
-      const image = document.getElementById("broadcastImage").value;
       if (!text) return Utils.showToast("Введите текст рассылки", "error");
       try {
-        const res = await API.sendBroadcast(text, image, target);
+        const res = await API.sendBroadcast(text, null, target);
         Utils.showToast(res.message, "success");
         document.getElementById("broadcastText").value = "";
       } catch (err) {
@@ -1189,7 +1395,8 @@ document
 
 async function loadUsers() {
   try {
-    State.users = await API.getUsers();
+    // Используем State.searchUserTerm для передачи в API
+    State.users = await API.getUsers(State.searchUserTerm);
     const tbody = document.getElementById("usersTableBody");
     if (!tbody) return;
     tbody.innerHTML = "";
