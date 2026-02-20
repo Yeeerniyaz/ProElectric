@@ -1,16 +1,16 @@
 /**
  * @file src/services/OrderService.js
- * @description Сервис бизнес-логики заказов (Core Business Logic v10.0.0).
+ * @description Сервис бизнес-логики заказов (Core Business Logic v10.9.4).
  * Отвечает за:
  * 1. Инженерный расчет сметы (Бурение и точки разделены).
  * 2. Финансовое ядро (Self-Healing Expenses & Net Profit).
  * 3. Динамическое ценообразование (Pricelist Template).
- * 4. Автогенерацию массива BOM.
- * 5. Управление распределением заказов по бригадам (NEW).
- * 6. Финализацию объектов с разделением прибыли (NEW).
+ * 4. Автогенерацию массива спецификации (BOM).
+ * 5. Управление распределением заказов по бригадам.
+ * ДОБАВЛЕНО: Audit Trail (История изменения статусов для аналитики времени).
  *
  * @module OrderService
- * @version 10.0.0 (Enterprise ERP Edition)
+ * @version 10.9.4 (Enterprise ERP Edition - Audit Trail)
  */
 
 import * as db from "../database/index.js";
@@ -41,8 +41,8 @@ const WALL_NAMES = Object.freeze({
 });
 
 /**
- * 🔥 ДИНАМИЧЕСКИЙ ПРАЙС-ЛИСТ (v10.0.0)
- * Бурение лунок и монтаж механизмов теперь полностью разделены.
+ * 🔥 ДИНАМИЧЕСКИЙ ПРАЙС-ЛИСТ
+ * Бурение лунок и монтаж механизмов полностью разделены.
  */
 export const PRICELIST_TEMPLATE = [
   {
@@ -361,7 +361,7 @@ export const OrderService = {
   },
 
   /**
-   * 📝 Создание заказа (Фикс проблемы "null м2")
+   * 📝 Создание заказа (Генерация уникального ID)
    */
   async createOrder(userId, estimate) {
     // 🔥 ГЕНЕРАЦИЯ УНИКАЛЬНОГО 6-ЗНАЧНОГО ID
@@ -369,21 +369,16 @@ export const OrderService = {
     let randomId;
 
     while (!isUnique) {
-      // Генерируем число от 100000 до 999999
       randomId = Math.floor(100000 + Math.random() * 900000);
-
-      // Проверяем, существует ли уже такой ID в таблице заказов
       const checkId = await db.query("SELECT id FROM orders WHERE id = $1", [
         randomId,
       ]);
-
       if (checkId.rows.length === 0) {
-        isUnique = true; // ID свободен
+        isUnique = true;
       }
     }
 
     const area = estimate.params?.area || 0;
-
     const financials = {
       final_price: estimate.total.work,
       total_expenses: 0,
@@ -395,17 +390,44 @@ export const OrderService = {
       id: randomId,
       area: area,
       price: estimate.total.work,
-      details: { ...estimate, financials },
+      details: {
+        ...estimate,
+        financials,
+        history: [{ status: "new", changed_at: new Date().toISOString() }], // Инициализация истории
+      },
     };
 
     return await db.createOrder(userId, orderData);
   },
 
+  /**
+   * 🔥 НОВОЕ: Audit Trail (История изменения статусов)
+   */
   async updateOrderStatus(orderId, newStatus) {
-    await db.query(
-      "UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2",
-      [newStatus, orderId],
-    );
+    const order = await this.getOrderById(orderId);
+
+    if (order) {
+      const details = order.details || {};
+      if (!Array.isArray(details.history)) details.history = [];
+
+      // Записываем таймстемп смены статуса
+      details.history.push({
+        old_status: order.status,
+        new_status: newStatus,
+        changed_at: new Date().toISOString(),
+      });
+
+      await db.query(
+        "UPDATE orders SET status = $1, details = $2, updated_at = NOW() WHERE id = $3",
+        [newStatus, details, orderId],
+      );
+    } else {
+      // Fallback
+      await db.query(
+        "UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2",
+        [newStatus, orderId],
+      );
+    }
     return true;
   },
 
@@ -461,7 +483,7 @@ export const OrderService = {
 
     const details = order.details || {};
 
-    // Self-Healing: Гарантируем наличие массива expenses, чтобы не ловить Cannot read 'length'
+    // Self-Healing: Гарантируем наличие массива expenses
     if (!details.financials) {
       details.financials = {
         final_price: parseFloat(order.total_price) || 0,
@@ -509,7 +531,7 @@ export const OrderService = {
   },
 
   // ===========================================================================
-  // 4. 🏗 BRIGADES & PROFIT DISTRIBUTION (ERP v10.0 - NEW)
+  // 4. 🏗 BRIGADES & PROFIT DISTRIBUTION (ERP v10.0)
   // ===========================================================================
 
   async getAvailableNewOrders() {

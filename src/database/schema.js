@@ -10,8 +10,9 @@
  * - Заказов и Смет (Business Core)
  * - Финансов и Транзакций (Accounting)
  * - PL/pgSQL Триггеры для WebSockets
+ * ДОБАВЛЕНО: Таблица `user_sessions` для вечных сессий (connect-pg-simple).
  * * @module DatabaseSchema
- * @version 10.0.0 (Enterprise Standard)
+ * @version 10.9.5 (Enterprise Standard - Original Layout)
  */
 
 import { query } from "./connection.js";
@@ -27,6 +28,21 @@ export const createTables = async () => {
   try {
     console.log(
       "🔄 [DB Schema] Запуск проверки целостности структуры базы данных...",
+    );
+
+    // =====================================================================
+    // 0. ТАБЛИЦА СЕССИЙ (ДЛЯ ВЕЧНОЙ АВТОРИЗАЦИИ WEB CRM / APK) - NEW
+    // =====================================================================
+    await query(`
+      CREATE TABLE IF NOT EXISTS "user_sessions" (
+        "sid" varchar NOT NULL COLLATE "default",
+        "sess" json NOT NULL,
+        "expire" timestamp(6) NOT NULL,
+        CONSTRAINT "user_sessions_pkey" PRIMARY KEY ("sid")
+      );
+    `);
+    await query(
+      `CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "user_sessions" ("expire");`,
     );
 
     // =====================================================================
@@ -196,7 +212,7 @@ export const createTables = async () => {
         `);
 
     // =====================================================================
-    // 7. ТРИГГЕРЫ REAL-TIME WEBSOCKETS (PL/pgSQL) - NEW
+    // 7. ТРИГГЕРЫ REAL-TIME WEBSOCKETS (PL/pgSQL)
     // =====================================================================
     // Оповещение при изменении статуса заказа
     await query(`
@@ -233,7 +249,7 @@ export const createTables = async () => {
         `);
 
     console.log(
-      "✅ [DB Schema] Структура базы данных успешно синхронизирована (версия 10.0.0 Enterprise).",
+      "✅ [DB Schema] Структура базы данных успешно синхронизирована (версия 10.9.5 Enterprise).",
     );
   } catch (error) {
     console.error(
