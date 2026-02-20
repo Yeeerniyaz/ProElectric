@@ -1,13 +1,12 @@
 /**
  * @file public/js/app.js
- * @description Frontend Application Controller (SPA Logic v10.8.0 Enterprise).
+ * @description Frontend Application Controller (SPA Logic v10.9.1 Enterprise).
  * Управляет состоянием интерфейса, модальными окнами, OTP-авторизацией.
  * Включает Глобальный Финансовый Модуль, ERP Бригад, Deep Analytics и WebSockets.
- * ДОБАВЛЕНО: Интеграция Chart.js для Таймлайна Заказов (Orders Timeline),
- * Рейтинга Бригад (Leaderboard) и строгого RBAC-рендеринга.
+ * ИСПРАВЛЕНО: Доступ Бригадиров к изменению Цены, BOM и Статусов (только разрешенных).
  *
  * @module AppController
- * @version 10.8.0 (PWA, Chart.js, Cash Flow & UI Safe Edition)
+ * @version 10.9.1 (PWA, Chart.js, Cash Flow & Manager Permissions)
  */
 
 import { API } from "./api.js";
@@ -86,7 +85,7 @@ const State = {
   currentBOM: [],
   financeAccounts: [],
   timelineChartInstance: null,
-  ordersTimelineChartInstance: null, // Хранение объекта графика заказов
+  ordersTimelineChartInstance: null,
 };
 
 const socket = typeof io !== "undefined" ? io() : null;
@@ -185,6 +184,10 @@ function applyRoleRestrictions(role) {
 
     const dashboardSub = document.getElementById("dashboardSubTitle");
     if (dashboardSub) dashboardSub.textContent = "Ваши показатели и заработок";
+
+    // 🔥 ИСПРАВЛЕНИЕ: Принудительно показываем блок изменения цены для Бригадиров
+    const priceBlock = document.getElementById("modalFinalPriceBlock");
+    if (priceBlock) priceBlock.style.display = "flex";
   }
 }
 
@@ -674,20 +677,32 @@ window.openOrderModal = (orderId) => {
     `Объект #${order.id} (${area} м²)`;
 
   const statusSelect = document.getElementById("modalOrderStatus");
-  statusSelect.innerHTML = `
-    <option value="new">Новый (Биржа)</option>
-    <option value="processing">Взят в расчет / Замер</option>
-    <option value="work">В работе (Монтаж)</option>
-    <option value="done">Завершен</option>
-    <option value="cancel">Отменен</option>
-  `;
+  const isAdmin =
+    State.user && (State.user.role === "owner" || State.user.role === "admin");
+
+  // 🔥 ИСПРАВЛЕНИЕ: Менеджер видит только разрешенные для него статусы
+  if (isAdmin) {
+    statusSelect.innerHTML = `
+      <option value="new">Новый (Биржа)</option>
+      <option value="processing">Взят в расчет / Замер</option>
+      <option value="work">В работе (Монтаж)</option>
+      <option value="done">Завершен</option>
+      <option value="cancel">Отменен</option>
+    `;
+  } else {
+    statusSelect.innerHTML = `
+      <option value="processing">Взят в расчет / Замер</option>
+      <option value="work">В работе (Монтаж)</option>
+    `;
+    // Если заказ уже Завершен или Отменен, менеджер должен просто видеть этот статус, но менять его уже не сможет
+    if (!["processing", "work"].includes(order.status)) {
+      statusSelect.innerHTML += `<option value="${order.status}" disabled>${order.status.toUpperCase()}</option>`;
+    }
+  }
   statusSelect.value = order.status;
 
   const brigadeSelect = document.getElementById("modalOrderBrigade");
-  if (
-    State.user &&
-    (State.user.role === "owner" || State.user.role === "admin")
-  ) {
+  if (isAdmin) {
     brigadeSelect.disabled = false;
     brigadeSelect.innerHTML = `<option value="">-- Не назначена (Биржа) --</option>`;
     if (Array.isArray(State.brigades)) {
@@ -701,7 +716,8 @@ window.openOrderModal = (orderId) => {
   }
 
   const btnFinalize = document.getElementById("btnFinalizeOrder");
-  if (order.status === "work" && order.brigade_id) {
+  // Финализировать заказ (перевести в done и начислить долги) может только Админ
+  if (isAdmin && order.status === "work" && order.brigade_id) {
     btnFinalize.style.display = "flex";
   } else {
     btnFinalize.style.display = "none";

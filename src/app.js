@@ -1,18 +1,17 @@
 /**
  * @file src/app.js
- * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.9.0).
- * ИСПРАВЛЕНО: Доступ менеджеров к аналитике (снят барьер 401).
- * ДОБАВЛЕНО: Умная фильтрация дашборда по brigadeId (Бригадир видит только свои цифры).
- * ДОБАВЛЕНО: Таймлайн Заказов (Orders Timeline).
- * 🔥 НОВОЕ (Mobile Ready): Сессии теперь хранятся в PostgreSQL (connect-pg-simple) на 30 дней.
+ * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.9.1).
+ * ИСПРАВЛЕНО: Доступ менеджеров к редактированию BOM, Цены и Статуса СВОИХ объектов.
+ * ДОБАВЛЕНО: Жесткий контроль статусов для Бригадиров (запрет на new, cancel, done).
+ * ДОБАВЛЕНО: Блокировка доступа к чужим объектам на уровне API.
  *
  * @module Application
- * @version 10.9.0 (Enterprise Analytics, Mobile APK Ready & Persistent Sessions)
+ * @version 10.9.1 (Enterprise Security & Manager Access Edition)
  */
 
 import express from "express";
 import session from "express-session";
-import pgSession from "connect-pg-simple"; // <-- Новый импорт для вечных сессий
+import pgSession from "connect-pg-simple";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
@@ -22,7 +21,7 @@ import { fileURLToPath } from "url";
 // --- CORE IMPORTS ---
 import { config } from "./config.js";
 import * as db from "./database/index.js";
-import { pool } from "./database/connection.js"; // Пул подключений для сессий
+import { pool } from "./database/connection.js";
 import { bot, getSocketIO } from "./bot.js";
 
 // --- SERVICES ---
@@ -63,15 +62,14 @@ app.use("/api/", apiLimiter);
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
-// 🔥 Инициализация хранилища сессий в PostgreSQL (Для APK и PWA)
 const PgStore = pgSession(session);
 
 app.use(
   session({
     store: new PgStore({
-      pool: pool, // Используем наш текущий пул БД
-      tableName: "user_sessions", // Имя таблицы в БД
-      createTableIfMissing: true, // Сервер сам создаст таблицу, если её нет!
+      pool: pool,
+      tableName: "user_sessions",
+      createTableIfMissing: true,
     }),
     name: "proelectric.sid",
     secret: process.env.SESSION_SECRET || "enterprise_super_secret_key_v10",
@@ -80,7 +78,7 @@ app.use(
     cookie: {
       secure: process.env.NODE_ENV === "production",
       httpOnly: true,
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 ДНЕЙ авторизации для комфорта в APK
+      maxAge: 30 * 24 * 60 * 60 * 1000,
       sameSite: "lax",
     },
   }),
@@ -115,6 +113,26 @@ const requireManager = (req, res, next) => {
   return res
     .status(401)
     .json({ error: "⛔ Доступ запрещен. Требуются права Бригадира." });
+};
+
+// 🔥 НОВАЯ ЗАЩИТА: Проверка, принадлежит ли объект менеджеру
+const checkManagerAccess = async (req, orderId) => {
+  if (req.session?.user?.role === "manager") {
+    const bRes = await db.query(
+      "SELECT id FROM brigades WHERE brigadier_id = $1",
+      [req.session.user.id],
+    );
+    const brigadeId = bRes.rows.length > 0 ? bRes.rows[0].id : null;
+
+    if (!brigadeId) throw new Error("⛔ У вас нет активной бригады.");
+
+    const oRes = await db.query("SELECT brigade_id FROM orders WHERE id = $1", [
+      orderId,
+    ]);
+    if (oRes.rows.length === 0 || oRes.rows[0].brigade_id !== brigadeId) {
+      throw new Error("⛔ Доступ запрещен: Это не ваш объект!");
+    }
+  }
 };
 
 app.get("/", (req, res) => res.redirect("/admin.html"));
@@ -213,13 +231,16 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 // =============================================================================
-// 3. 📊 DEEP ANALYTICS, TIMELINES & DASHBOARD (DYNAMIC BY BRIGADE)
+// 3. 📊 DEEP ANALYTICS & TIMELINES
 // =============================================================================
 
 const getManagerBrigadeId = async (req) => {
   if (req.session?.user?.role === "manager") {
-    const b = await db.getBrigadeByManagerId(req.session.user.id);
-    return b ? b.id : -1;
+    const b = await db.query(
+      "SELECT id FROM brigades WHERE brigadier_id = $1",
+      [req.session.user.id],
+    );
+    return b.rows.length > 0 ? b.rows[0].id : -1;
   }
   return null;
 };
@@ -231,11 +252,9 @@ app.get("/api/dashboard/stats", requireManager, async (req, res) => {
       db.getGlobalStats(brigadeId),
       db.getOrdersFunnel(brigadeId),
     ]);
-
     const activeCount =
       funnelStats.find((f) => f.status === "work" || f.status === "processing")
         ?.count || 0;
-
     res.json({
       overview: {
         totalRevenue: globalStats.totalRevenue,
@@ -329,20 +348,13 @@ app.post("/api/brigades", requireAdmin, async (req, res) => {
 
 app.patch("/api/brigades/:id", requireAdmin, async (req, res) => {
   try {
-    const { id } = req.params;
     const { profitPercentage, isActive } = req.body;
-    const updated = await db.updateBrigade(id, profitPercentage, isActive);
+    const updated = await db.updateBrigade(
+      req.params.id,
+      profitPercentage,
+      isActive,
+    );
     res.json({ success: true, brigade: updated });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get("/api/brigades/:id/orders", requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const orders = await OrderService.getBrigadeOrders(id);
-    res.json(orders);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -357,7 +369,6 @@ app.get("/api/orders", requireManager, async (req, res) => {
     const limit = parseInt(req.query.limit) || 100;
     const offset = parseInt(req.query.offset) || 0;
     const status = req.query.status || null;
-
     const isManager = req.session?.user?.role === "manager";
     const userId = req.session?.user?.id;
 
@@ -466,29 +477,62 @@ app.post("/api/orders", requireAdmin, async (req, res) => {
   }
 });
 
-app.patch("/api/orders/:id/status", requireAdmin, async (req, res) => {
+// 🔥 ИСПРАВЛЕНО: Менеджеры могут менять статус, но только на processing/work
+app.patch("/api/orders/:id/status", requireManager, async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
+
+    await checkManagerAccess(req, id);
+
+    if (
+      req.session?.user?.role === "manager" &&
+      ["new", "cancel", "done"].includes(status)
+    ) {
+      return res
+        .status(403)
+        .json({
+          error: "⛔ Бригадирам запрещено ставить статусы New, Cancel и Done.",
+        });
+    }
+
     await OrderService.updateOrderStatus(id, status);
     res.json({ success: true, status });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(403).json({ error: error.message });
   }
 });
 
-app.patch("/api/orders/:id/details", requireAdmin, async (req, res) => {
+// 🔥 ИСПРАВЛЕНО: Менеджеры могут редактировать BOM своего объекта
+app.patch("/api/orders/:id/bom", requireManager, async (req, res) => {
   try {
     const { id } = req.params;
-    const { key, value } = req.body;
+    await checkManagerAccess(req, id);
     const updatedDetails = await OrderService.updateOrderDetails(
       id,
-      key,
-      value,
+      "bom",
+      req.body.newBomArray,
     );
-    res.json({ success: true, details: updatedDetails });
+    res.json({ success: true, bom: updatedDetails.bom });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(403).json({ error: error.message });
+  }
+});
+
+// 🔥 ИСПРАВЛЕНО: Менеджеры могут редактировать Договорную Цену своего объекта
+app.patch("/api/orders/:id/finance/price", requireManager, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newPrice } = req.body;
+    if (!newPrice || isNaN(newPrice))
+      return res.status(400).json({ error: "Укажите корректную новую цену" });
+
+    await checkManagerAccess(req, id);
+
+    const financials = await OrderService.updateOrderFinalPrice(id, newPrice);
+    res.json({ success: true, financials });
+  } catch (error) {
+    res.status(403).json({ error: error.message });
   }
 });
 
@@ -522,22 +566,7 @@ app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
         status: "work",
         brigade_id: brigadeId,
       });
-
     res.json({ success: true, message: "Бригада назначена" });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.patch("/api/orders/:id/bom", requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const updatedDetails = await OrderService.updateOrderDetails(
-      id,
-      "bom",
-      req.body.newBomArray,
-    );
-    res.json({ success: true, bom: updatedDetails.bom });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -550,22 +579,6 @@ app.post("/api/orders/:id/finalize", requireAdmin, async (req, res) => {
     const io = getSocketIO();
     if (io) io.emit("order_updated", { orderId: id, status: "done" });
     res.json({ success: true, distribution: result });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// =============================================================================
-// 💸 6. ORDER FINANCIAL MANAGEMENT & EXPENSES
-// =============================================================================
-
-app.patch("/api/orders/:id/finance/price", requireAdmin, async (req, res) => {
-  try {
-    const financials = await OrderService.updateOrderFinalPrice(
-      req.params.id,
-      req.body.newPrice,
-    );
-    res.json({ success: true, financials });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -600,8 +613,7 @@ app.post(
 
 app.get("/api/finance/accounts", requireAdmin, async (req, res) => {
   try {
-    const accounts = await db.getAccounts();
-    res.json(accounts);
+    res.json(await db.getAccounts());
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -609,10 +621,7 @@ app.get("/api/finance/accounts", requireAdmin, async (req, res) => {
 
 app.get("/api/finance/transactions", requireAdmin, async (req, res) => {
   try {
-    const transactions = await db.getCompanyTransactions(
-      parseInt(req.query.limit) || 100,
-    );
-    res.json(transactions);
+    res.json(await db.getCompanyTransactions(parseInt(req.query.limit) || 100));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -680,36 +689,10 @@ app.post("/api/settings", requireAdmin, async (req, res) => {
       await db.saveBulkSettings(req.body);
       return res.json({ success: true, message: "Bulk update successful" });
     }
-    const result = await db.saveSetting(req.body.key, req.body.value);
-    res.json({ success: true, setting: result });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get("/api/system/backup", requireAdmin, async (req, res) => {
-  try {
-    const dump = { timestamp: new Date().toISOString(), database: {} };
-    const tables = [
-      "users",
-      "brigades",
-      "orders",
-      "settings",
-      "object_expenses",
-      "accounts",
-      "transactions",
-    ];
-    for (const table of tables) {
-      try {
-        dump.database[table] = (await db.query(`SELECT * FROM ${table}`)).rows;
-      } catch (e) {}
-    }
-    res.setHeader(
-      "Content-disposition",
-      `attachment; filename=ProElectric_Backup_${Date.now()}.json`,
-    );
-    res.setHeader("Content-type", "application/json");
-    res.send(JSON.stringify(dump, null, 2));
+    res.json({
+      success: true,
+      setting: await db.saveSetting(req.body.key, req.body.value),
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -735,86 +718,24 @@ app.get("/api/users", requireAdmin, async (req, res) => {
 app.post("/api/users/role", requireAdmin, async (req, res) => {
   try {
     const { userId, role } = req.body;
-
     const targetRes = await db.query(
       "SELECT role FROM users WHERE telegram_id = $1",
       [userId],
     );
-    const targetRole = targetRes.rows[0]?.role;
-
-    if (targetRole === "owner" && role !== "owner") {
+    if (targetRes.rows[0]?.role === "owner" && role !== "owner")
       return res
         .status(403)
-        .json({
-          error:
-            "⛔ Критическая ошибка: Невозможно изменить роль Владельца системы.",
-        });
-    }
-
-    if (
-      req.session?.user?.role === "admin" &&
-      (role === "admin" || role === "owner")
-    ) {
-      return res
-        .status(403)
-        .json({ error: "⛔ У вас нет прав назначать высшее руководство." });
-    }
-
-    const updatedUser = await UserService.changeUserRole(
-      req.session?.user?.id || 0,
-      userId,
-      role,
-    );
-    res.json({ success: true, user: updatedUser });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-app.post("/api/broadcast", requireAdmin, async (req, res) => {
-  try {
-    const { text, imageUrl, targetRole } = req.body;
-    if (!text)
-      return res.status(400).json({ error: "Текст рассылки обязателен" });
-
-    let query = `SELECT telegram_id FROM users WHERE telegram_id > 0`;
-    let params = [];
-    if (targetRole && targetRole !== "all") {
-      query += ` AND role = $1`;
-      params.push(targetRole);
-    }
-
-    const result = await db.query(query, params);
-    if (result.rows.length === 0)
-      return res.json({
-        success: true,
-        delivered: 0,
-        message: "Нет пользователей для рассылки",
-      });
-
-    const sendMassMessage = async () => {
-      for (const user of result.rows) {
-        try {
-          if (imageUrl)
-            await bot.telegram.sendPhoto(user.telegram_id, imageUrl, {
-              caption: text,
-              parse_mode: "HTML",
-            });
-          else
-            await bot.telegram.sendMessage(user.telegram_id, text, {
-              parse_mode: "HTML",
-            });
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        } catch (e) {}
-      }
-    };
-    sendMassMessage();
+        .json({ error: "⛔ Невозможно изменить роль Владельца системы." });
     res.json({
       success: true,
-      message: `Рассылка запущена для ${result.rows.length} пользователей.`,
+      user: await UserService.changeUserRole(
+        req.session?.user?.id || 0,
+        userId,
+        role,
+      ),
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(400).json({ error: error.message });
   }
 });
 

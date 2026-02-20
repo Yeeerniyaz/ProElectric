@@ -170,6 +170,15 @@ bot.action(/exec_transfer_(\d+)_(\d+)/, (ctx) =>
   BrigadeHandler.executeTransfer(ctx, ctx.match[1], ctx.match[2]),
 );
 bot.action(/cancel_transfer_(\d+)/, (ctx) => BrigadeHandler.showMyObjects(ctx)); // Отмена передачи и возврат
+bot.action(/set_status_processing_(.+)/, async (ctx) =>
+  BrigadeHandler.setOrderStatus(ctx, ctx.match[1], "processing"),
+);
+bot.action(/set_status_work_(.+)/, async (ctx) =>
+  BrigadeHandler.setOrderStatus(ctx, ctx.match[1], "work"),
+);
+bot.action(/prompt_price_(.+)/, async (ctx) =>
+  BrigadeHandler.promptPrice(ctx, ctx.match[1]),
+);
 
 // =============================================================================
 // 7. ГЛОБАЛЬНЫЙ ПЕРЕХВАТЧИК (SMART INTERCEPTOR)

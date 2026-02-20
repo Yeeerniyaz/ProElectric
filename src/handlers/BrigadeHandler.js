@@ -1,16 +1,12 @@
 /**
  * @file src/handlers/BrigadeHandler.js
- * @description Контроллер интерфейса Бригадиров (ERP Brigade Module v10.7.0).
- * Отвечает за:
- * 1. Биржу заказов (взятие свободных лидов из рассылки).
- * 2. Управление своими объектами (расходы, закрытие).
- * 3. Статистику заработка (без контроля личных счетов).
- * 4. Учет Долга перед компанией и процесс передачи денег (Инкассация).
- * 5. Отказ от объекта и прямая передача другой бригаде (Делегирование).
- * ИСПРАВЛЕНО: Динамический поиск Owner ID для отправки уведомлений об инкассации.
+ * @description Контроллер интерфейса Бригадиров (ERP Brigade Module v10.9.1).
+ * Отвечает за: Биржу заказов, Управление своими объектами, Статистику, Инкассацию.
+ * ДОБАВЛЕНО: Инлайн-кнопки для перевода в статус "В замере" и "В работе".
+ * ДОБАВЛЕНО: Кнопка и машина состояний (FSM) для изменения итоговой цены объекта.
  *
  * @module BrigadeHandler
- * @version 10.7.0 (Enterprise ERP Edition - Safe Incassation)
+ * @version 10.9.1 (Enterprise ERP Edition - Full Manager Control)
  */
 
 import { Markup } from "telegraf";
@@ -18,7 +14,6 @@ import { UserService, ROLES } from "../services/UserService.js";
 import { OrderService } from "../services/OrderService.js";
 import * as db from "../database/index.js";
 import { getSocketIO } from "../bot.js";
-import { config } from "../config.js";
 
 // =============================================================================
 // 🔧 CONSTANTS & FSM STATES
@@ -30,6 +25,7 @@ export const BRIGADE_STATES = Object.freeze({
   WAIT_EXPENSE_COMMENT: "WAIT_EXPENSE_COMMENT",
   WAIT_ADVANCE_AMOUNT: "WAIT_ADVANCE_AMOUNT",
   WAIT_INCASSATION_AMOUNT: "WAIT_INCASSATION_AMOUNT",
+  WAIT_ORDER_NEW_PRICE: "WAIT_ORDER_NEW_PRICE", // 🔥 НОВОЕ: Состояние для ввода цены
 });
 
 const BUTTONS = Object.freeze({
@@ -50,25 +46,50 @@ const Keyboards = {
     [BUTTONS.BACK],
   ]).resize(),
 
-  orderActions: (orderId) =>
-    Markup.inlineKeyboard([
-      [
+  // 🔥 ИСПРАВЛЕНО: Динамическая клавиатура в зависимости от статуса заказа
+  orderActions: (orderId, currentStatus) => {
+    const buttons = [];
+
+    // Кнопки смены статуса
+    if (currentStatus !== "processing") {
+      buttons.push([
         Markup.button.callback(
-          "🧾 Добавить чек (Расход)",
-          `add_expense_${orderId}`,
+          "📐 Перевести 'В замер'",
+          `set_status_processing_${orderId}`,
         ),
-      ],
-      [
-        Markup.button.callback("❌ Отказаться", `refuse_order_${orderId}`),
-        Markup.button.callback("🤝 Передать", `prompt_transfer_${orderId}`),
-      ],
-      [
+      ]);
+    }
+    if (currentStatus !== "work") {
+      buttons.push([
         Markup.button.callback(
-          "✅ ЗАВЕРШИТЬ ОБЪЕКТ",
-          `finish_order_${orderId}`,
+          "🛠 Перевести 'В работу'",
+          `set_status_work_${orderId}`,
         ),
-      ],
-    ]),
+      ]);
+    }
+
+    // Кнопки финансов
+    buttons.push([
+      Markup.button.callback("💰 Изменить цену", `prompt_price_${orderId}`),
+      Markup.button.callback(
+        "🧾 Добавить чек (Расход)",
+        `add_expense_${orderId}`,
+      ),
+    ]);
+
+    // Делегирование и отказ
+    buttons.push([
+      Markup.button.callback("❌ Отказаться", `refuse_order_${orderId}`),
+      Markup.button.callback("🤝 Передать", `prompt_transfer_${orderId}`),
+    ]);
+
+    // Закрытие объекта
+    buttons.push([
+      Markup.button.callback("✅ ЗАВЕРШИТЬ ОБЪЕКТ", `finish_order_${orderId}`),
+    ]);
+
+    return Markup.inlineKeyboard(buttons);
+  },
 
   takeOrderAction: (orderId) =>
     Markup.inlineKeyboard([
@@ -144,6 +165,8 @@ export const BrigadeHandler = {
       return this.processExpenseComment(ctx);
     if (state === BRIGADE_STATES.WAIT_INCASSATION_AMOUNT)
       return this.processIncassationAmount(ctx);
+    if (state === BRIGADE_STATES.WAIT_ORDER_NEW_PRICE)
+      return this.processOrderNewPrice(ctx); // 🔥 НОВОЕ: Обработчик цены
 
     // Роутинг по кнопкам
     switch (text) {
@@ -222,19 +245,22 @@ export const BrigadeHandler = {
         });
       }
 
-      await OrderService.assignOrderToBrigade(orderId, brigade.id);
+      // Переводим заказ сразу в processing (В замере), чтобы мастер мог съездить и оценить
+      await db.query(
+        "UPDATE orders SET brigade_id = $1, status = 'processing', updated_at = NOW() WHERE id = $2 AND status = 'new'",
+        [brigade.id, orderId],
+      );
 
-      // Оповещаем Web CRM
       const io = getSocketIO();
       if (io)
         io.emit("order_updated", {
           orderId,
-          status: "work",
+          status: "processing",
           brigade_id: brigade.id,
         });
 
       await ctx.editMessageText(
-        `✅ <b>Объект #${orderId} успешно взят в работу!</b>\nВаша бригада: ${brigade.name}\nСтатус изменен на В РАБОТЕ.\n\nЗаказ перемещен в раздел "🛠 Мои объекты".`,
+        `✅ <b>Объект #${orderId} успешно взят!</b>\nВаша бригада: ${brigade.name}\nТекущий статус: <b>В ЗАМЕРЕ</b>.\n\nЗаказ перемещен в раздел "🛠 Мои объекты". Сделайте замер и установите итоговую цену!`,
         { parse_mode: "HTML" },
       );
       await ctx.answerCbQuery("✅ Заказ ваш!");
@@ -264,9 +290,7 @@ export const BrigadeHandler = {
       }
 
       const fmt = (n) => new Intl.NumberFormat("ru-RU").format(n);
-      await ctx.replyWithHTML(
-        `🛠 <b>ВАШИ АКТИВНЫЕ ОБЪЕКТЫ:</b>\n<i>Вносите чеки за материалы своевременно, чтобы правильно рассчитать прибыль!</i>`,
-      );
+      await ctx.replyWithHTML(`🛠 <b>ВАШИ АКТИВНЫЕ ОБЪЕКТЫ:</b>`);
 
       for (const o of activeOrders) {
         const netProfit =
@@ -274,15 +298,18 @@ export const BrigadeHandler = {
             ? o.details.financials.net_profit
             : o.total_price;
         const expenses = o.details?.financials?.total_expenses || 0;
+        const statusLocal =
+          o.status === "processing"
+            ? "📐 В ЗАМЕРЕ (Оценка)"
+            : "🛠 В РАБОТЕ (Монтаж)";
 
         const msg =
-          `🏢 <b>Объект #${o.id}</b> | <b>В РАБОТЕ</b>\n` +
-          `💰 Итого по смете: ${fmt(o.total_price)} ₸\n` +
-          `📉 Внесено расходов: ${fmt(expenses)} ₸\n` +
-          `💎 Текущая прибыль: <b>${fmt(netProfit)} ₸</b>\n` +
-          `<i>(Ваша доля по завершению: ${brigade.profit_percentage}%)</i>`;
+          `🏢 <b>Объект #${o.id}</b> | ${statusLocal}\n` +
+          `💰 Договорная цена: ${fmt(o.total_price)} ₸\n` +
+          `📉 Внесено расходов (Чеки): ${fmt(expenses)} ₸\n` +
+          `💎 Ваша расчетная доля: <b>${fmt(netProfit * (brigade.profit_percentage / 100))} ₸</b>`;
 
-        await ctx.replyWithHTML(msg, Keyboards.orderActions(o.id));
+        await ctx.replyWithHTML(msg, Keyboards.orderActions(o.id, o.status));
       }
     } catch (e) {
       console.error(e);
@@ -291,10 +318,72 @@ export const BrigadeHandler = {
   },
 
   /**
+   * 🔥 3.1 ИЗМЕНЕНИЕ СТАТУСА (В замере / В работе)
+   */
+  async setOrderStatus(ctx, orderId, newStatus) {
+    try {
+      const brigade = await db.getBrigadeByManagerId(ctx.from.id);
+      if (!brigade) return ctx.answerCbQuery("❌ Вы не состоите в бригаде.");
+
+      await OrderService.updateOrderStatus(orderId, newStatus);
+      const io = getSocketIO();
+      if (io) io.emit("order_updated", { orderId, status: newStatus });
+
+      const statusName =
+        newStatus === "processing" ? "📐 В ЗАМЕРЕ" : "🛠 В РАБОТЕ";
+
+      await ctx.answerCbQuery(`✅ Статус изменен на "${statusName}"`);
+      await ctx.editMessageText(
+        `✅ <b>Статус объекта #${orderId} успешно обновлен!</b>\nТекущая стадия: <b>${statusName}</b>\n\n<i>Для дальнейших действий вернитесь в "Мои объекты".</i>`,
+        { parse_mode: "HTML" },
+      );
+    } catch (e) {
+      console.error("Ошибка смены статуса:", e);
+      ctx.answerCbQuery("❌ Ошибка смены статуса");
+    }
+  },
+
+  /**
+   * 🔥 3.2 ИЗМЕНЕНИЕ ИТОГОВОЙ ЦЕНЫ
+   */
+  async promptPrice(ctx, orderId) {
+    ctx.session.brigadeState = BRIGADE_STATES.WAIT_ORDER_NEW_PRICE;
+    ctx.session.targetOrderId = orderId;
+    await ctx.answerCbQuery();
+    await ctx.replyWithHTML(
+      `💰 <b>Изменение договорной цены для объекта #${orderId}</b>\n\n` +
+        `Введите окончательную сумму, о которой вы договорились с клиентом после замера (цифрами, например: <code>150000</code>):\n` +
+        `<i>Для отмены напишите "Отмена"</i>`,
+    );
+  },
+
+  async processOrderNewPrice(ctx) {
+    const amount = parseFloat(ctx.message.text.replace(/\s/g, ""));
+    if (isNaN(amount) || amount <= 0) {
+      return ctx.reply("⚠️ Пожалуйста, введите корректную сумму цифрами.");
+    }
+    const orderId = ctx.session.targetOrderId;
+
+    try {
+      await OrderService.updateOrderFinalPrice(orderId, amount);
+      ctx.session.brigadeState = BRIGADE_STATES.IDLE;
+
+      const io = getSocketIO();
+      if (io) io.emit("order_updated", { orderId });
+
+      await ctx.reply(
+        `✅ <b>Цена успешно обновлена!</b>\nНовая итоговая сумма объекта #${orderId}: <b>${new Intl.NumberFormat("ru-RU").format(amount)} ₸</b>.`,
+        { parse_mode: "HTML" },
+      );
+    } catch (e) {
+      console.error("Ошибка изменения цены:", e);
+      ctx.reply("❌ Ошибка при обновлении цены в базе данных.");
+    }
+  },
+
+  /**
    * 3.5 🔄 ОТКАЗ И ПЕРЕДАЧА ЗАКАЗА
    */
-
-  // Отказ от заказа (возврат на биржу)
   async refuseOrder(ctx, orderId) {
     try {
       const brigade = await db.getBrigadeByManagerId(ctx.from.id);
@@ -307,13 +396,11 @@ export const BrigadeHandler = {
         });
       }
 
-      // Возвращаем на биржу: убираем бригаду и ставим статус 'new'
       await db.query(
         "UPDATE orders SET brigade_id = NULL, status = 'new', updated_at = NOW() WHERE id = $1",
         [orderId],
       );
 
-      // Уведомляем Web CRM
       const io = getSocketIO();
       if (io)
         io.emit("order_updated", { orderId, status: "new", brigade_id: null });
@@ -324,7 +411,6 @@ export const BrigadeHandler = {
       );
       await ctx.answerCbQuery("✅ Заказ возвращен на биржу");
 
-      // Уведомляем Шефа (используя динамический поиск)
       const ownerId = await db.getSystemOwnerId();
       if (ownerId) {
         await ctx.telegram
@@ -341,13 +427,11 @@ export const BrigadeHandler = {
     }
   },
 
-  // Запрос кому передать заказ
   async promptTransfer(ctx, orderId) {
     try {
       const brigade = await db.getBrigadeByManagerId(ctx.from.id);
       if (!brigade) return ctx.answerCbQuery("❌ Ошибка бригады.");
 
-      // Загружаем всех активных бригад, кроме текущей
       const res = await db.query(
         "SELECT * FROM brigades WHERE is_active = true AND id != $1 ORDER BY name ASC",
         [brigade.id],
@@ -382,7 +466,6 @@ export const BrigadeHandler = {
     }
   },
 
-  // Выполнение передачи другой бригаде
   async executeTransfer(ctx, orderId, targetBrigadeId) {
     try {
       const myBrigade = await db.getBrigadeByManagerId(ctx.from.id);
@@ -395,13 +478,11 @@ export const BrigadeHandler = {
         return ctx.answerCbQuery("❌ Целевая бригада не найдена.");
       const targetBrigade = targetBrigadeRes.rows[0];
 
-      // Меняем привязку
       await db.query(
         "UPDATE orders SET brigade_id = $1, updated_at = NOW() WHERE id = $2",
         [targetBrigade.id, orderId],
       );
 
-      // Уведомляем Web CRM
       const io = getSocketIO();
       if (io)
         io.emit("order_updated", { orderId, brigade_id: targetBrigade.id });
@@ -411,7 +492,6 @@ export const BrigadeHandler = {
         { parse_mode: "HTML" },
       );
 
-      // Уведомляем новую бригаду о "подарке"
       await ctx.telegram
         .sendMessage(
           targetBrigade.brigadier_id,
@@ -445,9 +525,8 @@ export const BrigadeHandler = {
 
   async processExpenseAmount(ctx) {
     const amount = parseFloat(ctx.message.text.replace(/\s/g, ""));
-    if (isNaN(amount) || amount <= 0) {
+    if (isNaN(amount) || amount <= 0)
       return ctx.reply("⚠️ Пожалуйста, введите корректную сумму цифрами.");
-    }
 
     ctx.session.expenseAmount = amount;
     ctx.session.brigadeState = BRIGADE_STATES.WAIT_EXPENSE_COMMENT;
@@ -496,12 +575,10 @@ export const BrigadeHandler = {
         "SELECT id FROM accounts WHERE user_id = $1 AND type = 'brigade_acc' LIMIT 1",
         [ctx.from.id],
       );
-
-      if (resAcc.rows.length === 0) {
+      if (resAcc.rows.length === 0)
         return ctx.reply(
           "⚠️ Ваша статистика пока пуста. Завершите хотя бы один объект.",
         );
-      }
 
       const accountId = resAcc.rows[0].id;
       const fmt = (n) => new Intl.NumberFormat("ru-RU").format(n);
@@ -523,12 +600,10 @@ export const BrigadeHandler = {
         parseFloat(data.total_held) - parseFloat(data.total_returned);
 
       let msg = `📊 <b>СТАТИСТИКА БРИГАДЫ</b>\n➖➖➖➖➖➖➖➖➖➖\n`;
-      msg += `💰 <b>Всего заработано: ${fmt(earned)} ₸</b>\n`;
-      msg += `<i>(Ваш чистый заработок за все время работы)</i>\n\n`;
+      msg += `💰 <b>Всего заработано: ${fmt(earned)} ₸</b>\n<i>(Ваш чистый заработок)</i>\n\n`;
 
       if (debt > 0) {
-        msg += `🔴 <b>ДОЛГ ПЕРЕД ШЕФОМ: ${fmt(debt)} ₸</b>\n`;
-        msg += `<i>(Это доля компании с завершенных объектов. Пожалуйста, передайте их Шефу.)</i>\n➖➖➖➖➖➖➖➖➖➖`;
+        msg += `🔴 <b>ДОЛГ ПЕРЕД ШЕФОМ: ${fmt(debt)} ₸</b>\n<i>(Доля компании с завершенных объектов)</i>\n➖➖➖➖➖➖➖➖➖➖`;
       } else {
         msg += `⚪️ <b>Долгов перед компанией нет.</b>\n➖➖➖➖➖➖➖➖➖➖`;
       }
@@ -541,67 +616,45 @@ export const BrigadeHandler = {
   },
 
   /**
-   * 6. 🚚 ИНКАССАЦИЯ (Передача денег Шефу)
+   * 6. 🚚 ИНКАССАЦИЯ
    */
   async promptIncassation(ctx) {
     ctx.session.brigadeState = BRIGADE_STATES.WAIT_INCASSATION_AMOUNT;
     await ctx.answerCbQuery();
     await ctx.replyWithHTML(
-      `💸 <b>Передача доли Шефу</b>\n\n` +
-        `Вы перевели деньги на Kaspi Шефу или отдали наличными?\n` +
-        `Введите переданную сумму (цифрами, например <code>50000</code>):\n` +
-        `<i>Для отмены напишите "Отмена"</i>`,
+      `💸 <b>Передача доли Шефу</b>\n\nВведите переданную сумму (цифрами, например <code>50000</code>):\n<i>Для отмены напишите "Отмена"</i>`,
     );
   },
 
   async processIncassationAmount(ctx) {
     const amount = parseFloat(ctx.message.text.replace(/\s/g, ""));
-    if (isNaN(amount) || amount <= 0) {
+    if (isNaN(amount) || amount <= 0)
       return ctx.reply("⚠️ Введите корректную сумму цифрами.");
-    }
 
     ctx.session.brigadeState = BRIGADE_STATES.IDLE;
     const brigadierId = ctx.from.id;
     const brigade = await db.getBrigadeByManagerId(brigadierId);
 
-    // ИСПРАВЛЕНИЕ: Динамический поиск Владельца в базе
     const ownerId = await db.getSystemOwnerId();
-
-    if (!ownerId) {
-      return ctx.reply(
-        "⚠️ Системная ошибка: Владелец системы не найден в базе. Обратитесь к администратору.",
-      );
-    }
+    if (!ownerId) return ctx.reply("⚠️ Системная ошибка: Владелец не найден.");
 
     try {
       const resAcc = await db.query(
         "SELECT id FROM accounts WHERE user_id = $1 AND type = 'brigade_acc' LIMIT 1",
         [brigadierId],
       );
-      const accId = resAcc.rows[0]?.id;
-
       let currentDebt = 0;
-      if (accId) {
+      if (resAcc.rows[0]?.id) {
         const txRes = await db.query(
-          `
-             SELECT COALESCE(SUM(amount) FILTER (WHERE category = 'Удержание'), 0) - 
-                    COALESCE(SUM(amount) FILTER (WHERE category = 'Инкассация' AND type = 'income'), 0) as debt 
-             FROM transactions WHERE account_id = $1
-           `,
-          [accId],
+          `SELECT COALESCE(SUM(amount) FILTER (WHERE category = 'Удержание'), 0) - COALESCE(SUM(amount) FILTER (WHERE category = 'Инкассация' AND type = 'income'), 0) as debt FROM transactions WHERE account_id = $1`,
+          [resAcc.rows[0].id],
         );
         currentDebt = parseFloat(txRes.rows[0].debt);
       }
-      const remainingDebt = currentDebt - amount;
 
       await ctx.telegram.sendMessage(
         ownerId,
-        `💰 <b>ИНКАССАЦИЯ (Передача денег)</b>\n➖➖➖➖➖➖➖➖➖➖\n` +
-          `👷‍♂️ Бригада: <b>${brigade?.name || ctx.from.first_name}</b>\n` +
-          `💸 Передает вам: <b>${new Intl.NumberFormat("ru-RU").format(amount)} ₸</b>\n\n` +
-          `📉 Было долга: ${new Intl.NumberFormat("ru-RU").format(currentDebt)} ₸\n` +
-          `Остаток долга (если подтвердите): <b>${new Intl.NumberFormat("ru-RU").format(remainingDebt)} ₸</b>\n➖➖➖➖➖➖➖➖➖➖\n` +
-          `<i>Нажмите "Подтвердить", если вы действительно получили эти деньги.</i>`,
+        `💰 <b>ИНКАССАЦИЯ (Передача денег)</b>\n➖➖➖➖➖➖➖➖➖➖\n👷‍♂️ Бригада: <b>${brigade?.name || ctx.from.first_name}</b>\n💸 Передает: <b>${new Intl.NumberFormat("ru-RU").format(amount)} ₸</b>\n📉 Остаток долга: <b>${new Intl.NumberFormat("ru-RU").format(currentDebt - amount)} ₸</b>\n➖➖➖➖➖➖➖➖➖➖`,
         Markup.inlineKeyboard([
           [
             Markup.button.callback(
@@ -611,19 +664,18 @@ export const BrigadeHandler = {
           ],
           [
             Markup.button.callback(
-              "❌ Деньги не поступали",
+              "❌ Не поступали",
               `rej_inc_${brigadierId}_${amount}`,
             ),
           ],
         ]),
       );
-
       await ctx.replyWithHTML(
-        `✅ <b>Запрос отправлен Шефу!</b>\nСумма ${new Intl.NumberFormat("ru-RU").format(amount)} ₸ будет списана с вашего долга сразу после того, как Шеф нажмет "Подтвердить".`,
+        `✅ <b>Запрос отправлен Шефу!</b>\nСумма будет списана с долга после его подтверждения.`,
       );
     } catch (e) {
-      console.error("Ошибка отправки инкассации:", e);
-      ctx.reply("❌ Ошибка отправки запроса Шефу.");
+      console.error("Ошибка инкассации:", e);
+      ctx.reply("❌ Ошибка отправки запроса.");
     }
   },
 
@@ -635,29 +687,21 @@ export const BrigadeHandler = {
       await ctx.answerCbQuery("⏳ Закрытие объекта и расчет долей...");
 
       const result = await db.finalizeOrderAndDistributeProfit(orderId);
-
       const io = getSocketIO();
       if (io) io.emit("order_updated", { orderId, status: "done" });
 
       const fmt = (n) => new Intl.NumberFormat("ru-RU").format(n);
-
       await ctx.editMessageText(
-        `✅ <b>Объект #${orderId} успешно ЗАВЕРШЕН.</b>\n➖➖➖➖➖➖➖➖➖➖\n` +
-          `💰 Вы заработали: <b>+${fmt(result.brigadeShare)} ₸</b>\n` +
-          `🔴 Долг Шефу (его доля): <b>-${fmt(result.ownerShare)} ₸</b>\n➖➖➖➖➖➖➖➖➖➖\n` +
-          `<i>Доля Шефа добавлена в ваш долг. Зайдите в раздел "Сверка и Выручка", чтобы передать деньги.</i>`,
+        `✅ <b>Объект #${orderId} ЗАВЕРШЕН.</b>\n➖➖➖➖➖➖➖➖➖➖\n💰 Вы заработали: <b>+${fmt(result.brigadeShare)} ₸</b>\n🔴 Долг Шефу: <b>-${fmt(result.ownerShare)} ₸</b>\n➖➖➖➖➖➖➖➖➖➖\n<i>Доля Шефа добавлена в ваш долг.</i>`,
         { parse_mode: "HTML" },
       );
 
-      // ИСПРАВЛЕНИЕ: Динамический поиск Владельца для уведомления о закрытии
       const ownerId = await db.getSystemOwnerId();
       if (ownerId) {
         ctx.telegram
           .sendMessage(
             ownerId,
-            `🔔 <b>ОБЪЕКТ #${orderId} ЗАВЕРШЕН!</b>\n` +
-              `Бригадир закрыл заказ.\n` +
-              `Доля компании <b>${fmt(result.ownerShare)} ₸</b> записана в долг бригады. Ждите перевод.`,
+            `🔔 <b>ОБЪЕКТ #${orderId} ЗАВЕРШЕН!</b>\nБригадир закрыл заказ.\nДоля компании <b>${fmt(result.ownerShare)} ₸</b> записана в долг бригады.`,
             { parse_mode: "HTML" },
           )
           .catch(() => {});
