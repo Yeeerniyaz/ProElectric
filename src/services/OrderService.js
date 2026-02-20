@@ -1,14 +1,16 @@
 /**
  * @file src/services/OrderService.js
- * @description Сервис бизнес-логики заказов (Core Business Logic v9.1.1).
+ * @description Сервис бизнес-логики заказов (Core Business Logic v10.0.0).
  * Отвечает за:
  * 1. Инженерный расчет сметы (Бурение и точки разделены).
  * 2. Финансовое ядро (Self-Healing Expenses & Net Profit).
  * 3. Динамическое ценообразование (Pricelist Template).
  * 4. Автогенерацию массива BOM.
+ * 5. Управление распределением заказов по бригадам (NEW).
+ * 6. Финализацию объектов с разделением прибыли (NEW).
  *
  * @module OrderService
- * @version 9.1.1 (Enterprise ERP Edition - Bugfix)
+ * @version 10.0.0 (Enterprise ERP Edition)
  */
 
 import * as db from "../database/index.js";
@@ -39,7 +41,7 @@ const WALL_NAMES = Object.freeze({
 });
 
 /**
- * 🔥 ДИНАМИЧЕСКИЙ ПРАЙС-ЛИСТ (v9.1.1)
+ * 🔥 ДИНАМИЧЕСКИЙ ПРАЙС-ЛИСТ (v10.0.0)
  * Бурение лунок и монтаж механизмов теперь полностью разделены.
  */
 export const PRICELIST_TEMPLATE = [
@@ -371,7 +373,6 @@ export const OrderService = {
       randomId = Math.floor(100000 + Math.random() * 900000);
 
       // Проверяем, существует ли уже такой ID в таблице заказов
-      // Используем db.query, так как он обычно доступен в контексте OrderService
       const checkId = await db.query("SELECT id FROM orders WHERE id = $1", [
         randomId,
       ]);
@@ -391,13 +392,12 @@ export const OrderService = {
     };
 
     const orderData = {
-      id: randomId, // ⚡️ Вставляем наш уникальный случайный ID
+      id: randomId,
       area: area,
       price: estimate.total.work,
       details: { ...estimate, financials },
     };
 
-    // Передаем обновленный orderData с нашим ID в базу
     return await db.createOrder(userId, orderData);
   },
 
@@ -509,7 +509,31 @@ export const OrderService = {
   },
 
   // ===========================================================================
-  // 4. 📊 АНАЛИТИКА (DASHBOARD)
+  // 4. 🏗 BRIGADES & PROFIT DISTRIBUTION (ERP v10.0 - NEW)
+  // ===========================================================================
+
+  async getAvailableNewOrders() {
+    return await db.getAvailableNewOrders();
+  },
+
+  async getBrigadeOrders(brigadeId) {
+    return await db.getBrigadeOrders(brigadeId);
+  },
+
+  async assignOrderToBrigade(orderId, brigadeId) {
+    return await db.assignOrderToBrigade(orderId, brigadeId);
+  },
+
+  async getOrderExpenses(orderId) {
+    return await db.getOrderExpenses(orderId);
+  },
+
+  async finalizeOrderAndDistributeProfit(orderId, ownerAccountId) {
+    return await db.finalizeOrderAndDistributeProfit(orderId, ownerAccountId);
+  },
+
+  // ===========================================================================
+  // 5. 📊 АНАЛИТИКА (DASHBOARD)
   // ===========================================================================
 
   async getAdminStats() {

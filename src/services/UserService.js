@@ -1,11 +1,12 @@
 /**
  * @file src/services/UserService.js
- * @description Сервис управления пользователями (Identity & RBAC Module v9.0.0).
- * Отвечает за аутентификацию, профилирование, управление ролями и клиентскую аналитику.
+ * @description Сервис управления пользователями (Identity & RBAC Module v10.0.0).
+ * Отвечает за аутентификацию, профилирование, управление ролями, клиентскую аналитику
+ * и генерацию динамических OTP-паролей для Web CRM.
  * Оптимизирован под использование как из Telegram-бота, так и из Web CRM.
  *
  * @module UserService
- * @version 9.0.0 (Enterprise ERP Edition)
+ * @version 10.0.0 (Enterprise ERP Edition)
  */
 
 import * as db from "../database/index.js";
@@ -17,7 +18,7 @@ import * as db from "../database/index.js";
 export const ROLES = Object.freeze({
   OWNER: "owner", // Владелец бизнеса (Super Admin)
   ADMIN: "admin", // Администратор (Доступ к CRM)
-  MANAGER: "manager", // Мастер / Инженер (Работает с заказами)
+  MANAGER: "manager", // Бригадир / Инженер (Работает с заказами)
   USER: "user", // Клиент бота
   BANNED: "banned", // Заблокирован
 });
@@ -170,5 +171,45 @@ export const UserService = {
       totalUsers: parseInt(usersData.rows[0].count, 10),
       activeUsers24h: parseInt(activeData.rows[0].count, 10),
     };
+  },
+
+  // ===========================================================================
+  // 🔐 WEB OTP AUTHENTICATION (NEW)
+  // ===========================================================================
+
+  /**
+   * Генерация одноразового пароля (OTP) для входа в Web CRM.
+   */
+  async generateWebOTP(telegramId) {
+    const user = await this.getUserProfile(telegramId);
+    if (!user) throw new Error("Пользователь не найден.");
+    if (!user.phone)
+      throw new Error("Для входа в CRM необходим привязанный номер телефона.");
+    if (![ROLES.OWNER, ROLES.ADMIN, ROLES.MANAGER].includes(user.role)) {
+      throw new Error("Доступ в Web CRM запрещен для вашей роли.");
+    }
+
+    // Генерируем 6-значный код
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Сохраняем в базу на 15 минут
+    await db.setWebPassword(telegramId, otp, 15);
+
+    return { otp, phone: user.phone };
+  },
+
+  /**
+   * Проверка одноразового пароля (OTP) от Web CRM.
+   */
+  async verifyWebOTP(phone, otp) {
+    const user = await db.getWebAuthUser(phone);
+    if (!user) return null;
+
+    if (user.web_password === otp) {
+      // Пароль верный, стираем его (одноразовость)
+      await db.clearWebPassword(user.telegram_id);
+      return user;
+    }
+    return null;
   },
 };

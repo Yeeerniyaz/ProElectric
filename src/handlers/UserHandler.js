@@ -1,11 +1,11 @@
 /**
  * @file src/handlers/UserHandler.js
- * @description Обработчик клиентской части (Client Controller v9.1.0 Enterprise).
+ * @description Обработчик клиентской части (Client Controller v10.0.0 Enterprise).
  * Управляет воронкой продаж "Лид -> Предварительный расчет -> Оформление".
- * Интегрирован с финансовым ядром, генератором массива BOM и динамическим прайс-листом.
+ * Интегрирован с финансовым ядром, Web OTP генерацией и динамическим прайс-листом.
  *
  * @module UserHandler
- * @version 9.1.0 (Senior Architect Edition)
+ * @version 10.0.0 (Senior Architect Edition)
  */
 
 import { Markup } from "telegraf";
@@ -40,6 +40,8 @@ const BUTTONS = Object.freeze({
   CANCEL: "❌ Отмена",
   SHARE_PHONE: "📱 Отправить мой номер телефона",
   ADMIN_PANEL: "👑 Админ-панель",
+  BRIGADE_PANEL: "👷 Панель Бригадира", // NEW: Панель для менеджеров
+  WEB_AUTH: "🔑 Доступ в Web CRM", // NEW: Запрос пароля
 });
 
 // =============================================================================
@@ -54,8 +56,14 @@ const Keyboards = {
       [BUTTONS.CONTACTS, BUTTONS.HOW_WORK],
     ];
 
-    if (["owner", "admin", "manager"].includes(role)) {
+    if (["owner", "admin"].includes(role)) {
       buttons.push([BUTTONS.ADMIN_PANEL]);
+      buttons.push([BUTTONS.WEB_AUTH]); // Доступ в Web CRM
+    }
+
+    if (role === "manager") {
+      buttons.push([BUTTONS.BRIGADE_PANEL]);
+      buttons.push([BUTTONS.WEB_AUTH]); // Бригадирам тоже нужен доступ
     }
 
     return Markup.keyboard(buttons).resize();
@@ -212,6 +220,8 @@ export const UserHandler = {
           return this.showPriceList(ctx);
         case BUTTONS.ORDERS:
           return this.showMyOrders(ctx);
+        case BUTTONS.WEB_AUTH: // NEW: Запрос OTP для Web CRM
+          return this.generateWebOTP(ctx);
         case BUTTONS.CONTACTS:
           return ctx.replyWithHTML(
             `📞 <b>НАШИ КОНТАКТЫ:</b>\n\n` +
@@ -254,7 +264,30 @@ export const UserHandler = {
 
   /**
    * ===========================================================================
-   * 3. 🧮 ERP CALCULATOR WIZARD (v9.1.0 Engine)
+   * 3. 🔐 WEB AUTH (OTP GENERATOR) - NEW
+   * ===========================================================================
+   */
+  async generateWebOTP(ctx) {
+    try {
+      const { otp, phone } = await UserService.generateWebOTP(ctx.from.id);
+
+      const message =
+        `🔐 <b>Доступ в Web CRM</b>\n` +
+        `➖➖➖➖➖➖➖➖➖➖\n` +
+        `👤 <b>Ваш логин:</b> <code>${phone}</code>\n` +
+        `🔑 <b>Временный пароль:</b> <code>${otp}</code>\n` +
+        `➖➖➖➖➖➖➖➖➖➖\n` +
+        `<i>⏳ Пароль действительен 15 минут. После входа он будет автоматически сброшен (одноразовый). Никому не сообщайте этот код!</i>`;
+
+      await ctx.replyWithHTML(message);
+    } catch (error) {
+      await ctx.reply(`❌ Ошибка доступа: ${error.message}`);
+    }
+  },
+
+  /**
+   * ===========================================================================
+   * 4. 🧮 ERP CALCULATOR WIZARD (v9.1.0 Engine)
    * ===========================================================================
    */
 
@@ -333,7 +366,7 @@ export const UserHandler = {
     const bomCount = estimate.bom?.length || 0;
 
     const invoice =
-      `📋 <b>ПРЕДВАРИТЕЛЬНАЯ СМЕТА v9.1.0</b>\n` +
+      `📋 <b>ПРЕДВАРИТЕЛЬНАЯ СМЕТА v10.0.0</b>\n` +
       `➖➖➖➖➖➖➖➖➖➖\n` +
       `🏠 <b>Параметры:</b> ${data.area} м² / ${data.rooms} комн.\n` +
       `🧱 <b>Конструктив:</b> ${estimate.params.wallType}\n\n` +
@@ -387,7 +420,7 @@ export const UserHandler = {
 
   /**
    * ===========================================================================
-   * 4. 💾 ЗАВЕРШЕНИЕ СДЕЛКИ И ИНФОБЛОКИ
+   * 5. 💾 ЗАВЕРШЕНИЕ СДЕЛКИ И ИНФОБЛОКИ
    * ===========================================================================
    */
 
@@ -494,7 +527,7 @@ export const UserHandler = {
   async showPriceList(ctx) {
     try {
       const pricelist = await OrderService.getPublicPricelist();
-      let msg = `💰 <b>СИСТЕМНЫЙ ПРАЙС-ЛИСТ (v9.1.0)</b>\n\n`;
+      let msg = `💰 <b>СИСТЕМНЫЙ ПРАЙС-ЛИСТ (v10.0.0)</b>\n\n`;
 
       // Проверяем, вернул ли OrderService новый формат (массив категорий)
       if (Array.isArray(pricelist)) {

@@ -1,18 +1,19 @@
 /**
  * @file src/handlers/AdminHandler.js
- * @description Контроллер панели администратора (Enterprise Telegram Controller v9.1.1).
- * Управляет бизнес-процессами (Смена статусов, Дашборд, Роли, Настройки цен).
+ * @description Контроллер панели администратора (Enterprise Telegram Controller v10.0.0).
+ * Управляет бизнес-процессами (Смена статусов, Дашборд, Роли, Настройки цен, Бригады).
  * Включает FSM для ввода метаданных заказа и инструменты DevOps (SQL, Backup).
- * Интегрирован с динамическим прайс-листом и защитой от ошибок Telegram API.
+ * Интегрирован с WebSockets для передачи real-time событий в Web CRM.
  *
  * @module AdminHandler
- * @version 9.1.1 (Senior Architect Edition - Bugfix)
+ * @version 10.0.0 (Senior Architect Edition - ERP & WebSockets)
  */
 
 import { Markup } from "telegraf";
 import { UserService } from "../services/UserService.js";
 import { OrderService } from "../services/OrderService.js";
 import * as db from "../database/index.js";
+import { getSocketIO } from "../bot.js"; // NEW: Интеграция с WebSockets
 import os from "os";
 
 // =============================================================================
@@ -30,6 +31,7 @@ const ROLES = Object.freeze({
 const BUTTONS = Object.freeze({
   DASHBOARD: "📊 Финансовый Отчет",
   ORDERS: "📦 Реестр объектов",
+  BRIGADES: "🏗 Управление Бригадами", // NEW
   SETTINGS: "⚙️ Настройки цен",
   STAFF: "👥 Персонал",
   SQL_CONSOLE: "👨‍💻 SQL Терминал",
@@ -58,7 +60,8 @@ const AdminKeyboards = {
   mainMenu: (role) => {
     const buttons = [
       [BUTTONS.DASHBOARD, BUTTONS.ORDERS],
-      [BUTTONS.SETTINGS, BUTTONS.STAFF],
+      [BUTTONS.BRIGADES, BUTTONS.SETTINGS], // Заменили расположение кнопок для гармонии
+      [BUTTONS.STAFF],
     ];
 
     if (role === ROLES.OWNER) {
@@ -231,6 +234,8 @@ export const AdminHandler = {
         return this.showDashboard(ctx);
       case BUTTONS.ORDERS:
         return this.showOrdersInstruction(ctx);
+      case BUTTONS.BRIGADES: // NEW
+        return this.showBrigadesInstruction(ctx);
       case BUTTONS.SETTINGS:
         return this.showSettings(ctx);
       case BUTTONS.STAFF:
@@ -242,9 +247,14 @@ export const AdminHandler = {
             ["🚀 Рассчитать стоимость"],
             ["📂 Мои заявки", "💰 Прайс-лист"],
             ["📞 Контакты", "ℹ️ Как мы работаем"],
-            ["👑 Админ-панель"],
+            ["👑 Админ-панель", "🔑 Доступ в Web CRM"],
           ]).resize(),
         );
+    }
+
+    // Owner / Admin Exclusive Routes
+    if ([ROLES.OWNER, ROLES.ADMIN].includes(role)) {
+      if (text.startsWith("/addbrigade")) return this.processAddBrigade(ctx);
     }
 
     // Owner Exclusive Routes
@@ -404,10 +414,12 @@ export const AdminHandler = {
     }
 
     try {
+      // NEW: JOIN с таблицей brigades
       const res = await db.query(
-        `SELECT o.*, u.first_name, u.username, u.phone 
+        `SELECT o.*, u.first_name, u.username, u.phone, b.name as brigade_name 
          FROM orders o 
          JOIN users u ON o.user_id = u.telegram_id 
+         LEFT JOIN brigades b ON o.brigade_id = b.id
          WHERE o.id = $1`,
         [orderId],
       );
@@ -463,6 +475,11 @@ export const AdminHandler = {
       // Страховка от null площади
       const areaInfo = order.area || params.area || 0;
 
+      // ИНФОРМАЦИЯ О БРИГАДЕ
+      const brigadeLine = order.brigade_name
+        ? `\n👷‍♂️ <b>Бригада:</b> ${order.brigade_name}`
+        : `\n👷‍♂️ <b>Бригада:</b> <i>Свободный объект (Биржа)</i>`;
+
       const info =
         `🏢 <b>ОБЪЕКТ #${order.id}</b>\n` +
         `Статус: <b>${statusEmoji[order.status] || "❓"} ${order.status.toUpperCase()}</b>\n` +
@@ -478,6 +495,7 @@ export const AdminHandler = {
         `🏗 <b>Технические данные:</b>\n` +
         `Площадь: ${areaInfo} м² | Комнат: ${params.rooms || 0}\n` +
         `Стены: ${wallName}` +
+        brigadeLine + // <-- Добавили строку с бригадой
         bomIndicator +
         `\n\n` +
         `💸 <b>Финансовый контроллер:</b>\n` +
@@ -519,6 +537,13 @@ export const AdminHandler = {
         `UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2`,
         [newStatus, orderId],
       );
+
+      // WEB SOCKET TRIGGER
+      const io = getSocketIO();
+      if (io) {
+        io.emit("order_updated", { orderId, status: newStatus });
+      }
+
       await ctx.answerCbQuery(
         `✅ Статус изменен на: ${newStatus.toUpperCase()}`,
       );
@@ -548,6 +573,11 @@ export const AdminHandler = {
         ctx.message.text,
       );
       ctx.session.adminState = ADMIN_STATES.IDLE;
+
+      // SOCKET
+      const io = getSocketIO();
+      if (io) io.emit("order_updated", { orderId, address_updated: true });
+
       await ctx.reply(`✅ Адрес успешно зафиксирован.`);
       ctx.message.text = `/order ${orderId}`;
       return this.findOrder(ctx);
@@ -599,12 +629,82 @@ export const AdminHandler = {
         `UPDATE orders SET status = 'cancel', updated_at = NOW() WHERE id = $1`,
         [orderId],
       );
+
+      // SOCKET
+      const io = getSocketIO();
+      if (io) io.emit("order_updated", { orderId, status: "cancel" });
+
       await ctx.answerCbQuery("✅ Отказ оформлен.");
 
       ctx.callbackQuery.data = `refresh_order_${orderId}`;
       return this.findOrder(ctx);
     } catch (e) {
       ctx.answerCbQuery("❌ Ошибка отмены заказа");
+    }
+  },
+
+  /**
+   * 3.5 🏗 УПРАВЛЕНИЕ БРИГАДАМИ (NEW MODULE)
+   */
+  async showBrigadesInstruction(ctx) {
+    try {
+      const res = await db.query("SELECT * FROM brigades ORDER BY id ASC");
+      const brigades = res.rows;
+
+      let msg = `🏗 <b>УПРАВЛЕНИЕ БРИГАДАМИ (ERP)</b>\n\n`;
+
+      if (brigades.length === 0) {
+        msg += `<i>Бригады пока не созданы.</i>\n\n`;
+      } else {
+        brigades.forEach((b) => {
+          msg += `🔹 <b>${b.name}</b> (ID: ${b.id})\n`;
+          msg += `   Бригадир ID: <code>${b.brigadier_id}</code> | Доля: ${b.profit_percentage}%\n`;
+          msg += `   Статус: ${b.is_active ? "✅ Активна" : "❌ Неактивна"}\n\n`;
+        });
+      }
+
+      msg += `<b>Как добавить новую бригаду:</b>\n`;
+      msg += `Используйте команду:\n<code>/addbrigade [Название] [ID_Бригадира] [Процент_Прибыли]</code>\n`;
+      msg += `<i>Пример: /addbrigade Монтажники Альфа 123456789 40</i>\n`;
+      msg += `\n⚠️ <i>Бригадир автоматически получит роль MANAGER и системный счет в кассе компании. Название можно писать с пробелами.</i>`;
+
+      await ctx.replyWithHTML(msg);
+    } catch (e) {
+      console.error(e);
+      ctx.reply("❌ Ошибка загрузки списка бригад.");
+    }
+  },
+
+  async processAddBrigade(ctx) {
+    // Безопасный парсинг даже если название состоит из нескольких слов
+    const text = ctx.message.text.replace("/addbrigade", "").trim();
+    const parts = text.split(" ");
+
+    if (parts.length < 3) {
+      return ctx.reply(
+        "⚠️ Синтаксис: /addbrigade <Название> <ID_Бригадира> <Процент>\nПример: /addbrigade Монтажники Альфа 123456789 45",
+      );
+    }
+
+    const percentage = parseFloat(parts.pop()); // Забираем последнее слово (число)
+    const brigadierId = parseInt(parts.pop()); // Забираем предпоследнее (ID)
+    const name = parts.join(" "); // Все что осталось - название
+
+    if (isNaN(percentage) || isNaN(brigadierId) || !name) {
+      return ctx.reply(
+        "❌ Ошибка парсинга. Убедитесь, что ID и Процент являются числами.",
+      );
+    }
+
+    try {
+      const newBrigade = await db.createBrigade(name, brigadierId, percentage);
+      await ctx.replyWithHTML(
+        `✅ <b>Бригада "${newBrigade.name}" успешно создана!</b>\n` +
+          `Счет бригады автоматически открыт.\n` +
+          `Пользователю <code>${brigadierId}</code> выданы права доступа "MANAGER".`,
+      );
+    } catch (e) {
+      ctx.reply(`❌ Ошибка создания бригады: ${e.message}`);
     }
   },
 
@@ -655,7 +755,7 @@ export const AdminHandler = {
   },
 
   /**
-   * 5. ⚙️ НАСТРОЙКИ (Dynamic Configuration v9.1.1)
+   * 5. ⚙️ НАСТРОЙКИ (Dynamic Configuration v10.0.0)
    */
   async showSettings(ctx) {
     try {
@@ -697,6 +797,11 @@ export const AdminHandler = {
         `INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
         [args[1], args[2]],
       );
+
+      // SOCKET
+      const io = getSocketIO();
+      if (io) io.emit("settings_updated", { key: args[1], value: args[2] });
+
       await ctx.reply(
         `✅ Прайс-лист обновлен!\nКлюч <b>${args[1]}</b> = <b>${args[2]}</b>.\n\nИзменения моментально применены в Web CRM и Калькуляторе.`,
         { parse_mode: "HTML" },
@@ -727,13 +832,14 @@ export const AdminHandler = {
 
   async processBackup(ctx) {
     const loading = await ctx.reply(
-      "💾 Инициализация создания Snapshot'а базы данных (v9.1.0)...",
+      "💾 Инициализация создания Snapshot'а базы данных (v10.0.0)...",
     );
     try {
       const dump = { timestamp: new Date().toISOString(), database: {} };
-      // Расширенный список таблиц ERP
+      // Расширенный список таблиц ERP, включая бригады и новые финансы
       const tables = [
         "users",
+        "brigades", // NEW
         "orders",
         "settings",
         "object_expenses",

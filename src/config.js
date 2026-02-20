@@ -1,7 +1,10 @@
 /**
  * @file src/config.js
- * @description Синхронизированный модуль конфигурации.
+ * @description Синхронизированный модуль конфигурации (v10.0.0 Enterprise).
  * Устраняет ошибки "undefined" в app.js и connection.js, объединяя все секции.
+ * Внедрены настройки безопасности для OTP авторизации и WebSockets.
+ *
+ * @module Configuration
  */
 
 import "dotenv/config";
@@ -58,10 +61,12 @@ const configRaw = {
     isProduction,
   },
 
-  // Секция server — необходима для app.js
+  // Секция server — необходима для app.js и WebSockets
   server: {
     corsOrigin: getEnv("CORS_ORIGIN", "*"),
     sessionSecret: getEnv("SESSION_SECRET", "dev_secret_key_change_me"),
+    jwtSecret: getEnv("JWT_SECRET", "proelectric_enterprise_jwt_secret_key"), // NEW: Для Web CRM (OTP Auth)
+    otpExpiresIn: getInt("OTP_EXPIRES_IN", 15), // NEW: Время жизни OTP пароля в минутах
   },
 
   // Секция db — необходима для connection.js
@@ -76,12 +81,16 @@ const configRaw = {
   // Секция bot — необходима для bot.js
   bot: {
     token: getEnv("BOT_TOKEN"),
-    ownerId: getInt("ADMIN_ID"),
+    // Используем fallback: если нет ADMIN_ID, ищем OWNER_ID
+    ownerId: getInt(
+      "ADMIN_ID",
+      process.env.OWNER_ID ? parseInt(process.env.OWNER_ID, 10) : undefined,
+    ),
     adminIds: getList("ADDITIONAL_ADMIN_IDS"),
     bossUsername: (process.env.BOSS_USERNAME || "yeeerniyaz").replace("@", ""),
   },
 
-  // Секция admin — необходима для авторизации в app.js
+  // Секция admin — необходима для авторизации (обратная совместимость для SuperAdmin)
   admin: {
     password: getEnv("ADMIN_PASS", "admin123"),
   },
@@ -92,7 +101,9 @@ export const config = Object.freeze(configRaw);
 
 (() => {
   if (process.env.NODE_ENV !== "test") {
-    console.log(`✅ [CONFIG] Configuration loaded successfully.`);
+    console.log(
+      `✅ [CONFIG] Configuration loaded successfully (v10.0.0 Enterprise).`,
+    );
     console.log(`🌍 [ENV] Environment: ${config.system.env.toUpperCase()}`);
   }
 })();

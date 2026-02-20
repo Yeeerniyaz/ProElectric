@@ -1,18 +1,20 @@
 /**
  * @file src/server.js
- * @description Главный загрузчик сервисов (Service Bootstrapper v9.1.0).
+ * @description Главный загрузчик сервисов (Service Bootstrapper v10.0.0).
  * Отвечает за:
- * 1. Строгую последовательность запуска: БД -> Web Server -> Telegram Bot.
+ * 1. Строгую последовательность запуска: БД -> Web Server -> WebSockets -> Telegram Bot.
  * 2. Выполнение миграций и сидинга (initDB).
  * 3. Настройку Graceful Shutdown (безопасная остановка без потери данных).
+ * 4. Инициализацию Socket.IO для Real-Time обновлений ERP.
  *
  * @module Server
- * @version 9.1.0 (Enterprise ERP Edition)
+ * @version 10.0.0 (Enterprise ERP Edition)
  * @author ProElectric Team
  */
 
+import { Server as SocketIOServer } from "socket.io"; // NEW: Интеграция WebSockets
 import app from "./app.js";
-import { bot } from "./bot.js";
+import { bot, setSocketIO } from "./bot.js"; // UPDATED: Импортируем сеттер для передачи io в бота
 import { initDB, closePool } from "./database/index.js";
 import { config } from "./config.js";
 
@@ -20,7 +22,7 @@ const PORT = config.server.port || 3000;
 
 /**
  * 🚀 Инициализация и запуск всех микросервисов системы.
- * Порядок строго детерминирован: сначала база, потом API, потом Бот.
+ * Порядок строго детерминирован: сначала база, потом API, потом Сокеты, потом Бот.
  */
 async function startServer() {
   try {
@@ -36,6 +38,31 @@ async function startServer() {
       console.log(`🌐 [Server] Web CRM & REST API запущены на порту: ${PORT}`);
       console.log(`🔗 [Server] Локальный доступ: http://localhost:${PORT}`);
     });
+
+    // =========================================================================
+    // 2.5 ИНИЦИАЛИЗАЦИЯ WEBSOCKETS (NEW)
+    // =========================================================================
+    console.log("🔌 [Server] Инициализация WebSocket-сервера (Socket.IO)...");
+    const io = new SocketIOServer(server, {
+      cors: {
+        origin: config.server.corsOrigin || "*",
+        methods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
+        credentials: true,
+      },
+    });
+
+    // Передаем инстанс сокетов в Telegram-бот (чтобы бот мог отправлять emit'ы)
+    setSocketIO(io);
+
+    // Логируем подключения фронтенда
+    io.on("connection", (socket) => {
+      console.log(`⚡️ [WebSocket] Новый клиент подключен: ${socket.id}`);
+
+      socket.on("disconnect", () => {
+        console.log(`🔌 [WebSocket] Клиент отключен: ${socket.id}`);
+      });
+    });
+    console.log("✅ [Server] WebSockets успешно привязаны к серверу.");
 
     // 3. Запуск Telegram Бота (Long-polling)
     console.log("🤖 [Server] Запуск Telegram-контроллера (ProElectric Bot)...");
@@ -60,8 +87,10 @@ async function startServer() {
         console.log("⏳ [Shutdown] Остановка Telegram-бота...");
         bot.stop(signal);
 
-        // 2. Закрываем HTTP-сервер Express
-        console.log("⏳ [Shutdown] Завершение работы Web-сервера...");
+        // 2. Закрываем HTTP-сервер Express и WebSockets
+        console.log(
+          "⏳ [Shutdown] Завершение работы Web-сервера и WebSockets...",
+        );
         server.close(async () => {
           console.log("✅ [Shutdown] Web-сервер успешно остановлен.");
 
@@ -73,7 +102,7 @@ async function startServer() {
           console.log("✅ [Shutdown] Подключения к БД закрыты.");
 
           console.log(
-            "👋 [Shutdown] Система ProElectric ERP v9.1.0 безопасно завершила работу.",
+            "👋 [Shutdown] Система ProElectric ERP v10.0.0 безопасно завершила работу.",
           );
           process.exit(0);
         });
