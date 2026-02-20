@@ -1,12 +1,12 @@
 /**
  * @file src/bot.js
- * @description Ядро Telegram-бота (Dispatcher & Router v10.9.2 Enterprise).
+ * @description Ядро Telegram-бота (Dispatcher & Router v10.9.3 Enterprise).
  * Выполняет маршрутизацию всех входящих событий, управляет сессиями (FSM),
  * экспортирует экземпляр бота для Web CRM и управляет инстансом Socket.IO.
- * ИСПРАВЛЕНИЕ: Добавлен роутинг для нового Inline-меню Клиентов и управления заказами.
+ * ИСПРАВЛЕНИЕ: Добавлены обработчики инлайн-кнопок для Клиентов (Отмена заказа, пинг шефа).
  *
  * @module BotCore
- * @version 10.9.2 (Enterprise ERP Edition)
+ * @version 10.9.3 (Enterprise ERP Edition)
  */
 
 import { Telegraf, session } from "telegraf";
@@ -61,7 +61,7 @@ bot.command("webauth", (ctx) => UserHandler.generateWebOTP(ctx)); // Пряма�
 // 5. МАРШРУТИЗАТОР ТЕКСТОВЫХ КНОПОК (HEARS)
 // =============================================================================
 
-// --- Клиентский интерфейс (Оставлено для совместимости со старыми клавиатурами) ---
+// --- Клиентский интерфейс ---
 const USER_TRIGGERS = [
   "🚀 Рассчитать стоимость",
   "📂 Мои заявки",
@@ -77,6 +77,7 @@ bot.hears(USER_TRIGGERS, (ctx) => UserHandler.handleTextMessage(ctx));
 // --- Интерфейс управления (CRM) ---
 bot.hears("👑 Админ-панель", (ctx) => AdminHandler.showAdminMenu(ctx));
 
+// ИСПРАВЛЕНИЕ: Добавлен триггер "🏗 Управление Бригадами"
 const ADMIN_TRIGGERS = [
   "📊 Финансовый Отчет",
   "📦 Реестр объектов",
@@ -105,34 +106,7 @@ bot.hears(BRIGADE_TRIGGERS, (ctx) => BrigadeHandler.handleMessage(ctx));
 // 6. МАРШРУТИЗАТОР INLINE-КНОПОК (CALLBACK QUERIES)
 // =============================================================================
 
-// 🔥 --- НОВОЕ: Клиент: Главное Inline-меню ---
-bot.action("cmd_calculate", (ctx) => UserHandler.enterCalculationMode(ctx));
-bot.action("cmd_orders", (ctx) => UserHandler.showMyOrders(ctx));
-bot.action("cmd_pricelist", (ctx) => UserHandler.showPriceList(ctx));
-bot.action("cmd_contacts", async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  await ctx.replyWithHTML(
-    `📞 <b>НАШИ КОНТАКТЫ:</b>\n\n👷‍♂️ Главный Инженер: <b>Ернияз</b>\n📱 Связь: <a href="tel:+77066066323">+7 (706) 606-63-23</a>\n📍 Базирование: г. Алматы`,
-  );
-});
-bot.action("cmd_how_work", async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  await ctx.replyWithHTML(
-    `<b>🛠 РЕГЛАМЕНТ РАБОТЫ</b>\n\n1️⃣ <b>Предварительный расчет:</b> Вы формируете ТЗ через этот бот.\n2️⃣ <b>Инженерный замер:</b> Специалист изучает объект и формирует точную спецификацию.\n3️⃣ <b>Монтаж:</b> Выполнение чернового и чистового этапа работ.\n4️⃣ <b>Гарантия:</b> 1 год на все работы и материалы.`,
-  );
-});
-bot.action("cmd_web_auth", (ctx) => UserHandler.generateWebOTP(ctx));
-bot.action("cmd_cancel", (ctx) => UserHandler.returnToMainMenu(ctx));
-bot.action("cmd_brigade_panel", async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  return BrigadeHandler.showMenu(ctx);
-});
-bot.action("cmd_admin_panel", async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  return AdminHandler.showAdminMenu(ctx);
-});
-
-// 🔥 --- НОВОЕ: Клиент: Управление заказами ---
+// --- Клиент: Управление своими заказами (НОВОЕ) ---
 bot.action(/user_cancel_order_(.+)/, (ctx) =>
   UserHandler.cancelOrderByUser(ctx, ctx.match[1]),
 );
@@ -140,7 +114,7 @@ bot.action(/user_ping_boss_(.+)/, (ctx) =>
   UserHandler.pingBoss(ctx, ctx.match[1]),
 );
 
-// --- Клиент: Калькулятор (Legacy) ---
+// --- Клиент: Калькулятор и Заказы ---
 bot.action(/wall_(gas|brick|concrete)/, (ctx) =>
   UserHandler.handleWallSelection(ctx),
 );
@@ -175,12 +149,15 @@ bot.action(/prompt_comment_(\d+)/, (ctx) =>
 
 bot.action("admin_refresh_dashboard", (ctx) => AdminHandler.showDashboard(ctx));
 
-// --- Админ: Действия по Инкассации ---
+// --- Админ: Действия по Инкассации и Бригадам ---
 bot.action(/app_inc_(\d+)_([\d.]+)/, (ctx) =>
   AdminHandler.approveIncassation(ctx, ctx.match[1], ctx.match[2]),
 );
 bot.action(/rej_inc_(\d+)_([\d.]+)/, (ctx) =>
   AdminHandler.rejectIncassation(ctx, ctx.match[1], ctx.match[2]),
+);
+bot.action(/toggle_brigade_(\d+)_(true|false)/, (ctx) =>
+  AdminHandler.toggleBrigadeAccess(ctx, ctx.match[1], ctx.match[2]),
 );
 
 // --- Бригадир: Действия по объектам и Финансам ---
