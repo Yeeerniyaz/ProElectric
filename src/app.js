@@ -1,13 +1,14 @@
 /**
  * @file src/app.js
- * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.9.22).
+ * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.9.23).
  * ИСПРАВЛЕНО: ЖЕСТКАЯ БЛОКИРОВКА (Read-Only) любых изменений после завершения заказа.
  * ИСПРАВЛЕНО: Бригадирам (Менеджерам) разрешено завершать (finalize) свои заказы.
- * ИСПРАВЛЕНО: Баг с Web-аналитикой (totalNetProfit теперь корректно передает чистую прибыль с вычетом расходов, а не дублирует выручку).
- * ДОБАВЛЕНО: Роуты для поиска клиентов, обновления адресов/комментов, фильтрации по датам.
+ * ИСПРАВЛЕНО: Баг с Web-аналитикой (totalNetProfit теперь корректно передает чистую прибыль).
+ * ДОБАВЛЕНО: Глобальный контроллер массовых рассылок (Broadcast API) с поддержкой таргетинга ролей.
+ * НИКАКИХ СОКРАЩЕНИЙ.
  *
  * @module Application
- * @version 10.9.22 (Enterprise Security & Accurate Net Profit)
+ * @version 10.9.23 (Enterprise Security, Broadcast & Accurate Net Profit)
  */
 
 import express from "express";
@@ -510,9 +511,9 @@ app.post("/api/orders", requireAdmin, async (req, res) => {
               },
             },
           )
-          .catch(() => {});
+          .catch(() => { });
       }
-    } catch (pushErr) {}
+    } catch (pushErr) { }
 
     res.json({ success: true, order });
   } catch (error) {
@@ -666,7 +667,7 @@ app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
           `🔔 <b>ШЕФ НАЗНАЧИЛ ВАМ ОБЪЕКТ!</b>\nОбъект <b>#${id}</b> принудительно добавлен в ваш список задач ("Мои объекты").`,
           { parse_mode: "HTML" },
         )
-        .catch(() => {});
+        .catch(() => { });
     }
 
     const io = getSocketIO();
@@ -813,7 +814,7 @@ app.post("/api/settings", requireAdmin, async (req, res) => {
 });
 
 // =============================================================================
-// 👥 9. STAFF & CRM (WITH SEARCH)
+// 👥 9. STAFF, CRM & BROADCAST
 // =============================================================================
 
 app.get("/api/users", requireAdmin, async (req, res) => {
@@ -864,6 +865,70 @@ app.post("/api/users/role", requireAdmin, async (req, res) => {
   }
 });
 
+// 🔥 НОВОЕ: Глобальный контроллер рассылок (Broadcast API)
+app.post("/api/broadcast", requireAdmin, async (req, res) => {
+  try {
+    const { text, imageUrl, targetRole } = req.body;
+
+    if (!text) {
+      return res.status(400).json({ error: "Текст рассылки обязателен" });
+    }
+
+    // 1. Формируем SQL-запрос для таргетинга
+    let query = "SELECT telegram_id FROM users";
+    let params = [];
+
+    if (targetRole && targetRole !== "all") {
+      query += " WHERE role = $1";
+      params.push(targetRole);
+    }
+
+    const usersRes = await db.query(query, params);
+    const usersToNotify = usersRes.rows;
+
+    if (usersToNotify.length === 0) {
+      return res.json({
+        success: true,
+        message: "Нет пользователей для рассылки в данной категории"
+      });
+    }
+
+    let successCount = 0;
+
+    // 2. Рассылаем сообщения через Telegram-бота (асинхронно)
+    // Игнорируем ошибки конкретных пользователей (например, если они заблокировали бота), чтобы рассылка не падала
+    for (const u of usersToNotify) {
+      try {
+        if (imageUrl) {
+          await bot.telegram.sendPhoto(u.telegram_id, imageUrl, {
+            caption: text,
+            parse_mode: "HTML"
+          });
+        } else {
+          await bot.telegram.sendMessage(u.telegram_id, text, {
+            parse_mode: "HTML"
+          });
+        }
+        successCount++;
+      } catch (err) {
+        console.error(`[Broadcast] Ошибка отправки пользователю ${u.telegram_id}:`, err.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Рассылка успешно завершена. Доставлено: ${successCount} из ${usersToNotify.length} пользователей.`
+    });
+
+  } catch (error) {
+    console.error("[Broadcast] Системная ошибка:", error);
+    res.status(500).json({ error: "Внутренняя ошибка сервера при рассылке" });
+  }
+});
+
+// =============================================================================
+// ГЛОБАЛЬНЫЕ ОБРАБОТЧИКИ ОШИБОК
+// =============================================================================
 app.use((req, res) => res.status(404).json({ error: "Endpoint not found" }));
 app.use((err, req, res, next) =>
   res.status(500).json({ error: "Internal Server Error" }),
