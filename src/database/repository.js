@@ -1,16 +1,15 @@
 /**
  * @file src/database/repository.js
- * @description Слой репозитория (Data Access Layer v10.8.0).
+ * @description Слой репозитория (Data Access Layer v10.9.12).
  * Содержит коллекцию готовых методов для работы с БД.
  * Внедрен глобальный финансовый модуль, система управления Бригадами (ERP),
  * распределение прибыли и Web OTP авторизация.
- * ИСПРАВЛЕНО: Динамическая аналитика для Бригадиров (фильтрация по brigade_id).
- * ДОБАВЛЕНО: Таймлайн заказов (Order Analytics Timeline).
+ * ДОБАВЛЕНО: Интеллектуальный парсинг дат (startDate, endDate) для всех аналитических выборок.
  *
  * Архитектура: Repository Pattern. Строгие транзакции (ACID) для финансов.
  *
  * @module Repository
- * @version 10.8.0 (Enterprise ERP Edition - Dynamic Brigade Analytics)
+ * @version 10.9.12 (Enterprise ERP Edition - Time-Series Analytics)
  */
 
 import { query, getClient } from "./connection.js";
@@ -483,18 +482,41 @@ export const processIncassation = async (
 };
 
 // =============================================================================
-// 📊 ADVANCED ANALYTICS (DYNAMIC BRIGADE FILTERING)
+// 📊 ADVANCED ANALYTICS (DYNAMIC BRIGADE & DATE FILTERING)
 // =============================================================================
 
-export const getGlobalStats = async (brigadeId = null) => {
+export const getGlobalStats = async (
+  brigadeId = null,
+  startDate = null,
+  endDate = null,
+) => {
+  let dateFilterOrders = "";
+  let dateFilterUsers = "";
+  const dateParams = [];
+  let pIdx = 1;
+
+  if (startDate) {
+    dateFilterOrders += ` AND created_at >= $${pIdx}`;
+    dateFilterUsers += ` AND created_at >= $${pIdx}`;
+    dateParams.push(startDate);
+    pIdx++;
+  }
+  if (endDate) {
+    dateFilterOrders += ` AND created_at <= $${pIdx}::date + interval '1 day' - interval '1 second'`;
+    dateFilterUsers += ` AND created_at <= $${pIdx}::date + interval '1 day' - interval '1 second'`;
+    dateParams.push(endDate);
+    pIdx++;
+  }
+
   if (brigadeId) {
-    const sqlRevenue =
-      "SELECT SUM(total_price) as sum FROM orders WHERE status = 'done' AND brigade_id = $1";
-    const sqlActive =
-      "SELECT COUNT(*) as count FROM orders WHERE status = 'work' AND brigade_id = $1";
+    const pRevenue = [...dateParams, brigadeId];
+    const pActive = [...dateParams, brigadeId];
+    const sqlRevenue = `SELECT SUM(total_price) as sum FROM orders WHERE status = 'done' AND brigade_id = $${pRevenue.length} ${dateFilterOrders}`;
+    const sqlActive = `SELECT COUNT(*) as count FROM orders WHERE status = 'work' AND brigade_id = $${pActive.length} ${dateFilterOrders}`;
+
     const [resRevenue, resActive] = await Promise.all([
-      query(sqlRevenue, [brigadeId]),
-      query(sqlActive, [brigadeId]),
+      query(sqlRevenue, pRevenue),
+      query(sqlActive, pActive),
     ]);
     return {
       totalUsers: 0,
@@ -504,10 +526,16 @@ export const getGlobalStats = async (brigadeId = null) => {
   }
 
   const [resUsers, resRevenue, resActive] = await Promise.all([
-    query("SELECT COUNT(*) as count FROM users"),
-    query("SELECT SUM(total_price) as sum FROM orders WHERE status = 'done'"),
     query(
-      "SELECT COUNT(*) as count FROM users WHERE updated_at > NOW() - INTERVAL '24 hours'",
+      `SELECT COUNT(*) as count FROM users WHERE 1=1 ${dateFilterUsers}`,
+      dateParams,
+    ),
+    query(
+      `SELECT SUM(total_price) as sum FROM orders WHERE status = 'done' ${dateFilterOrders}`,
+      dateParams,
+    ),
+    query(
+      `SELECT COUNT(*) as count FROM users WHERE updated_at > NOW() - INTERVAL '24 hours'`,
     ),
   ]);
   return {
@@ -517,35 +545,78 @@ export const getGlobalStats = async (brigadeId = null) => {
   };
 };
 
-export const getOrdersFunnel = async (brigadeId = null) => {
-  let sql = `SELECT status, COUNT(*) as count, SUM(total_price) as sum FROM orders`;
+export const getOrdersFunnel = async (
+  brigadeId = null,
+  startDate = null,
+  endDate = null,
+) => {
+  let sql = `SELECT status, COUNT(*) as count, SUM(total_price) as sum FROM orders WHERE 1=1`;
   const params = [];
+
   if (brigadeId) {
-    sql += ` WHERE brigade_id = $1`;
     params.push(brigadeId);
+    sql += ` AND brigade_id = $${params.length}`;
   }
+  if (startDate) {
+    params.push(startDate);
+    sql += ` AND created_at >= $${params.length}`;
+  }
+  if (endDate) {
+    params.push(endDate);
+    sql += ` AND created_at <= $${params.length}::date + interval '1 day' - interval '1 second'`;
+  }
+
   sql += ` GROUP BY status`;
   const res = await query(sql, params);
   return res.rows;
 };
 
-export const getDeepAnalyticsData = async (brigadeId = null) => {
+export const getDeepAnalyticsData = async (
+  brigadeId = null,
+  startDate = null,
+  endDate = null,
+) => {
   let avgSql = `SELECT COALESCE(AVG(total_price), 0) as avg_check, COALESCE(AVG(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)), 0) as avg_margin FROM orders WHERE status = 'done'`;
-  let expensesSql = `SELECT category, COALESCE(SUM(amount), 0) as total FROM object_expenses GROUP BY category ORDER BY total DESC`;
+  let expensesSql = `SELECT category, COALESCE(SUM(amount), 0) as total FROM object_expenses WHERE 1=1`;
   const params = [];
+  const expParams = [];
+
+  if (startDate) {
+    params.push(startDate);
+    avgSql += ` AND created_at >= $${params.length}`;
+    expParams.push(startDate);
+  }
+  if (endDate) {
+    params.push(endDate);
+    avgSql += ` AND created_at <= $${params.length}::date + interval '1 day' - interval '1 second'`;
+    expParams.push(endDate);
+  }
 
   if (brigadeId) {
-    avgSql += ` AND brigade_id = $1`;
+    params.push(brigadeId);
+    avgSql += ` AND brigade_id = $${params.length}`;
+
+    // Перестраиваем запрос расходов, если есть бригадир (через JOIN)
     expensesSql = `
       SELECT e.category, COALESCE(SUM(e.amount), 0) as total
       FROM object_expenses e JOIN orders o ON e.order_id = o.id
-      WHERE o.brigade_id = $1 GROUP BY e.category ORDER BY total DESC
+      WHERE o.brigade_id = $${expParams.length + 1}
     `;
-    params.push(brigadeId);
+    if (startDate) expensesSql += ` AND e.created_at >= $1`;
+    if (endDate)
+      expensesSql += ` AND e.created_at <= $2::date + interval '1 day' - interval '1 second'`;
+
+    expParams.push(brigadeId);
+    expensesSql += ` GROUP BY e.category ORDER BY total DESC`;
+  } else {
+    if (startDate) expensesSql += ` AND created_at >= $1`;
+    if (endDate)
+      expensesSql += ` AND created_at <= $2::date + interval '1 day' - interval '1 second'`;
+    expensesSql += ` GROUP BY category ORDER BY total DESC`;
   }
 
   const avgQuery = await query(avgSql, params);
-  const expensesQuery = await query(expensesSql, params);
+  const expensesQuery = await query(expensesSql, expParams);
 
   let debtQuery;
   if (brigadeId) {
@@ -576,7 +647,11 @@ export const getDeepAnalyticsData = async (brigadeId = null) => {
   };
 };
 
-export const getTimelineAnalytics = async (brigadeId = null) => {
+export const getTimelineAnalytics = async (
+  brigadeId = null,
+  startDate = null,
+  endDate = null,
+) => {
   let sql = `
     SELECT 
       TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM') as month,
@@ -587,8 +662,16 @@ export const getTimelineAnalytics = async (brigadeId = null) => {
   `;
   const params = [];
   if (brigadeId) {
-    sql += ` AND brigade_id = $1`;
     params.push(brigadeId);
+    sql += ` AND brigade_id = $${params.length}`;
+  }
+  if (startDate) {
+    params.push(startDate);
+    sql += ` AND created_at >= $${params.length}`;
+  }
+  if (endDate) {
+    params.push(endDate);
+    sql += ` AND created_at <= $${params.length}::date + interval '1 day' - interval '1 second'`;
   }
   sql += ` GROUP BY DATE_TRUNC('month', created_at) ORDER BY month DESC LIMIT 12;`;
 
@@ -596,8 +679,11 @@ export const getTimelineAnalytics = async (brigadeId = null) => {
   return res.rows;
 };
 
-// НОВОЕ: Таймлайн создания и закрытия заказов (Объектная аналитика)
-export const getOrdersTimelineAnalytics = async (brigadeId = null) => {
+export const getOrdersTimelineAnalytics = async (
+  brigadeId = null,
+  startDate = null,
+  endDate = null,
+) => {
   let sql = `
     SELECT 
       TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM') as month,
@@ -605,12 +691,20 @@ export const getOrdersTimelineAnalytics = async (brigadeId = null) => {
       COUNT(id) FILTER (WHERE status = 'work' OR status = 'processing') as work_orders,
       COUNT(id) FILTER (WHERE status = 'done') as done_orders,
       COUNT(id) FILTER (WHERE status = 'cancel') as cancel_orders
-    FROM orders 
+    FROM orders WHERE 1=1
   `;
   const params = [];
   if (brigadeId) {
-    sql += ` WHERE brigade_id = $1`;
     params.push(brigadeId);
+    sql += ` AND brigade_id = $${params.length}`;
+  }
+  if (startDate) {
+    params.push(startDate);
+    sql += ` AND created_at >= $${params.length}`;
+  }
+  if (endDate) {
+    params.push(endDate);
+    sql += ` AND created_at <= $${params.length}::date + interval '1 day' - interval '1 second'`;
   }
   sql += ` GROUP BY DATE_TRUNC('month', created_at) ORDER BY month DESC LIMIT 12;`;
 
@@ -618,7 +712,22 @@ export const getOrdersTimelineAnalytics = async (brigadeId = null) => {
   return res.rows;
 };
 
-export const getBrigadesAnalytics = async () => {
+export const getBrigadesAnalytics = async (
+  startDate = null,
+  endDate = null,
+) => {
+  let ordersFilter = `o.status = 'done'`;
+  const params = [];
+
+  if (startDate) {
+    params.push(startDate);
+    ordersFilter += ` AND o.created_at >= $${params.length}`;
+  }
+  if (endDate) {
+    params.push(endDate);
+    ordersFilter += ` AND o.created_at <= $${params.length}::date + interval '1 day' - interval '1 second'`;
+  }
+
   const sql = `
     SELECT 
       b.id, b.name,
@@ -627,12 +736,13 @@ export const getBrigadesAnalytics = async () => {
       COALESCE(SUM(COALESCE((o.details->'financials'->>'net_profit')::numeric, o.total_price)), 0) as total_net_profit_brought,
       COALESCE(a.balance, 0) as current_balance
     FROM brigades b
-    LEFT JOIN orders o ON b.id = o.brigade_id AND o.status = 'done'
+    LEFT JOIN orders o ON b.id = o.brigade_id AND ${ordersFilter}
     LEFT JOIN accounts a ON b.brigadier_id = a.user_id AND a.type = 'brigade_acc'
     GROUP BY b.id, b.name, a.balance
     ORDER BY total_net_profit_brought DESC;
   `;
-  const res = await query(sql);
+
+  const res = await query(sql, params);
   return res.rows.map((row) => ({
     ...row,
     current_debt:

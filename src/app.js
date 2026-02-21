@@ -1,12 +1,12 @@
 /**
  * @file src/app.js
- * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.9.8).
+ * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.9.10).
  * ИСПРАВЛЕНО: ЖЕСТКАЯ БЛОКИРОВКА (Read-Only) любых изменений после завершения заказа.
+ * ИСПРАВЛЕНО: Бригадирам (Менеджерам) разрешено завершать (finalize) свои заказы.
  * ДОБАВЛЕНО: Роуты для поиска клиентов, обновления адресов/комментов, фильтрации по датам.
- * ДОБАВЛЕНО: Механизм просмотра биржи и взятия заказа в работу для бригадиров через Web CRM.
  *
  * @module Application
- * @version 10.9.8 (Enterprise Security & Date Filtering Edition)
+ * @version 10.9.10 (Enterprise Security & Manager Permissions)
  */
 
 import express from "express";
@@ -262,7 +262,6 @@ const getManagerBrigadeId = async (req) => {
 app.get("/api/dashboard/stats", requireManager, async (req, res) => {
   try {
     const brigadeId = await getManagerBrigadeId(req);
-    // Передаем даты в БД (даже если репозиторий пока их игнорирует, мы обновим его позже)
     const { startDate, endDate } = req.query;
 
     const [globalStats, funnelStats] = await Promise.all([
@@ -416,11 +415,9 @@ app.get("/api/orders", requireManager, async (req, res) => {
 
     if (isManager) {
       if (status === "new") {
-        // 🔥 ИСПРАВЛЕНИЕ: Менеджер запрашивает Биржу (новые заказы) — снимаем фильтр по бригаде
         params.push("new");
         query += ` AND o.status = $${params.length}`;
       } else {
-        // Запрашивает "Мои объекты"
         const bRes = await db.query(
           "SELECT id FROM brigades WHERE brigadier_id = $1",
           [userId],
@@ -434,7 +431,6 @@ app.get("/api/orders", requireManager, async (req, res) => {
         }
       }
     } else {
-      // Владелец/Админ
       if (status && status !== "all") {
         params.push(status);
         query += ` AND o.status = $${params.length}`;
@@ -522,7 +518,6 @@ app.post("/api/orders", requireAdmin, async (req, res) => {
   }
 });
 
-// 🔥 НОВОЕ: Бригадир берет объект с биржи через Web CRM
 app.post("/api/orders/:id/take", requireManager, async (req, res) => {
   try {
     const { id } = req.params;
@@ -536,7 +531,6 @@ app.post("/api/orders/:id/take", requireManager, async (req, res) => {
       return res.status(403).json({ error: "У вас нет активной бригады." });
     const brigade = bRes.rows[0];
 
-    // Объект можно взять только если он новый
     const oRes = await db.query("SELECT status FROM orders WHERE id = $1", [
       id,
     ]);
@@ -565,13 +559,12 @@ app.post("/api/orders/:id/take", requireManager, async (req, res) => {
   }
 });
 
-// 🔥 НОВОЕ: Обновление метаданных (Адрес, Комментарий)
 app.patch("/api/orders/:id/metadata", requireManager, async (req, res) => {
   try {
     const { id } = req.params;
     const { address, admin_comment } = req.body;
 
-    await enforceOrderModification(req, id); // Блок, если завершен или чужой
+    await enforceOrderModification(req, id);
 
     const orderRes = await db.query(
       "SELECT details FROM orders WHERE id = $1",
@@ -655,7 +648,6 @@ app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { brigadeId } = req.body;
-    // Админ может назначать принудительно
     await db.query(
       "UPDATE orders SET brigade_id = $1, status = 'work', updated_at = NOW() WHERE id = $2",
       [brigadeId, id],
@@ -688,10 +680,12 @@ app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
   }
 });
 
-app.post("/api/orders/:id/finalize", requireAdmin, async (req, res) => {
+// 🔥 ИСПРАВЛЕНИЕ: Кнопка закрытия объекта (Finalize) теперь доступна Бригадиру (requireManager)
+app.post("/api/orders/:id/finalize", requireManager, async (req, res) => {
   try {
     const { id } = req.params;
-    // Finalize доступен только Админу (Владельцу)
+    await enforceOrderModification(req, id); // Защита: бригадир может закрыть только свой заказ!
+
     const result = await db.finalizeOrderAndDistributeProfit(id);
     const io = getSocketIO();
     if (io) io.emit("order_updated", { orderId: id, status: "done" });
@@ -830,7 +824,6 @@ app.get("/api/users", requireAdmin, async (req, res) => {
     let q = `SELECT telegram_id, first_name, username, phone, role FROM users`;
     let params = [];
 
-    // 🔥 ИСПРАВЛЕНИЕ: Интеллектуальный поиск по ID, имени или телефону
     if (search) {
       q += ` WHERE (first_name ILIKE $1 OR phone ILIKE $1 OR CAST(telegram_id AS TEXT) ILIKE $1)`;
       params.push(`%${search}%`);

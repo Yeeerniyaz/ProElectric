@@ -1,12 +1,12 @@
 /**
  * @file src/handlers/BrigadeHandler.js
- * @description Контроллер интерфейса Бригадиров (ERP Brigade Module v10.9.1).
+ * @description Контроллер интерфейса Бригадиров (ERP Brigade Module v10.9.10).
  * Отвечает за: Биржу заказов, Управление своими объектами, Статистику, Инкассацию.
- * ДОБАВЛЕНО: Инлайн-кнопки для перевода в статус "В замере" и "В работе".
- * ДОБАВЛЕНО: Кнопка и машина состояний (FSM) для изменения итоговой цены объекта.
+ * ДОБАВЛЕНО: Полная видимость клиентских данных (Телефон, Username, Адрес, Коммент, BOM).
+ * ИСПРАВЛЕНО: Использование LEFT JOIN для надежного извлечения контактов заказчика.
  *
  * @module BrigadeHandler
- * @version 10.9.1 (Enterprise ERP Edition - Full Manager Control)
+ * @version 10.9.10 (Enterprise ERP Edition - Full Visibility)
  */
 
 import { Markup } from "telegraf";
@@ -25,7 +25,7 @@ export const BRIGADE_STATES = Object.freeze({
   WAIT_EXPENSE_COMMENT: "WAIT_EXPENSE_COMMENT",
   WAIT_ADVANCE_AMOUNT: "WAIT_ADVANCE_AMOUNT",
   WAIT_INCASSATION_AMOUNT: "WAIT_INCASSATION_AMOUNT",
-  WAIT_ORDER_NEW_PRICE: "WAIT_ORDER_NEW_PRICE", // 🔥 НОВОЕ: Состояние для ввода цены
+  WAIT_ORDER_NEW_PRICE: "WAIT_ORDER_NEW_PRICE",
 });
 
 const BUTTONS = Object.freeze({
@@ -46,7 +46,6 @@ const Keyboards = {
     [BUTTONS.BACK],
   ]).resize(),
 
-  // 🔥 ИСПРАВЛЕНО: Динамическая клавиатура в зависимости от статуса заказа
   orderActions: (orderId, currentStatus) => {
     const buttons = [];
 
@@ -166,7 +165,7 @@ export const BrigadeHandler = {
     if (state === BRIGADE_STATES.WAIT_INCASSATION_AMOUNT)
       return this.processIncassationAmount(ctx);
     if (state === BRIGADE_STATES.WAIT_ORDER_NEW_PRICE)
-      return this.processOrderNewPrice(ctx); // 🔥 НОВОЕ: Обработчик цены
+      return this.processOrderNewPrice(ctx);
 
     // Роутинг по кнопкам
     switch (text) {
@@ -191,7 +190,7 @@ export const BrigadeHandler = {
   },
 
   /**
-   * 2. 💼 БИРЖА ЗАКАЗОВ (Лиды со статусом NEW)
+   * 2. 💼 БИРЖА ЗАКАЗОВ (Лиды со статусом NEW) - ПОЛНАЯ ВИДИМОСТЬ
    */
   async showMarket(ctx) {
     try {
@@ -201,7 +200,16 @@ export const BrigadeHandler = {
           "⚠️ Доступ закрыт: вы не состоите в активной бригаде.",
         );
 
-      const orders = await OrderService.getAvailableNewOrders();
+      // 🔥 ИСПРАВЛЕНИЕ: Прямой запрос с JOIN для полного извлечения контактов клиента
+      const res = await db.query(`
+        SELECT o.*, u.first_name, u.username, u.phone 
+        FROM orders o 
+        LEFT JOIN users u ON o.user_id = u.telegram_id 
+        WHERE o.status = 'new'
+        ORDER BY o.created_at DESC
+      `);
+      const orders = res.rows;
+
       if (!orders || orders.length === 0) {
         return ctx.reply("📭 В данный момент свободных заказов на бирже нет.");
       }
@@ -209,18 +217,29 @@ export const BrigadeHandler = {
       const fmt = (n) => new Intl.NumberFormat("ru-RU").format(n);
 
       await ctx.replyWithHTML(
-        `💼 <b>ДОСТУПНЫЕ ОБЪЕКТЫ НА БИРЖЕ (${orders.length} шт.):</b>\n<i>Внимательно изучите смету перед тем, как брать в работу.</i>`,
+        `💼 <b>ДОСТУПНЫЕ ОБЪЕКТЫ НА БИРЖЕ (${orders.length} шт.):</b>\n<i>Внимательно изучите детали перед тем, как брать в работу.</i>`,
       );
 
       for (const o of orders) {
-        const addr = o.details?.address ? o.details.address : "Не указан";
+        const address = o.details?.address ? o.details.address : "Не указан";
+        const comment = o.details?.admin_comment
+          ? o.details.admin_comment
+          : "Нет заметок";
         const area = o.area || o.details?.params?.area || 0;
+        const clientPhone = o.phone || "Скрыт";
+        const clientUser = o.username ? `@${o.username}` : "Скрыт";
+        const clientName = o.first_name || "Заказчик";
+
         const msg =
           `🆕 <b>Объект #${o.id}</b>\n` +
-          `📍 Адрес: ${addr}\n` +
-          `📐 Объем: ${area} м²\n` +
-          `💰 Сумма по смете: <b>${fmt(o.total_price)} ₸</b>\n` +
-          `📅 Создан: ${new Date(o.created_at).toLocaleDateString("ru-RU")}`;
+          `👤 <b>Клиент:</b> ${clientName} (${clientUser})\n` +
+          `📞 <b>Телефон:</b> <code>${clientPhone}</code>\n` +
+          `📍 <b>Адрес:</b> ${address}\n` +
+          `📝 <b>Комментарий:</b> <i>${comment}</i>\n` +
+          `➖➖➖➖➖➖➖➖➖➖\n` +
+          `📐 <b>Объем:</b> ${area} м²\n` +
+          `💰 <b>Сумма по смете:</b> ${fmt(o.total_price)} ₸\n` +
+          `📅 <b>Создан:</b> ${new Date(o.created_at).toLocaleDateString("ru-RU")}`;
 
         await ctx.replyWithHTML(msg, Keyboards.takeOrderAction(o.id));
       }
@@ -238,14 +257,16 @@ export const BrigadeHandler = {
           show_alert: true,
         });
 
-      const order = await OrderService.getOrderById(orderId);
-      if (!order || order.status !== "new") {
+      const orderRes = await db.query(
+        "SELECT status FROM orders WHERE id = $1",
+        [orderId],
+      );
+      if (orderRes.rows.length === 0 || orderRes.rows[0].status !== "new") {
         return ctx.answerCbQuery("⚠️ Заказ уже забрали или он недоступен.", {
           show_alert: true,
         });
       }
 
-      // Переводим заказ сразу в processing (В замере), чтобы мастер мог съездить и оценить
       await db.query(
         "UPDATE orders SET brigade_id = $1, status = 'processing', updated_at = NOW() WHERE id = $2 AND status = 'new'",
         [brigade.id, orderId],
@@ -260,7 +281,7 @@ export const BrigadeHandler = {
         });
 
       await ctx.editMessageText(
-        `✅ <b>Объект #${orderId} успешно взят!</b>\nВаша бригада: ${brigade.name}\nТекущий статус: <b>В ЗАМЕРЕ</b>.\n\nЗаказ перемещен в раздел "🛠 Мои объекты". Сделайте замер и установите итоговую цену!`,
+        `✅ <b>Объект #${orderId} успешно взят!</b>\nВаша бригада: ${brigade.name}\nТекущий статус: <b>В ЗАМЕРЕ</b>.\n\nЗаказ перемещен в раздел "🛠 Мои объекты". Свяжитесь с клиентом и договоритесь о выезде.`,
         { parse_mode: "HTML" },
       );
       await ctx.answerCbQuery("✅ Заказ ваш!");
@@ -271,17 +292,25 @@ export const BrigadeHandler = {
   },
 
   /**
-   * 3. 🛠 УПРАВЛЕНИЕ СВОИМИ ОБЪЕКТАМИ
+   * 3. 🛠 УПРАВЛЕНИЕ СВОИМИ ОБЪЕКТАМИ - ПОЛНАЯ ВИДИМОСТЬ
    */
   async showMyObjects(ctx) {
     try {
       const brigade = await db.getBrigadeByManagerId(ctx.from.id);
       if (!brigade) return ctx.reply("⚠️ Вы не состоите в бригаде.");
 
-      const orders = await OrderService.getBrigadeOrders(brigade.id);
-      const activeOrders = orders.filter(
-        (o) => o.status === "work" || o.status === "processing",
+      // 🔥 ИСПРАВЛЕНИЕ: Прямой SQL запрос для получения контактных данных клиента
+      const res = await db.query(
+        `
+        SELECT o.*, u.first_name, u.username, u.phone 
+        FROM orders o 
+        LEFT JOIN users u ON o.user_id = u.telegram_id 
+        WHERE o.brigade_id = $1 AND o.status IN ('work', 'processing')
+        ORDER BY o.updated_at DESC
+      `,
+        [brigade.id],
       );
+      const activeOrders = res.rows;
 
       if (activeOrders.length === 0) {
         return ctx.reply(
@@ -303,11 +332,28 @@ export const BrigadeHandler = {
             ? "📐 В ЗАМЕРЕ (Оценка)"
             : "🛠 В РАБОТЕ (Монтаж)";
 
+        const address = o.details?.address || "Не указан";
+        const comment = o.details?.admin_comment || "Нет заметок";
+        const clientPhone = o.phone || "Скрыт";
+        const clientUser = o.username ? `@${o.username}` : "Скрыт";
+        const clientName = o.first_name || "Заказчик";
+
+        let bomText = "";
+        if (o.details?.bom && o.details.bom.length > 0) {
+          bomText = `\n📦 <b>Материалы (BOM):</b> ${o.details.bom.length} позиций спецификации`;
+        }
+
         const msg =
           `🏢 <b>Объект #${o.id}</b> | ${statusLocal}\n` +
-          `💰 Договорная цена: ${fmt(o.total_price)} ₸\n` +
-          `📉 Внесено расходов (Чеки): ${fmt(expenses)} ₸\n` +
-          `💎 Ваша расчетная доля: <b>${fmt(netProfit * (brigade.profit_percentage / 100))} ₸</b>`;
+          `👤 <b>Клиент:</b> ${clientName} (${clientUser})\n` +
+          `📞 <b>Телефон:</b> <code>${clientPhone}</code>\n` +
+          `📍 <b>Адрес:</b> ${address}\n` +
+          `📝 <b>Комментарий:</b> <i>${comment}</i>\n` +
+          `➖➖➖➖➖➖➖➖➖➖\n` +
+          `💰 <b>Договорная цена:</b> ${fmt(o.total_price)} ₸\n` +
+          `📉 <b>Расходы (Чеки):</b> ${fmt(expenses)} ₸\n` +
+          `💎 <b>Ваша расчетная доля: ${fmt(netProfit * (brigade.profit_percentage / 100))} ₸</b>` +
+          bomText;
 
         await ctx.replyWithHTML(msg, Keyboards.orderActions(o.id, o.status));
       }
@@ -389,8 +435,14 @@ export const BrigadeHandler = {
       const brigade = await db.getBrigadeByManagerId(ctx.from.id);
       if (!brigade) return ctx.answerCbQuery("❌ Вы не состоите в бригаде.");
 
-      const order = await OrderService.getOrderById(orderId);
-      if (!order || order.brigade_id !== brigade.id) {
+      const orderRes = await db.query(
+        "SELECT brigade_id FROM orders WHERE id = $1",
+        [orderId],
+      );
+      if (
+        orderRes.rows.length === 0 ||
+        orderRes.rows[0].brigade_id !== brigade.id
+      ) {
         return ctx.answerCbQuery("⚠️ Это не ваш заказ или он уже закрыт.", {
           show_alert: true,
         });

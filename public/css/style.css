@@ -1,45 +1,46 @@
 /**
  * @file public/css/style.css
- * @description ProElectric ERP Design System (v10.8.0 Enterprise PWA).
+ * @description ProElectric ERP Design System (v10.9.15 Enterprise PWA).
  * @architecture Modern CSS, Custom Properties, Grid/Flexbox, BEM-like (pe-*).
  * Полностью поддерживает Windows (Desktop), iOS/Android (PWA), динамические формы,
  * BOM Manager, OTP Auth, анимации сокетов и адаптивные графики Chart.js.
+ * ДИЗАЙН: Black & Orange Minimalism. Строгие линии, OLED-черный фон. Никаких сокращений.
  */
 
 /* ==========================================================================
    1. CSS VARIABLES (DESIGN TOKENS)
    ========================================================================== */
 :root {
-  /* Цветовая палитра (Enterprise Dark) */
-  --pe-bg-base: #09090b;
-  --pe-bg-surface: #18181b;
-  --pe-bg-surface-elevated: #27272a;
-  --pe-bg-surface-hover: #3f3f46;
+  /* Цветовая палитра (Pure Black Minimalism) */
+  --pe-bg-base: #000000;
+  --pe-bg-surface: #0a0a0a;
+  --pe-bg-surface-elevated: #111111;
+  --pe-bg-surface-hover: #1f1f1f;
 
-  --pe-border: rgba(255, 255, 255, 0.1);
-  --pe-border-focus: rgba(255, 255, 255, 0.2);
+  --pe-border: #262626;
+  --pe-border-focus: rgba(255, 107, 0, 0.4);
 
   /* Типографика */
   --pe-text-main: #f4f4f5;
   --pe-text-muted: #a1a1aa;
-  --pe-text-inverse: #09090b;
+  --pe-text-inverse: #000000; /* Черный текст для оранжевых кнопок */
 
-  /* Акценты (Семантика) */
-  --pe-primary: #3b82f6;
-  --pe-primary-hover: #2563eb;
+  /* Акценты (Семантика - Electric Orange) */
+  --pe-primary: #ff6b00;
+  --pe-primary-hover: #e65c00;
   --pe-success: #10b981;
   --pe-success-hover: #059669;
   --pe-warning: #f59e0b;
   --pe-danger: #ef4444;
   --pe-danger-hover: #dc2626;
 
-  /* Геометрия и Анимации */
-  --pe-radius-sm: 6px;
-  --pe-radius-md: 10px;
-  --pe-radius-lg: 16px;
+  /* Геометрия и Анимации (Строгие углы, без лишних теней) */
+  --pe-radius-sm: 4px;
+  --pe-radius-md: 6px;
+  --pe-radius-lg: 10px;
   --pe-transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  --pe-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-  --pe-shadow-glow: 0 0 40px rgba(59, 130, 246, 0.15);
+  --pe-shadow: none; /* Убираем базовые тени для минимализма */
+  --pe-shadow-glow: 0 0 20px rgba(255, 107, 0, 0.15);
 
   /* PWA Safe Areas (Для челок iPhone/Android) */
   --pe-safe-top: env(safe-area-inset-top, 0px);
@@ -75,33 +76,33 @@ body.pe-theme-dark {
 
 /* Custom Scrollbar (Windows Desktop Style) */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--pe-bg-base);
 }
 ::-webkit-scrollbar-thumb {
   background: var(--pe-bg-surface-hover);
-  border-radius: 4px;
+  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--pe-text-muted);
+  background: var(--pe-primary);
 }
 
 /* Typography Basics */
 .pe-h2 {
   font-size: 1.5rem;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: -0.025em;
 }
 .pe-h3 {
   font-size: 1.25rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 .pe-h4 {
   font-size: 1rem;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--pe-text-main);
 }
 .pe-h5 {
@@ -124,7 +125,7 @@ body.pe-theme-dark {
   color: var(--pe-primary);
 }
 .fw-bold {
-  font-weight: 700;
+  font-weight: 600;
 }
 
 /* Spacing Helpers */
@@ -169,9 +170,11 @@ body.pe-theme-dark {
   justify-content: center;
   gap: 0.5rem;
   padding: 0.625rem 1rem;
-  border-radius: var(--pe-radius-md);
-  font-weight: 500;
-  font-size: 0.875rem;
+  border-radius: var(--pe-radius-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 0.8rem;
   border: 1px solid transparent;
   cursor: pointer;
   transition: var(--pe-transition);
@@ -186,26 +189,31 @@ body.pe-theme-dark {
 
 .pe-btn-primary {
   background: var(--pe-primary);
-  color: white;
+  color: var(--pe-text-inverse); /* Черный текст на оранжевом */
 }
 .pe-btn-primary:hover:not(:disabled) {
   background: var(--pe-primary-hover);
+  box-shadow: var(--pe-shadow-glow);
 }
 
 .pe-btn-success {
-  background: var(--pe-success);
-  color: white;
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--pe-success);
+  border-color: rgba(16, 185, 129, 0.2);
 }
 .pe-btn-success:hover:not(:disabled) {
-  background: var(--pe-success-hover);
+  background: var(--pe-success);
+  color: #000;
 }
 
 .pe-btn-danger {
-  background: var(--pe-danger);
-  color: white;
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--pe-danger);
+  border-color: rgba(239, 68, 68, 0.2);
 }
 .pe-btn-danger:hover:not(:disabled) {
-  background: var(--pe-danger-hover);
+  background: var(--pe-danger);
+  color: white;
 }
 
 .pe-btn-secondary {
@@ -236,7 +244,7 @@ body.pe-theme-dark {
 }
 .pe-btn-icon {
   padding: 0.5rem;
-  border-radius: var(--pe-radius-md);
+  border-radius: var(--pe-radius-sm);
 }
 .pe-btn-icon svg {
   width: 18px;
@@ -250,7 +258,9 @@ body.pe-theme-dark {
 .pe-form-group label {
   display: block;
   margin-bottom: 0.5rem;
-  font-size: 0.875rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
   color: var(--pe-text-muted);
 }
 
@@ -260,7 +270,7 @@ body.pe-theme-dark {
   border: 1px solid var(--pe-border);
   color: var(--pe-text-main);
   padding: 0.625rem 0.75rem;
-  border-radius: var(--pe-radius-md);
+  border-radius: var(--pe-radius-sm);
   font-family: inherit;
   font-size: 0.875rem;
   transition: var(--pe-transition);
@@ -268,11 +278,12 @@ body.pe-theme-dark {
 .pe-input:focus {
   border-color: var(--pe-primary);
   outline: none;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 0 0 2px rgba(255, 107, 0, 0.2);
 }
 .pe-input:disabled,
 .pe-input[readonly] {
   opacity: 0.7;
+  background: var(--pe-bg-base);
   cursor: not-allowed;
 }
 .pe-input-sm {
@@ -314,31 +325,36 @@ textarea.pe-input {
 .pe-badge {
   display: inline-flex;
   padding: 0.125rem 0.5rem;
-  border-radius: 12px;
-  font-size: 0.75rem;
+  border-radius: var(--pe-radius-sm);
+  font-size: 0.7rem;
   font-weight: 600;
+  letter-spacing: 0.5px;
   text-transform: uppercase;
 }
 .pe-badge-primary {
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(255, 107, 0, 0.15);
   color: var(--pe-primary);
+  border: 1px solid rgba(255, 107, 0, 0.2);
 }
 .pe-badge-success {
   background: rgba(16, 185, 129, 0.15);
   color: var(--pe-success);
+  border: 1px solid rgba(16, 185, 129, 0.2);
 }
 .pe-badge-warning {
   background: rgba(245, 158, 11, 0.15);
   color: var(--pe-warning);
+  border: 1px solid rgba(245, 158, 11, 0.2);
 }
 
 .badge-new,
 .badge-processing {
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(255, 107, 0, 0.15);
   color: var(--pe-primary);
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 0.75rem;
+  border: 1px solid rgba(255, 107, 0, 0.2);
 }
 .badge-work {
   background: rgba(245, 158, 11, 0.15);
@@ -346,6 +362,7 @@ textarea.pe-input {
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 0.75rem;
+  border: 1px solid rgba(245, 158, 11, 0.2);
 }
 .badge-done {
   background: rgba(16, 185, 129, 0.15);
@@ -353,6 +370,7 @@ textarea.pe-input {
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 0.75rem;
+  border: 1px solid rgba(16, 185, 129, 0.2);
 }
 .badge-cancel {
   background: rgba(239, 68, 68, 0.15);
@@ -360,6 +378,7 @@ textarea.pe-input {
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 0.75rem;
+  border: 1px solid rgba(239, 68, 68, 0.2);
 }
 
 /* ==========================================================================
@@ -388,8 +407,8 @@ textarea.pe-input {
   height: 600px;
   background: radial-gradient(
     circle,
-    rgba(59, 130, 246, 0.15) 0%,
-    transparent 70%
+    rgba(255, 107, 0, 0.1) 0%,
+    transparent 60%
   );
   top: 50%;
   left: 50%;
@@ -399,14 +418,14 @@ textarea.pe-input {
 }
 
 .pe-auth-card {
-  background: rgba(24, 24, 27, 0.7);
+  background: rgba(10, 10, 10, 0.9);
   backdrop-filter: blur(16px);
   border: 1px solid var(--pe-border);
   padding: 2.5rem;
   border-radius: var(--pe-radius-lg);
   width: 100%;
   max-width: 400px;
-  box-shadow: var(--pe-shadow);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
   transition: var(--pe-transition);
 }
 .pe-auth-logo {
@@ -415,8 +434,9 @@ textarea.pe-input {
 }
 .pe-auth-logo h2 {
   font-size: 1.5rem;
-  font-weight: 700;
+  font-weight: 600;
   margin: 1rem 0 0.25rem;
+  letter-spacing: -1px;
 }
 .pe-logo-icon {
   display: inline-flex;
@@ -424,9 +444,9 @@ textarea.pe-input {
   justify-content: center;
   width: 48px;
   height: 48px;
-  background: linear-gradient(135deg, var(--pe-primary), #8b5cf6);
-  border-radius: 14px;
-  color: white;
+  background: var(--pe-primary);
+  border-radius: var(--pe-radius-md);
+  color: var(--pe-text-inverse);
 }
 .pe-logo-icon.pe-icon-sm {
   width: 32px;
@@ -438,7 +458,7 @@ textarea.pe-input {
   background: rgba(239, 68, 68, 0.1);
   color: var(--pe-danger);
   padding: 0.75rem;
-  border-radius: var(--pe-radius-md);
+  border-radius: var(--pe-radius-sm);
   border: 1px solid rgba(239, 68, 68, 0.2);
   font-size: 0.875rem;
   text-align: center;
@@ -474,7 +494,8 @@ textarea.pe-input {
 }
 .pe-brand-text {
   font-size: 1.125rem;
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: -0.5px;
 }
 
 .pe-sidebar-nav {
@@ -484,11 +505,12 @@ textarea.pe-input {
   overscroll-behavior-y: contain; /* PWA scroll fix */
 }
 .pe-nav-section {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 600;
-  color: var(--pe-text-muted);
+  color: #52525b;
   text-transform: uppercase;
-  margin: 0 0.5rem 0.5rem;
+  letter-spacing: 1px;
+  margin: 0 0.5rem 0.75rem;
 }
 .pe-nav-item {
   width: 100%;
@@ -500,7 +522,7 @@ textarea.pe-input {
   background: transparent;
   color: var(--pe-text-muted);
   border: none;
-  border-radius: var(--pe-radius-md);
+  border-radius: var(--pe-radius-sm);
   font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
@@ -511,12 +533,13 @@ textarea.pe-input {
   height: 18px;
 }
 .pe-nav-item:hover {
-  background: var(--pe-bg-surface-elevated);
+  background: var(--pe-bg-surface-hover);
   color: var(--pe-text-main);
 }
 .pe-nav-item.active {
-  background: rgba(59, 130, 246, 0.1);
+  background: rgba(255, 107, 0, 0.1);
   color: var(--pe-primary);
+  border-left: 3px solid var(--pe-primary);
 }
 
 .pe-sidebar-footer {
@@ -535,7 +558,7 @@ textarea.pe-input {
 .pe-avatar {
   width: 36px;
   height: 36px;
-  border-radius: 50%;
+  border-radius: var(--pe-radius-sm);
   background: var(--pe-bg-surface-elevated);
   display: flex;
   align-items: center;
@@ -557,7 +580,9 @@ textarea.pe-input {
 }
 .pe-user-role {
   font-size: 0.7rem;
-  color: var(--pe-text-muted);
+  color: var(--pe-primary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
 
 .pe-main-wrapper {
@@ -580,7 +605,7 @@ textarea.pe-input {
 }
 .pe-page-title {
   font-size: 1.125rem;
-  font-weight: 600;
+  font-weight: 500;
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -592,11 +617,13 @@ textarea.pe-input {
   align-items: center;
   gap: 0.5rem;
   font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
   color: var(--pe-text-muted);
 }
 .pe-status-dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--pe-text-muted);
   transition: background 0.3s;
@@ -604,22 +631,9 @@ textarea.pe-input {
 .pe-status-dot.online {
   background: var(--pe-success);
   box-shadow: 0 0 8px var(--pe-success);
-  animation: pulse 2s infinite;
 }
 .pe-status-dot.offline {
   background: var(--pe-danger);
-  box-shadow: 0 0 8px var(--pe-danger);
-}
-@keyframes pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
-  }
-  70% {
-    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
-  }
 }
 
 .pe-content {
@@ -648,8 +662,7 @@ textarea.pe-input {
 .pe-card {
   background: var(--pe-bg-surface);
   border: 1px solid var(--pe-border);
-  border-radius: var(--pe-radius-lg);
-  box-shadow: var(--pe-shadow);
+  border-radius: var(--pe-radius-md);
   display: flex;
   flex-direction: column;
 }
@@ -673,14 +686,14 @@ textarea.pe-input {
   display: flex;
   align-items: flex-start;
   gap: 1rem;
-  transition: transform 0.2s;
-}
-.pe-card-kpi:hover {
-  transform: translateY(-2px);
+  border-top: 2px solid var(--pe-border); /* Minimalist accent */
 }
 .pe-kpi-icon {
-  padding: 0.75rem;
-  border-radius: var(--pe-radius-md);
+  width: 42px;
+  height: 42px;
+  border-radius: var(--pe-radius-sm);
+  background: var(--pe-bg-surface-elevated);
+  border: 1px solid var(--pe-border);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -692,30 +705,41 @@ textarea.pe-input {
   font-size: 0.75rem;
   color: var(--pe-text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.5px;
   margin-bottom: 0.25rem;
   display: block;
 }
 .pe-kpi-value {
   font-size: 1.5rem;
-  font-weight: 700;
-  letter-spacing: -0.025em;
+  font-weight: 600;
+  letter-spacing: -0.5px;
 }
 
+.pe-kpi-success {
+  border-top-color: var(--pe-success);
+}
 .pe-kpi-success .pe-kpi-icon {
-  background: rgba(16, 185, 129, 0.1);
   color: var(--pe-success);
 }
+
+.pe-kpi-primary {
+  border-top-color: var(--pe-primary);
+}
 .pe-kpi-primary .pe-kpi-icon {
-  background: rgba(59, 130, 246, 0.1);
   color: var(--pe-primary);
 }
+
+.pe-kpi-warning {
+  border-top-color: var(--pe-warning);
+}
 .pe-kpi-warning .pe-kpi-icon {
-  background: rgba(245, 158, 11, 0.1);
   color: var(--pe-warning);
 }
+
+.pe-kpi-danger {
+  border-top-color: var(--pe-danger);
+}
 .pe-kpi-danger .pe-kpi-icon {
-  background: rgba(239, 68, 68, 0.1);
   color: var(--pe-danger);
 }
 
@@ -734,11 +758,12 @@ textarea.pe-input {
 }
 .pe-table th {
   padding: 1rem 1.5rem;
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   text-transform: uppercase;
+  letter-spacing: 1px;
   color: var(--pe-text-muted);
   border-bottom: 1px solid var(--pe-border);
-  background: var(--pe-bg-surface-elevated);
+  background: var(--pe-bg-surface);
   white-space: nowrap;
 }
 .pe-table td {
@@ -750,8 +775,8 @@ textarea.pe-input {
 .pe-table tr:last-child td {
   border-bottom: none;
 }
-.pe-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+.pe-table tbody tr:hover td {
+  background: var(--pe-bg-surface-hover);
 }
 .pe-text-right {
   text-align: right;
@@ -795,6 +820,8 @@ textarea.pe-input {
   width: 120px;
   text-align: right;
   font-weight: 600;
+  font-family: monospace;
+  font-size: 1rem;
   color: var(--pe-text-main);
 }
 
@@ -811,8 +838,8 @@ textarea.pe-input {
 .pe-modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(5px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -822,18 +849,18 @@ textarea.pe-input {
 .pe-modal {
   background: var(--pe-bg-surface);
   border: 1px solid var(--pe-border);
-  border-radius: var(--pe-radius-lg);
+  border-radius: var(--pe-radius-md);
   width: 100%;
   max-height: 90vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
-  animation: modalPop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.8);
+  animation: modalPop 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 @keyframes modalPop {
   0% {
     opacity: 0;
-    transform: scale(0.95) translateY(10px);
+    transform: scale(0.98) translateY(10px);
   }
   100% {
     opacity: 1;
@@ -851,6 +878,8 @@ textarea.pe-input {
 .pe-modal-header {
   padding: 1.25rem 1.5rem;
   border-bottom: 1px solid var(--pe-border);
+  background: #050505;
+  border-radius: var(--pe-radius-md) var(--pe-radius-md) 0 0;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -860,8 +889,11 @@ textarea.pe-input {
   align-items: center;
   gap: 0.75rem;
   color: var(--pe-text-main);
-  font-size: 1.25rem;
-  font-weight: 600;
+  font-size: 1.1rem;
+  font-weight: 500;
+}
+.pe-modal-title i {
+  color: var(--pe-primary);
 }
 .pe-btn-close {
   background: transparent;
@@ -900,7 +932,7 @@ textarea.pe-input {
 .pe-info-card {
   background: var(--pe-bg-base);
   padding: 1.25rem;
-  border-radius: var(--pe-radius-md);
+  border-radius: var(--pe-radius-sm);
   border: 1px solid var(--pe-border);
 }
 .pe-info-card .pe-h4 {
@@ -931,7 +963,7 @@ textarea.pe-input {
 .pe-col-finance {
   background: var(--pe-bg-surface-elevated);
   padding: 1.5rem;
-  border-radius: var(--pe-radius-md);
+  border-radius: var(--pe-radius-sm);
   border: 1px solid var(--pe-border);
   position: sticky;
   top: 0;
@@ -952,6 +984,10 @@ textarea.pe-input {
   margin-bottom: 0.75rem;
   font-size: 0.875rem;
 }
+.pe-fin-row strong {
+  font-family: monospace;
+  font-size: 1rem;
+}
 .pe-fin-edit {
   background: var(--pe-bg-base);
   padding: 0.5rem;
@@ -965,7 +1001,10 @@ textarea.pe-input {
 }
 .pe-fin-total {
   font-size: 1.125rem;
-  font-weight: 700;
+  text-transform: uppercase;
+}
+.pe-fin-total strong {
+  font-size: 1.25rem;
 }
 
 .pe-expenses-list {
@@ -977,10 +1016,13 @@ textarea.pe-input {
   display: flex;
   justify-content: space-between;
   background: var(--pe-bg-base);
-  padding: 0.75rem;
-  border-radius: var(--pe-radius-sm);
-  margin-bottom: 0.5rem;
-  border: 1px solid var(--pe-border);
+  padding: 0.75rem 0;
+  border-bottom: 1px dashed var(--pe-border);
+  align-items: center;
+  font-size: 0.85rem;
+}
+.expense-item:last-child {
+  border-bottom: none;
 }
 
 /* ==========================================================================
@@ -1001,7 +1043,7 @@ textarea.pe-input {
   border-left: 4px solid var(--pe-primary);
   border-radius: var(--pe-radius-sm);
   padding: 1rem 1.25rem;
-  box-shadow: var(--pe-shadow);
+  border: 1px solid var(--pe-border);
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -1061,13 +1103,14 @@ textarea.pe-input {
     bottom: 0;
     transform: translateX(-100%);
     box-shadow: none;
+    border-right: none;
     padding-top: var(--pe-safe-top);
   }
   .pe-sidebar.mobile-active {
     transform: translateX(0);
     box-shadow:
-      0 0 0 100vw rgba(0, 0, 0, 0.5),
-      var(--pe-shadow); /* Backdrop emulation */
+      0 0 0 100vw rgba(0, 0, 0, 0.8),
+      5px 0 25px rgba(0, 0, 0, 0.5); /* Backdrop emulation */
   }
 
   .pe-topbar {
