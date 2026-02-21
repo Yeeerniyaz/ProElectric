@@ -1,12 +1,15 @@
 /**
  * @file src/bot.js
- * @description Ядро Telegram-бота (Dispatcher & Router v10.9.3 Enterprise).
+ * @description Ядро Telegram-бота (Dispatcher & Router v10.9.23 Enterprise).
  * Выполняет маршрутизацию всех входящих событий, управляет сессиями (FSM),
  * экспортирует экземпляр бота для Web CRM и управляет инстансом Socket.IO.
  * ИСПРАВЛЕНИЕ: Добавлены обработчики инлайн-кнопок для Клиентов (Отмена заказа, пинг шефа).
+ * ДОБАВЛЕНО: Глобальный middleware для автоматического трекинга активности (last_active).
+ * ДОБАВЛЕНО: Graceful Error Boundary (пользователь получает уведомление при ошибке).
+ * НИКАКИХ СОКРАЩЕНИЙ.
  *
  * @module BotCore
- * @version 10.9.3 (Enterprise ERP Edition)
+ * @version 10.9.23 (Enterprise ERP Edition - Telemetry & Stability)
  */
 
 import { Telegraf, session } from "telegraf";
@@ -16,6 +19,7 @@ import { config } from "./config.js";
 import { UserHandler } from "./handlers/UserHandler.js";
 import { AdminHandler } from "./handlers/AdminHandler.js";
 import { BrigadeHandler } from "./handlers/BrigadeHandler.js";
+import { UserService } from "./services/UserService.js"; // 🔥 ДОБАВЛЕНО: Для глобального трекинга
 
 // =============================================================================
 // 1. ИНИЦИАЛИЗАЦИЯ ИНСТАНСА
@@ -38,7 +42,7 @@ export const setSocketIO = (io) => {
 export const getSocketIO = () => ioInstance;
 
 // =============================================================================
-// 3. MIDDLEWARES (СЕССИИ И КОНТЕКСТ)
+// 3. MIDDLEWARES (СЕССИИ, КОНТЕКСТ И ТЕЛЕМЕТРИЯ)
 // =============================================================================
 
 // Подключаем хранилище сессий (критично для калькулятора и FSM)
@@ -47,6 +51,20 @@ bot.use(session());
 // Гарантируем, что объект сессии всегда существует, чтобы избежать TypeError
 bot.use((ctx, next) => {
   if (!ctx.session) ctx.session = {};
+  return next();
+});
+
+// 🔥 ДОБАВЛЕНО: Глобальный трекинг активности (Telemetry).
+// Выполняется асинхронно, не блокируя основной поток (Performance First).
+bot.use(async (ctx, next) => {
+  if (ctx.from && ctx.from.id) {
+    UserService.trackUserActivity(ctx.from.id).catch((err) => {
+      console.error(
+        `[Telemetry Error] Failed to track activity for ${ctx.from.id}:`,
+        err.message,
+      );
+    });
+  }
   return next();
 });
 
@@ -233,9 +251,24 @@ bot.on("text", async (ctx) => {
 // 8. ГЛОБАЛЬНАЯ ОБРАБОТКА ОШИБОК (ERROR BOUNDARY)
 // =============================================================================
 
-bot.catch((err, ctx) => {
+bot.catch(async (err, ctx) => {
   console.error(
-    `[Telegraf Error] Update ID: ${ctx.update?.update_id} | Type: ${ctx.updateType}`,
+    `🔥 [Telegraf Error] Update ID: ${ctx.update?.update_id} | Type: ${ctx.updateType}`,
     err,
   );
+
+  // 🔥 ДОБАВЛЕНО: Элегантное уведомление пользователя о системной ошибке
+  try {
+    if (ctx.chat) {
+      await ctx.reply(
+        "⚠️ <b>Произошла системная ошибка.</b>\nПожалуйста, попробуйте повторить действие позже или напишите /start для перезапуска.",
+        { parse_mode: "HTML" },
+      );
+    }
+  } catch (notifyErr) {
+    console.error(
+      "[Telegraf Error] Failed to notify user about error:",
+      notifyErr.message,
+    );
+  }
 });

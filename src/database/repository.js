@@ -1,15 +1,16 @@
 /**
  * @file src/database/repository.js
- * @description Слой репозитория (Data Access Layer v10.9.12).
+ * @description Слой репозитория (Data Access Layer v10.9.21).
  * Содержит коллекцию готовых методов для работы с БД.
  * Внедрен глобальный финансовый модуль, система управления Бригадами (ERP),
  * распределение прибыли и Web OTP авторизация.
- * ДОБАВЛЕНО: Интеллектуальный парсинг дат (startDate, endDate) для всех аналитических выборок.
+ * ИСПРАВЛЕНО: Глобальная статистика (getGlobalStats) теперь корректно
+ * высчитывает net_profit (чистую прибыль) с учетом расходов, а не приравнивает ее к выручке.
  *
  * Архитектура: Repository Pattern. Строгие транзакции (ACID) для финансов.
  *
  * @module Repository
- * @version 10.9.12 (Enterprise ERP Edition - Time-Series Analytics)
+ * @version 10.9.21 (Enterprise ERP Edition - Net Profit Fix)
  */
 
 import { query, getClient } from "./connection.js";
@@ -508,10 +509,11 @@ export const getGlobalStats = async (
     pIdx++;
   }
 
+  // 🔥 ИСПРАВЛЕНИЕ: Вычисляем net_profit прямо в запросе, вычитая чеки (financials->>'net_profit')
   if (brigadeId) {
     const pRevenue = [...dateParams, brigadeId];
     const pActive = [...dateParams, brigadeId];
-    const sqlRevenue = `SELECT SUM(total_price) as sum FROM orders WHERE status = 'done' AND brigade_id = $${pRevenue.length} ${dateFilterOrders}`;
+    const sqlRevenue = `SELECT COALESCE(SUM(total_price), 0) as sum, COALESCE(SUM(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)), 0) as net_profit FROM orders WHERE status = 'done' AND brigade_id = $${pRevenue.length} ${dateFilterOrders}`;
     const sqlActive = `SELECT COUNT(*) as count FROM orders WHERE status = 'work' AND brigade_id = $${pActive.length} ${dateFilterOrders}`;
 
     const [resRevenue, resActive] = await Promise.all([
@@ -521,6 +523,7 @@ export const getGlobalStats = async (
     return {
       totalUsers: 0,
       totalRevenue: parseFloat(resRevenue.rows[0]?.sum || 0),
+      totalNetProfit: parseFloat(resRevenue.rows[0]?.net_profit || 0),
       active24h: parseInt(resActive.rows[0]?.count || 0),
     };
   }
@@ -531,7 +534,7 @@ export const getGlobalStats = async (
       dateParams,
     ),
     query(
-      `SELECT SUM(total_price) as sum FROM orders WHERE status = 'done' ${dateFilterOrders}`,
+      `SELECT COALESCE(SUM(total_price), 0) as sum, COALESCE(SUM(COALESCE((details->'financials'->>'net_profit')::numeric, total_price)), 0) as net_profit FROM orders WHERE status = 'done' ${dateFilterOrders}`,
       dateParams,
     ),
     query(
@@ -541,6 +544,7 @@ export const getGlobalStats = async (
   return {
     totalUsers: parseInt(resUsers.rows[0].count),
     totalRevenue: parseFloat(resRevenue.rows[0].sum || 0),
+    totalNetProfit: parseFloat(resRevenue.rows[0].net_profit || 0),
     active24h: parseInt(resActive.rows[0].count),
   };
 };

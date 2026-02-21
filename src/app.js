@@ -1,12 +1,13 @@
 /**
  * @file src/app.js
- * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.9.10).
+ * @description Конфигурация Express приложения (API Gateway & ERP Backend v10.9.22).
  * ИСПРАВЛЕНО: ЖЕСТКАЯ БЛОКИРОВКА (Read-Only) любых изменений после завершения заказа.
  * ИСПРАВЛЕНО: Бригадирам (Менеджерам) разрешено завершать (finalize) свои заказы.
+ * ИСПРАВЛЕНО: Баг с Web-аналитикой (totalNetProfit теперь корректно передает чистую прибыль с вычетом расходов, а не дублирует выручку).
  * ДОБАВЛЕНО: Роуты для поиска клиентов, обновления адресов/комментов, фильтрации по датам.
  *
  * @module Application
- * @version 10.9.10 (Enterprise Security & Manager Permissions)
+ * @version 10.9.22 (Enterprise Security & Accurate Net Profit)
  */
 
 import express from "express";
@@ -274,7 +275,8 @@ app.get("/api/dashboard/stats", requireManager, async (req, res) => {
     res.json({
       overview: {
         totalRevenue: globalStats.totalRevenue,
-        totalNetProfit: globalStats.totalRevenue,
+        // 🔥 ИСПРАВЛЕНИЕ: Теперь мы передаем чистую прибыль, а не дублируем выручку
+        totalNetProfit: globalStats.totalNetProfit,
         totalUsers: globalStats.totalUsers,
         activeToday: globalStats.active24h,
         pendingOrders: activeCount,
@@ -680,11 +682,10 @@ app.patch("/api/orders/:id/assign", requireAdmin, async (req, res) => {
   }
 });
 
-// 🔥 ИСПРАВЛЕНИЕ: Кнопка закрытия объекта (Finalize) теперь доступна Бригадиру (requireManager)
 app.post("/api/orders/:id/finalize", requireManager, async (req, res) => {
   try {
     const { id } = req.params;
-    await enforceOrderModification(req, id); // Защита: бригадир может закрыть только свой заказ!
+    await enforceOrderModification(req, id);
 
     const result = await db.finalizeOrderAndDistributeProfit(id);
     const io = getSocketIO();
