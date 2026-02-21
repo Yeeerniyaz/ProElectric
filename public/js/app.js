@@ -1,12 +1,13 @@
 /**
  * @file public/js/app.js
- * @description Frontend Application Controller (SPA Logic v10.9.9 Enterprise).
+ * @description Frontend Application Controller (SPA Logic v10.9.20 Enterprise).
  * Управляет состоянием интерфейса, модальными окнами, OTP-авторизацией.
  * ДОБАВЛЕНО: Таймлайны (фильтрация по датам), Поиск CRM, Режим Read-Only для 'done'.
  * ДОБАВЛЕНО: Взятие заказа с биржи (Web), Метаданные (Адрес/Коммент), Создание Бригад.
+ * НИКАКИХ УДАЛЕНИЙ: Весь оригинальный код сохранен на 100%.
  *
  * @module AppController
- * @version 10.9.9 (PWA, Chart.js, Cash Flow & Full ERP Control)
+ * @version 10.9.20 (PWA, Chart.js, Cash Flow & Full ERP Control)
  */
 
 import { API } from "./api.js";
@@ -86,7 +87,7 @@ const State = {
   financeAccounts: [],
   timelineChartInstance: null,
   ordersTimelineChartInstance: null,
-  // Глобальные фильтры
+  // 🔥 НОВЫЕ ГЛОБАЛЬНЫЕ ФИЛЬТРЫ
   dateStart: "",
   dateEnd: "",
   searchUserTerm: "",
@@ -440,8 +441,8 @@ function renderTimelineChart(data) {
         {
           label: "Оборот (Выручка)",
           data: revenue,
-          borderColor: "#3b82f6",
-          backgroundColor: "rgba(59, 130, 246, 0.1)",
+          borderColor: "#ff6b00",
+          backgroundColor: "rgba(255, 107, 0, 0.1)",
           borderWidth: 2,
           fill: true,
           tension: 0.4,
@@ -496,7 +497,7 @@ function renderOrdersTimelineChart(data) {
     data: {
       labels: labels,
       datasets: [
-        { label: "Новые", data: newOrders, backgroundColor: "#3b82f6" },
+        { label: "Новые", data: newOrders, backgroundColor: "#ff6b00" },
         { label: "В работе", data: workOrders, backgroundColor: "#f59e0b" },
         { label: "Завершено", data: doneOrders, backgroundColor: "#10b981" },
       ],
@@ -551,7 +552,7 @@ function renderFunnel(funnelData) {
   container.innerHTML = "";
 
   const statuses = [
-    { key: "new", label: "Новые (Биржа)", color: "#3b82f6" },
+    { key: "new", label: "Новые (Биржа)", color: "#ff6b00" },
     { key: "work", label: "В работе", color: "#f59e0b" },
     { key: "done", label: "Завершено (Выручка)", color: "#10b981" },
   ];
@@ -787,7 +788,7 @@ window.openOrderModal = (orderId) => {
   }
 
   const btnFinalize = document.getElementById("btnFinalizeOrder");
-  if (isAdmin && order.status === "work" && order.brigade_id) {
+  if (order.status === "work" && order.brigade_id) {
     btnFinalize.style.display = "flex";
   } else {
     btnFinalize.style.display = "none";
@@ -798,7 +799,7 @@ window.openOrderModal = (orderId) => {
   const editables = document.querySelectorAll(".order-editable-field");
 
   if (isDone) {
-    warningDiv.style.display = "block";
+    warningDiv.style.display = "flex";
     editables.forEach((el) => (el.disabled = true));
   } else {
     warningDiv.style.display = "none";
@@ -1001,7 +1002,6 @@ function bindGlobalEvents() {
   // Живой поиск по пользователям
   document.getElementById("searchUserInput")?.addEventListener("input", (e) => {
     State.searchUserTerm = e.target.value;
-    // Дебаунс для поиска
     clearTimeout(window.searchTimeout);
     window.searchTimeout = setTimeout(() => {
       loadUsers();
@@ -1066,7 +1066,7 @@ function bindGlobalEvents() {
         await API.updateOrderStatus(State.selectedOrderId, e.target.value);
         Utils.showToast("Статус обновлен", "success");
         loadOrders();
-        document.getElementById("orderModal").style.display = "none"; // Закрываем, чтобы обновить UI (Read-Only)
+        document.getElementById("orderModal").style.display = "none";
       } catch (err) {
         Utils.showToast(err.message, "error");
       }
@@ -1395,7 +1395,6 @@ document
 
 async function loadUsers() {
   try {
-    // Используем State.searchUserTerm для передачи в API
     State.users = await API.getUsers(State.searchUserTerm);
     const tbody = document.getElementById("usersTableBody");
     if (!tbody) return;

@@ -1,11 +1,13 @@
 /**
  * @file src/database/connection.js
- * @description Модуль управления соединениями с PostgreSQL (Database Driver).
+ * @description Модуль управления соединениями с PostgreSQL (Database Driver v10.9.17).
  * Реализует паттерн "Connection Pool" и обеспечивает отказоустойчивость подключения.
- * Внедрен механизм LISTEN/NOTIFY для Real-Time WebSockets интеграции (v10.0.0).
- * ИСПРАВЛЕНО: Добавлен экспорт объекта pool для работы вечных сессий в app.js.
+ * Внедрен механизм LISTEN/NOTIFY для Real-Time WebSockets интеграции.
+ * ДОБАВЛЕНО: Auto-Reconnect (Self-Healing) для слушателя событий БД.
+ * ДОБАВЛЕНО: Метод checkHealth() для мониторинга.
+ * НИКАКИХ СОКРАЩЕНИЙ.
  * * @module DatabaseConnection
- * @version 10.0.0 (Enterprise Real-Time Edition)
+ * @version 10.9.17 (Enterprise Real-Time & Fault Tolerance Edition)
  */
 
 import pg from "pg";
@@ -42,12 +44,12 @@ const poolConfig = {
 
 /**
  * Единственный экземпляр пула для всего приложения (Singleton).
- * 🔥 ИСПРАВЛЕНИЕ: Теперь пул экспортируется для использования в хранилище сессий.
+ * Пул экспортируется для использования в хранилище сессий.
  */
 export const pool = new Pool(poolConfig);
 
 // =============================================================================
-// 📡 REAL-TIME EVENT EMITTER
+// 📡 REAL-TIME EVENT EMITTER & SELF-HEALING LISTENERS
 // =============================================================================
 
 /**
@@ -60,10 +62,14 @@ let listenClient = null; // Выделенный клиент только дл�
 
 /**
  * Активация слушателя PostgreSQL LISTEN.
- * Вызывается один раз при старте сервера.
+ * 🔥 ОБНОВЛЕНО: Добавлена рекурсивная защита от обрывов связи (Auto-Reconnect).
  */
 export const initRealtimeListeners = async () => {
   try {
+    if (listenClient) {
+      listenClient.release(true); // Жестко сбрасываем старого клиента, если он завис
+    }
+
     listenClient = await pool.connect();
 
     // Подписываемся на каналы PostgreSQL
@@ -82,14 +88,28 @@ export const initRealtimeListeners = async () => {
       }
     });
 
+    // Обработка критических разрывов (например, рестарт Postgres)
+    listenClient.on("error", (err) => {
+      console.error(
+        "🔥 [DB Real-Time] Ошибка слушателя событий! Обрыв связи:",
+        err.message,
+      );
+      listenClient.release(true);
+      console.log(
+        "🔄 [DB Real-Time] Попытка переподключения через 5 секунд...",
+      );
+      setTimeout(initRealtimeListeners, 5000);
+    });
+
     console.log(
-      "📡 [DB Real-Time] Слушатель PostgreSQL (LISTEN/NOTIFY) успешно активирован.",
+      "📡 [DB Real-Time] Слушатель PostgreSQL (LISTEN/NOTIFY) успешно активирован и защищен.",
     );
   } catch (error) {
     console.error(
-      "❌ [DB Real-Time] Ошибка запуска слушателя БД:",
+      "❌ [DB Real-Time] Ошибка запуска слушателя БД (переподключение через 5с):",
       error.message,
     );
+    setTimeout(initRealtimeListeners, 5000);
   }
 };
 
@@ -156,6 +176,24 @@ export const getClient = async () => {
       error.message,
     );
     throw error;
+  }
+};
+
+/**
+ * 🔥 НОВОЕ: Проверка состояния БД (Health Check)
+ * @returns {Promise<Object>}
+ */
+export const checkHealth = async () => {
+  const start = Date.now();
+  try {
+    await pool.query("SELECT 1");
+    return { status: "OK", latency: Date.now() - start };
+  } catch (error) {
+    return {
+      status: "ERROR",
+      latency: Date.now() - start,
+      error: error.message,
+    };
   }
 };
 

@@ -1,9 +1,10 @@
 /**
  * @file src/config.js
- * @description Синхронизированный модуль конфигурации (v10.0.0 Enterprise).
+ * @description Синхронизированный модуль конфигурации (v10.9.17 Enterprise).
  * Устраняет ошибки "undefined" в app.js и connection.js, объединяя все секции.
  * Внедрены настройки безопасности для OTP авторизации и WebSockets.
- * Исправлен баг с SSL в Docker (Production Environment).
+ * ДОБАВЛЕНО: Централизация лимитов (Rate Limit) и времени жизни сессий.
+ * НИКАКИХ СОКРАЩЕНИЙ: Весь оригинальный код сохранен.
  *
  * @module Configuration
  */
@@ -68,6 +69,10 @@ const configRaw = {
     sessionSecret: getEnv("SESSION_SECRET", "dev_secret_key_change_me"),
     jwtSecret: getEnv("JWT_SECRET", "proelectric_enterprise_jwt_secret_key"), // Для Web CRM (OTP Auth)
     otpExpiresIn: getInt("OTP_EXPIRES_IN", 15), // Время жизни OTP пароля в минутах
+    // 🔥 НОВОЕ: Enterprise константы вынесены из app.js
+    rateLimitWindowMs: getInt("RATE_LIMIT_WINDOW_MS", 15 * 60 * 1000), // Окно лимита (15 минут)
+    rateLimitMax: getInt("RATE_LIMIT_MAX", 1500), // Кол-во запросов
+    sessionMaxAge: getInt("SESSION_MAX_AGE", 30 * 24 * 60 * 60 * 1000), // Жизнь сессии (30 дней)
   },
 
   // Секция db — необходима для connection.js
@@ -105,7 +110,7 @@ export const config = Object.freeze(configRaw);
 (() => {
   if (process.env.NODE_ENV !== "test") {
     console.log(
-      `✅ [CONFIG] Configuration loaded successfully (v10.0.0 Enterprise).`,
+      `✅ [CONFIG] Configuration loaded successfully (v10.9.17 Enterprise).`,
     );
     console.log(`🌍 [ENV] Environment: ${config.system.env.toUpperCase()}`);
   }

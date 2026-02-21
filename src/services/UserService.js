@@ -1,12 +1,14 @@
 /**
  * @file src/services/UserService.js
- * @description Сервис управления пользователями (Identity & RBAC Module v10.0.0).
+ * @description Сервис управления пользователями (Identity & RBAC Module v10.9.16).
  * Отвечает за аутентификацию, профилирование, управление ролями, клиентскую аналитику
  * и генерацию динамических OTP-паролей для Web CRM.
  * Оптимизирован под использование как из Telegram-бота, так и из Web CRM.
+ * ДОБАВЛЕНО: Трекинг последней активности (last_active) для метрик Retention.
+ * НИКАКИХ УДАЛЕНИЙ: Весь оригинальный код и логика сохранены на 100%.
  *
  * @module UserService
- * @version 10.0.0 (Enterprise ERP Edition)
+ * @version 10.9.16 (Enterprise ERP Edition - Activity Tracking)
  */
 
 import * as db from "../database/index.js";
@@ -16,11 +18,11 @@ import * as db from "../database/index.js";
 // =============================================================================
 
 export const ROLES = Object.freeze({
-  OWNER: "owner", // Владелец бизнеса (Super Admin)
-  ADMIN: "admin", // Администратор (Доступ к CRM)
+  OWNER: "owner",     // Владелец бизнеса (Super Admin)
+  ADMIN: "admin",     // Администратор (Доступ к CRM)
   MANAGER: "manager", // Бригадир / Инженер (Работает с заказами)
-  USER: "user", // Клиент бота
-  BANNED: "banned", // Заблокирован
+  USER: "user",       // Клиент бота
+  BANNED: "banned",   // Заблокирован
 });
 
 // =============================================================================
@@ -59,6 +61,7 @@ export const UserService = {
   /**
    * 📝 Регистрация или обновление пользователя (Авторизация при /start).
    * Реализует паттерн UPSERT.
+   * 🔥 ОБНОВЛЕНО: Добавлен трекинг last_active.
    * @param {Object} telegramUser - Объект пользователя из Telegraf (ctx.from)
    * @returns {Promise<Object>} Обновленная запись пользователя
    */
@@ -66,17 +69,33 @@ export const UserService = {
     const { id, first_name, username } = telegramUser;
 
     const sql = `
-      INSERT INTO users (telegram_id, first_name, username, updated_at)
-      VALUES ($1, $2, $3, NOW())
+      INSERT INTO users (telegram_id, first_name, username, last_active, updated_at)
+      VALUES ($1, $2, $3, NOW(), NOW())
       ON CONFLICT (telegram_id) DO UPDATE SET
         first_name = EXCLUDED.first_name,
         username = EXCLUDED.username,
+        last_active = NOW(),
         updated_at = NOW()
       RETURNING *
     `;
 
     const res = await db.query(sql, [id, first_name, username || null]);
     return res.rows[0];
+  },
+
+  /**
+   * 🕒 Обновление только времени последней активности (для middleware).
+   * @param {number|string} telegramId
+   */
+  async trackUserActivity(telegramId) {
+    try {
+      await db.query(
+        "UPDATE users SET last_active = NOW() WHERE telegram_id = $1",
+        [telegramId]
+      );
+    } catch (e) {
+      console.error("[UserService] Ошибка обновления last_active:", e.message);
+    }
   },
 
   /**
@@ -88,7 +107,7 @@ export const UserService = {
     const cleanPhone = phone.replace(/[^\d+]/g, "");
 
     const res = await db.query(
-      "UPDATE users SET phone = $1, updated_at = NOW() WHERE telegram_id = $2 RETURNING *",
+      "UPDATE users SET phone = $1, updated_at = NOW(), last_active = NOW() WHERE telegram_id = $2 RETURNING *",
       [cleanPhone, telegramId],
     );
     return res.rows[0];
@@ -130,7 +149,7 @@ export const UserService = {
    */
   async getAllUsers(limit = 100, offset = 0) {
     const res = await db.query(
-      `SELECT telegram_id, first_name, username, phone, role, created_at, updated_at 
+      `SELECT telegram_id, first_name, username, phone, role, created_at, updated_at, last_active 
        FROM users 
        ORDER BY created_at DESC 
        LIMIT $1 OFFSET $2`,
@@ -163,7 +182,7 @@ export const UserService = {
     const [usersData, activeData] = await Promise.all([
       db.query("SELECT COUNT(*) as count FROM users"),
       db.query(
-        "SELECT COUNT(*) as count FROM users WHERE updated_at > NOW() - INTERVAL '24 hours'",
+        "SELECT COUNT(*) as count FROM users WHERE last_active > NOW() - INTERVAL '24 hours'",
       ),
     ]);
 
@@ -195,6 +214,9 @@ export const UserService = {
     // Сохраняем в базу на 15 минут
     await db.setWebPassword(telegramId, otp, 15);
 
+    // Логируем активность
+    await this.trackUserActivity(telegramId);
+
     return { otp, phone: user.phone };
   },
 
@@ -208,6 +230,10 @@ export const UserService = {
     if (user.web_password === otp) {
       // Пароль верный, стираем его (одноразовость)
       await db.clearWebPassword(user.telegram_id);
+      
+      // Логируем успешный вход
+      await this.trackUserActivity(user.telegram_id);
+      
       return user;
     }
     return null;

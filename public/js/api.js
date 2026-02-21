@@ -1,14 +1,14 @@
 /**
  * @file public/js/api.js
- * @description Frontend API Client (ERP Middleware v10.9.8).
+ * @description Frontend API Client (ERP Middleware v10.9.19).
  * Обеспечивает строгую типизацию запросов к REST API сервера ProElectric.
  * ДОБАВЛЕНО: Поддержка фильтров по датам (startDate, endDate) для аналитики.
  * ДОБАВЛЕНО: Эндпоинты для обновления адресов/комментариев и взятия заказа с биржи.
  * ДОБАВЛЕНО: Поиск пользователей по CRM.
- * Ни одна старая функция не была удалена.
+ * НИКАКИХ СОКРАЩЕНИЙ: Весь оригинальный код и методы сохранены на 100%.
  *
  * @module API
- * @version 10.9.8 (Enterprise ERP & Advanced Analytics Edition)
+ * @version 10.9.19 (Enterprise ERP & Advanced Analytics Edition)
  */
 
 const API_BASE = "/api";
@@ -108,6 +108,7 @@ export const API = {
   // ==========================================
   // 📊 DASHBOARD & ADVANCED ANALYTICS (WITH DATES)
   // ==========================================
+
   getStats: (startDate, endDate) =>
     fetchWrapper(`/dashboard/stats${buildQuery({ startDate, endDate })}`),
 
@@ -257,7 +258,7 @@ export const API = {
   // 👥 STAFF & BROADCAST
   // ==========================================
 
-  // 🔥 ИСПРАВЛЕНО: Добавлен параметр search для умного поиска
+  // 🔥 ОБНОВЛЕНО: Добавлен параметр search для умного поиска
   getUsers: (search = "", limit = 100, offset = 0) =>
     fetchWrapper(`/users${buildQuery({ search, limit, offset })}`),
 
